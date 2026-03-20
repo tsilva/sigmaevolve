@@ -76,6 +76,13 @@ class ArrayDatasetProvider:
             "test_split": _sha256_file(test_path),
             "test_labels": _sha256_file(test_labels_path),
         }
+        metadata = dict(self.metadata or {})
+        metadata.setdefault("feature_shape", list(self.train_features.shape[1:]))
+        metadata.setdefault("feature_dtype", str(self.train_features.dtype))
+        metadata.setdefault("label_dtype", str(self.train_labels.dtype))
+        if self.train_labels.size and "num_classes" not in metadata:
+            metadata["num_classes"] = int(np.max(self.train_labels)) + 1
+
         manifest = DatasetManifest(
             dataset_id=dataset_id,
             root_dir=str(output_dir),
@@ -91,7 +98,7 @@ class ArrayDatasetProvider:
             },
             checksums=checksums,
             fingerprint=_fingerprint(dataset_id, checksums),
-            metadata=dict(self.metadata or {}),
+            metadata=metadata,
         )
         manifest_path.write_text(json.dumps(manifest.to_dict(), indent=2, sort_keys=True))
         return manifest

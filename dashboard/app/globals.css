@@ -663,6 +663,94 @@ button {
   gap: 10px;
 }
 
+.score-chart-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+
+.score-chart-shell {
+  padding: 8px 10px 10px;
+  border-radius: 16px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.84), rgba(243, 247, 255, 0.92)),
+    radial-gradient(circle at top left, rgba(51, 98, 183, 0.1), transparent 45%);
+  border: 1px solid rgba(51, 98, 183, 0.08);
+}
+
+.score-chart {
+  display: block;
+  width: 100%;
+  height: auto;
+  overflow: visible;
+}
+
+.score-axis,
+.score-gridline {
+  fill: none;
+  stroke-width: 1;
+}
+
+.score-axis {
+  stroke: rgba(31, 26, 20, 0.18);
+}
+
+.score-gridline {
+  stroke: rgba(51, 98, 183, 0.1);
+  stroke-dasharray: 4 6;
+}
+
+.score-line {
+  fill: none;
+  stroke: #3362b7;
+  stroke-width: 2.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.score-point {
+  stroke-width: 1.4;
+  transition: transform 140ms ease;
+}
+
+.score-point.scored.tone-success {
+  fill: #3aa36a;
+  stroke: rgba(22, 80, 47, 0.22);
+}
+
+.score-point.scored.tone-warning {
+  fill: #c88d21;
+  stroke: rgba(122, 79, 15, 0.24);
+}
+
+.score-point.scored.tone-danger {
+  fill: #c55a4f;
+  stroke: rgba(130, 43, 34, 0.24);
+}
+
+.score-point.scored.tone-neutral {
+  fill: #4d7bcb;
+  stroke: rgba(38, 66, 122, 0.22);
+}
+
+.score-point.pending {
+  fill: rgba(255, 255, 255, 0.94);
+  stroke: rgba(31, 26, 20, 0.26);
+  stroke-dasharray: 2 2;
+}
+
+.score-tick-label,
+.score-axis-label {
+  fill: var(--muted);
+  font-size: 0.72rem;
+}
+
+.score-tick-label {
+  text-anchor: end;
+}
+
 .prompt-card {
   overflow: hidden;
   background: rgba(255, 255, 255, 0.74);

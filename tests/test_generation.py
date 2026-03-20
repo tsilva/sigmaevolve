@@ -54,6 +54,23 @@ def _context():
     ]
 
 
+def _negative_trials():
+    return [
+        TrialSummary(
+            trial_id="trial_failed",
+            score=0.0,
+            metrics_json=None,
+            source="print('bad candidate')\n",
+            provenance_json={"backend": "openrouter", "model": "test/model"},
+            outcome_reason="crashed",
+            error_json={
+                "returncode": 1,
+                "stderr": "RuntimeError: mat1 and mat2 shapes cannot be multiplied (55000x28 and 784x128)",
+            },
+        )
+    ]
+
+
 def test_openrouter_generation_uses_model_pool_round_robin(monkeypatch):
     backend = OpenRouterGenerationBackend(api_key="test-key")
     payloads = []
@@ -98,3 +115,37 @@ def test_openrouter_generation_uses_model_pool_round_robin(monkeypatch):
     assert "- validation_split_path: Path to the validation .npz file with features only." in first_prompt
     assert "Read the config JSON using the exact keys listed in config_keys" in first_prompt
     assert "No recent negative trials are available." in first_prompt
+
+
+def test_openrouter_generation_prompt_includes_failure_feedback(monkeypatch):
+    backend = OpenRouterGenerationBackend(api_key="test-key")
+    payloads = []
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps(
+                {
+                    "id": "resp_1",
+                    "choices": [{"message": {"content": "print('new candidate')"}}],
+                }
+            ).encode("utf-8")
+
+    def fake_urlopen(req, timeout=0):
+        payloads.append(json.loads(req.data.decode("utf-8")))
+        return FakeResponse()
+
+    monkeypatch.setattr("sigmaevolve.generation.request.urlopen", fake_urlopen)
+
+    backend.generate(_track_with_pool(), _manifest(), _context(), negative_trials=_negative_trials(), generation_index=0)
+
+    prompt = payloads[0]["messages"][1]["content"]
+    assert "if you use linear layers, flatten both train and validation batches consistently" in prompt
+    assert "Trial trial_failed:" in prompt
+    assert "- returncode: 1" in prompt
+    assert "mat1 and mat2 shapes cannot be multiplied" in prompt

@@ -208,6 +208,7 @@ class TrialSummary:
     source: str
     provenance_json: dict[str, Any]
     outcome_reason: str | None = None
+    error_json: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)

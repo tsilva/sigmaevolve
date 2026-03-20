@@ -115,6 +115,25 @@ class OpenRouterGenerationBackend:
             lines.append(f"{prefix}- {label}: {self._format_scalar(value)}")
         return lines
 
+    def _summarize_error(self, error_json: dict[str, object] | None) -> list[str]:
+        if not error_json:
+            return []
+        lines: list[str] = []
+        reason = error_json.get("reason")
+        if reason is not None:
+            lines.append(f"- error reason: {self._format_scalar(reason)}")
+        detail = error_json.get("detail")
+        if detail is not None:
+            lines.append(f"- error detail: {self._format_scalar(detail)}")
+        returncode = error_json.get("returncode")
+        if returncode is not None:
+            lines.append(f"- returncode: {self._format_scalar(returncode)}")
+        stderr = error_json.get("stderr")
+        if isinstance(stderr, str) and stderr.strip():
+            excerpt = stderr.strip().splitlines()[-1][:240]
+            lines.append(f"- stderr excerpt: {excerpt}")
+        return lines
+
     def _build_user_prompt_text(
         self,
         track: TrackRecord,
@@ -148,12 +167,13 @@ class OpenRouterGenerationBackend:
             "allowed packages": ["argparse", "json", "pathlib", "numpy", "torch"],
             "budget_sec": track.policy_json["budget_sec"],
             "max_eval_gap_sec": track.policy_json.get("max_eval_gap_sec", 15),
-            "writing rules": [
-                "Read the config JSON using the exact keys listed in config_keys; do not invent alternate key names.",
-                "Write eval artifacts atomically by saving to a temp path and renaming into eval_dir.",
-                "Do not spend long uninterrupted stretches training without finishing a validation pass.",
-                "When validation accuracy ties, lower elapsed wall time to that eval wins.",
-            ],
+                "writing rules": [
+                    "Read the config JSON using the exact keys listed in config_keys; do not invent alternate key names.",
+                    "Write eval artifacts atomically by saving to a temp path and renaming into eval_dir.",
+                    "Features may be multi-dimensional tensors rather than pre-flattened vectors; if you use linear layers, flatten both train and validation batches consistently or start the model with nn.Flatten().",
+                    "Do not spend long uninterrupted stretches training without finishing a validation pass.",
+                    "When validation accuracy ties, lower elapsed wall time to that eval wins.",
+                ],
         }
         lines = [
             f"Write a complete Python train.py for dataset {track.dataset_id}.",
@@ -203,11 +223,12 @@ class OpenRouterGenerationBackend:
                 if trial.metrics_json:
                     lines.append("- metrics:")
                     lines.extend(self._format_mapping(dict(trial.metrics_json), indent=2))
+                lines.extend(self._summarize_error(trial.error_json))
                 lines.extend(
                     [
                         "- source preview:",
                         "```python",
-                        trial.source[:1500].rstrip(),
+                        trial.source.rstrip(),
                         "```",
                     ]
                 )
@@ -231,11 +252,12 @@ class OpenRouterGenerationBackend:
                 if trial.metrics_json:
                     lines.append("- metrics:")
                     lines.extend(self._format_mapping(dict(trial.metrics_json), indent=2))
+                lines.extend(self._summarize_error(trial.error_json))
                 lines.extend(
                     [
                         "- source preview:",
                         "```python",
-                        trial.source[:1200].rstrip(),
+                        trial.source.rstrip(),
                         "```",
                     ]
                 )

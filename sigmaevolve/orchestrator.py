@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Protocol
 
-from sigmaevolve.models import OUTCOME_TIMEOUT, ReconcileResult
+from sigmaevolve.models import OUTCOME_CRASHED, OUTCOME_EVAL_FAILED, OUTCOME_STALE, OUTCOME_TIMEOUT, ReconcileResult
 
 
 class RunnerLauncher(Protocol):
@@ -74,8 +74,8 @@ class Orchestrator:
             if context_trials:
                 negative_trials = self.repository.list_recent_trial_summaries(
                     track_id,
-                    outcome_reasons={OUTCOME_TIMEOUT},
-                    limit=3,
+                    outcome_reasons={OUTCOME_TIMEOUT, OUTCOME_CRASHED, OUTCOME_EVAL_FAILED, OUTCOME_STALE},
+                    limit=5,
                 )
                 try:
                     generated = self.generator.generate(

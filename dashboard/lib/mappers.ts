@@ -42,6 +42,8 @@ type TrialRow = {
   provenanceJson: Record<string, unknown> | null;
 };
 
+const FAILURE_OUTCOMES = new Set(["crashed", "eval_failed", "stale"]);
+
 function asIsoDate(value: string | Date | null | undefined): string | null {
   if (!value) {
     return null;
@@ -81,6 +83,7 @@ export function mapTrackListItem(row: TrackRow): TrackListItem {
 }
 
 export function mapTrialListItem(row: TrialRow): TrialListItem {
+  const hasError = FAILURE_OUTCOMES.has(row.outcomeReason ?? "") || Boolean(row.hasError);
   return {
     trialId: row.trialId,
     status: row.status,
@@ -99,7 +102,7 @@ export function mapTrialListItem(row: TrialRow): TrialListItem {
     startedAt: asIsoDate(row.startedAt),
     finishedAt: asIsoDate(row.finishedAt),
     durationSec: asNullableNumber(row.durationSec),
-    hasError: Boolean(row.hasError),
+    hasError,
     source: row.source ?? "",
     errorJson: row.errorJson ?? null,
     provenanceJson: row.provenanceJson ?? null,

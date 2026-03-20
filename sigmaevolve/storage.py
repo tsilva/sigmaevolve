@@ -320,6 +320,7 @@ class SQLAlchemyRepository:
                 source=row.source,
                 provenance_json=dict(row.provenance_json or {}),
                 outcome_reason=row.outcome_reason,
+                error_json=dict(row.error_json) if row.error_json else None,
             )
             for row in rows
         ]
@@ -356,6 +357,7 @@ class SQLAlchemyRepository:
                 source=row.source,
                 provenance_json=dict(row.provenance_json or {}),
                 outcome_reason=row.outcome_reason,
+                error_json=dict(row.error_json) if row.error_json else None,
             )
             for row in rows
         ]

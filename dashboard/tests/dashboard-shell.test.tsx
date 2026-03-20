@@ -78,12 +78,12 @@ const tracks: TrackListItem[] = [
     name: "mnist-baseline",
     datasetId: "mnist:v1",
     createdAt: "2026-03-20T14:00:00.000Z",
-    totalTrials: 3,
+    totalTrials: 2,
     queuedTrials: 0,
     dispatchingTrials: 0,
     activeTrials: 0,
-    finishedTrials: 3,
-    succeededTrials: 3,
+    finishedTrials: 2,
+    succeededTrials: 2,
     bestScore: 0.9342,
     lastActivityAt: "2026-03-20T15:10:00.000Z",
   },
@@ -139,7 +139,22 @@ describe("DashboardShell", () => {
     vi.restoreAllMocks();
     navigationState.pathname = "/tracks/track_1";
     navigationState.replace.mockReset();
-    globalThis.fetch = vi.fn();
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/api/tracks")) {
+        return {
+          ok: true,
+          json: async () => tracks,
+        } as Response;
+      }
+      if (url.includes("/api/tracks/track_1/trials?")) {
+        return {
+          ok: true,
+          json: async () => ({ trials: baseTrials, nextCursor: null }),
+        } as Response;
+      }
+      throw new Error(`Unexpected fetch call: ${url}`);
+    });
   });
 
   it("auto-selects the newest visible trial when no trial param is provided", async () => {
@@ -276,5 +291,13 @@ describe("DashboardShell", () => {
     });
 
     expect(navigationState.replace).not.toHaveBeenCalled();
+  });
+
+  it("renders a score history chart for all trials in the selected track", () => {
+    const { container } = renderShell();
+
+    expect(screen.getByRole("img", { name: "Score history for all trials in the selected track" })).toBeTruthy();
+    expect(screen.getByText("Score History")).toBeTruthy();
+    expect(container.querySelectorAll("circle.score-point").length).toBe(baseTrials.length);
   });
 });

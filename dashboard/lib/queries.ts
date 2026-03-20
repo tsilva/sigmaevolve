@@ -169,7 +169,10 @@ export async function listTrials(
           when started_at is null then null
           else extract(epoch from (coalesce(finished_at, now()) - started_at))
         end as "durationSec",
-        (error_json is not null) as "hasError"
+        (
+          status = 'finished'
+          and outcome_reason in ('crashed', 'eval_failed', 'stale')
+        ) as "hasError"
       from trials
       where ${whereClauses.join(" and ")}
       order by created_at desc, trial_id desc

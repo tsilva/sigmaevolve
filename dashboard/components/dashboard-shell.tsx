@@ -277,6 +277,113 @@ type DashboardShellProps = {
 };
 
 type ActiveWorkspace = "explorer" | "inspector";
+type ScoreChartPoint = {
+  backend: string | null;
+  model: string | null;
+  outcomeReason: string | null;
+  score: number | null;
+  status: TrialListItem["status"];
+  tone: ReturnType<typeof getTrialTone>;
+  trialId: string;
+  x: number;
+  y: number;
+};
+
+const SCORE_CHART_WIDTH = 760;
+const SCORE_CHART_HEIGHT = 228;
+const SCORE_CHART_PADDING = {
+  top: 18,
+  right: 18,
+  bottom: 32,
+  left: 46,
+};
+
+function buildTrialsUrl(trackId: string, status: TrialStatusFilter, cursor?: string | null, limit = 50): string {
+  const params = new URLSearchParams();
+  params.set("status", status);
+  params.set("limit", String(limit));
+  if (cursor) {
+    params.set("cursor", cursor);
+  }
+  return `/api/tracks/${trackId}/trials?${params.toString()}`;
+}
+
+function buildScoreChart(trials: TrialListItem[]): {
+  bestScore: number | null;
+  linePath: string;
+  points: ScoreChartPoint[];
+  scoredCount: number;
+  yMax: number;
+  yMin: number;
+} {
+  const chartWidth = SCORE_CHART_WIDTH - SCORE_CHART_PADDING.left - SCORE_CHART_PADDING.right;
+  const chartHeight = SCORE_CHART_HEIGHT - SCORE_CHART_PADDING.top - SCORE_CHART_PADDING.bottom;
+  const orderedTrials = [...trials].sort((left, right) => {
+    const createdAtDelta = new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime();
+    if (createdAtDelta !== 0) {
+      return createdAtDelta;
+    }
+    return left.trialId.localeCompare(right.trialId);
+  });
+
+  const scoredValues = orderedTrials
+    .filter((trial) => trial.status === "finished")
+    .map((trial) => trial.score)
+    .filter((score) => Number.isFinite(score));
+  const bestScore = scoredValues.length > 0 ? Math.max(...scoredValues) : null;
+  const rawMin = scoredValues.length > 0 ? Math.min(...scoredValues) : 0;
+  const rawMax = scoredValues.length > 0 ? Math.max(...scoredValues) : 1;
+  const spread = Math.max(0.02, rawMax - rawMin);
+  const yMin = Math.max(0, rawMin - spread * 0.18);
+  const yMax = Math.min(1, rawMax + spread * 0.18);
+  const safeRange = Math.max(0.02, yMax - yMin);
+
+  const xForIndex = (index: number): number => {
+    if (orderedTrials.length <= 1) {
+      return SCORE_CHART_PADDING.left + chartWidth / 2;
+    }
+    return SCORE_CHART_PADDING.left + (index / (orderedTrials.length - 1)) * chartWidth;
+  };
+
+  const yForScore = (score: number | null): number => {
+    if (score === null) {
+      return SCORE_CHART_PADDING.top + chartHeight + 6;
+    }
+    const normalized = (score - yMin) / safeRange;
+    return SCORE_CHART_PADDING.top + chartHeight - normalized * chartHeight;
+  };
+
+  const points = orderedTrials.map((trial, index) => {
+    const score = trial.status === "finished" ? trial.score : null;
+    return {
+      backend: trial.backend,
+      model: trial.model,
+      outcomeReason: trial.outcomeReason,
+      score,
+      status: trial.status,
+      tone: getTrialTone(trial),
+      trialId: trial.trialId,
+      x: xForIndex(index),
+      y: yForScore(score),
+    };
+  });
+
+  const linePath = points.reduce((path, point) => {
+    if (point.score === null) {
+      return path;
+    }
+    return path ? `${path} L ${point.x} ${point.y}` : `M ${point.x} ${point.y}`;
+  }, "");
+
+  return {
+    bestScore,
+    linePath,
+    points,
+    scoredCount: scoredValues.length,
+    yMax,
+    yMin,
+  };
+}
 
 export function DashboardShell({
   initialDetail,
@@ -296,6 +403,7 @@ export function DashboardShell({
 
   const [tracks, setTracks] = useState(initialTracks);
   const [detail, setDetail] = useState(initialDetail);
+  const [allTrials, setAllTrials] = useState(initialDetail.trials);
   const [status, setStatus] = useState<TrialStatusFilter>("all");
   const [searchText, setSearchText] = useState("");
   const [isTracksCollapsed, setIsTracksCollapsed] = useState(false);
@@ -311,6 +419,7 @@ export function DashboardShell({
   useEffect(() => {
     setTracks(initialTracks);
     setDetail(initialDetail);
+    setAllTrials(initialDetail.trials);
     setStatus("all");
     setSearchText("");
     setIsTracksCollapsed(false);
@@ -339,6 +448,7 @@ export function DashboardShell({
   const progressPercent = getProgressPercent(detail.track);
   const coveragePercent = getCoveragePercent(detail.track);
   const attentionCount = getAttentionCount(detail.track);
+  const scoreChart = buildScoreChart(allTrials);
   const bestTrial =
     detail.trials.length === 0
       ? null
@@ -360,25 +470,31 @@ export function DashboardShell({
     updateTrialUrl(nextTrialId);
   });
 
-  const loadTrials = useEffectEvent(async (nextStatus: TrialStatusFilter, cursor?: string | null) => {
-    const params = new URLSearchParams();
-    params.set("status", nextStatus);
-    params.set("limit", "50");
-    if (cursor) {
-      params.set("cursor", cursor);
-    }
+  const loadTrials = useEffectEvent(async (nextStatus: TrialStatusFilter, cursor?: string | null, limit = 50) =>
+    fetchJson<PaginatedTrialsResponse>(buildTrialsUrl(selectedTrackId, nextStatus, cursor, limit)),
+  );
 
-    return fetchJson<PaginatedTrialsResponse>(`/api/tracks/${selectedTrackId}/trials?${params.toString()}`);
+  const loadAllTrials = useEffectEvent(async () => {
+    const trials: TrialListItem[] = [];
+    let cursor: string | null = null;
+    do {
+      const page = await loadTrials("all", cursor, 100);
+      trials.push(...page.trials);
+      cursor = page.nextCursor;
+    } while (cursor);
+    return trials;
   });
 
   const refreshData = useEffectEvent(async () => {
     try {
-      const [nextTracks, nextTrials] = await Promise.all([
+      const [nextTracks, nextTrials, nextAllTrials] = await Promise.all([
         fetchJson<TrackListItem[]>("/api/tracks"),
         loadTrials(status),
+        loadAllTrials(),
       ]);
 
       setTracks(nextTracks);
+      setAllTrials(nextAllTrials);
       setDetail((current) => ({
         track: nextTracks.find((track) => track.trackId === selectedTrackId) ?? current.track,
         trials: nextTrials.trials,
@@ -389,6 +505,40 @@ export function DashboardShell({
       setError(cause instanceof Error ? cause.message : "Unable to refresh dashboard data.");
     }
   });
+
+  useEffect(() => {
+    if (detail.nextCursor === null && detail.track.totalTrials <= allTrials.length) {
+      return;
+    }
+
+    let cancelled = false;
+    startTransition(() => {
+      void (async () => {
+        try {
+          const trials: TrialListItem[] = [];
+          let cursor: string | null = null;
+          do {
+            const page = await fetchJson<PaginatedTrialsResponse>(buildTrialsUrl(selectedTrackId, "all", cursor, 100));
+            trials.push(...page.trials);
+            cursor = page.nextCursor;
+          } while (cursor);
+
+          if (!cancelled) {
+            setAllTrials(trials);
+            setError(null);
+          }
+        } catch (cause) {
+          if (!cancelled) {
+            setError(cause instanceof Error ? cause.message : "Unable to refresh score history.");
+          }
+        }
+      })();
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [allTrials.length, detail.nextCursor, detail.track.totalTrials, selectedTrackId, startTransition]);
 
   useEffect(() => {
     if (visibleTrials.length === 0) {
@@ -671,6 +821,85 @@ export function DashboardShell({
                   <span className="priority-label">Last activity</span>
                   <strong>{formatDate(detail.track.lastActivityAt)}</strong>
                 </div>
+              </div>
+            </article>
+
+            <article className="analysis-card wide-card">
+              <div className="analysis-card-header">
+                <h3>Score History</h3>
+                <span>
+                  {scoreChart.scoredCount} scored / {allTrials.length} total
+                </span>
+              </div>
+              <div className="score-chart-meta">
+                <span>Best {formatNumber(scoreChart.bestScore, 4)}</span>
+                <span>Range {formatNumber(scoreChart.yMin, 4)} to {formatNumber(scoreChart.yMax, 4)}</span>
+              </div>
+              <div className="score-chart-shell">
+                <svg
+                  className="score-chart"
+                  viewBox={`0 0 ${SCORE_CHART_WIDTH} ${SCORE_CHART_HEIGHT}`}
+                  role="img"
+                  aria-label="Score history for all trials in the selected track"
+                >
+                  <line
+                    className="score-axis"
+                    x1={SCORE_CHART_PADDING.left}
+                    y1={SCORE_CHART_HEIGHT - SCORE_CHART_PADDING.bottom}
+                    x2={SCORE_CHART_WIDTH - SCORE_CHART_PADDING.right}
+                    y2={SCORE_CHART_HEIGHT - SCORE_CHART_PADDING.bottom}
+                  />
+                  <line
+                    className="score-axis"
+                    x1={SCORE_CHART_PADDING.left}
+                    y1={SCORE_CHART_PADDING.top}
+                    x2={SCORE_CHART_PADDING.left}
+                    y2={SCORE_CHART_HEIGHT - SCORE_CHART_PADDING.bottom}
+                  />
+                  {[scoreChart.yMax, (scoreChart.yMax + scoreChart.yMin) / 2, scoreChart.yMin].map((tick) => {
+                    const y =
+                      SCORE_CHART_PADDING.top +
+                      ((scoreChart.yMax - tick) / Math.max(0.02, scoreChart.yMax - scoreChart.yMin)) *
+                        (SCORE_CHART_HEIGHT - SCORE_CHART_PADDING.top - SCORE_CHART_PADDING.bottom);
+                    return (
+                      <g key={tick}>
+                        <line
+                          className="score-gridline"
+                          x1={SCORE_CHART_PADDING.left}
+                          y1={y}
+                          x2={SCORE_CHART_WIDTH - SCORE_CHART_PADDING.right}
+                          y2={y}
+                        />
+                        <text className="score-tick-label" x={SCORE_CHART_PADDING.left - 10} y={y + 4}>
+                          {formatNumber(tick, 3)}
+                        </text>
+                      </g>
+                    );
+                  })}
+                  {scoreChart.linePath ? <path className="score-line" d={scoreChart.linePath} /> : null}
+                  {scoreChart.points.map((point, index) => (
+                    <g key={point.trialId}>
+                      <circle
+                        className={`score-point tone-${point.tone} ${point.score === null ? "pending" : "scored"}`}
+                        cx={point.x}
+                        cy={point.y}
+                        r={point.score === null ? 3.5 : 4.5}
+                      >
+                        <title>
+                          {`#${index + 1} ${point.trialId} • ${point.status}${point.score === null ? "" : ` • score ${formatNumber(point.score, 4)}`}${point.model ? ` • ${point.model}` : ""}`}
+                        </title>
+                      </circle>
+                    </g>
+                  ))}
+                  <text
+                    className="score-axis-label"
+                    x={SCORE_CHART_WIDTH - SCORE_CHART_PADDING.right}
+                    y={SCORE_CHART_HEIGHT - 8}
+                    textAnchor="end"
+                  >
+                    Trial order
+                  </text>
+                </svg>
               </div>
             </article>
           </div>
