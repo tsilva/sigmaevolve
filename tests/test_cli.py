@@ -5,6 +5,7 @@ import os
 from types import SimpleNamespace
 
 from sigmaevolve.cli import main
+from sigmaevolve.storage import normalize_database_url
 
 
 def test_cli_create_track_and_list_trials(tmp_path, monkeypatch):
@@ -227,3 +228,17 @@ def test_make_system_with_modal_launcher_uses_modal_proxy(monkeypatch, tmp_path)
     system = cli_module._make_system(args)
     assert captured["database_url"] == "postgresql://example/db"
     assert system.launcher is not None
+
+
+def test_database_url_defaults_from_env(monkeypatch):
+    from sigmaevolve import cli as cli_module
+
+    monkeypatch.setenv("SIGMAEVOLVE_DATABASE_URL", "postgresql://example/db")
+    parser = cli_module.build_parser()
+    args = parser.parse_args(["list-trials", "track_1"])
+    assert args.database_url == "postgresql://example/db"
+
+
+def test_normalize_database_url_accepts_neon_postgres_scheme():
+    assert normalize_database_url("postgresql://example/db").startswith("postgresql+psycopg://")
+    assert normalize_database_url("postgres://example/db").startswith("postgresql+psycopg://")

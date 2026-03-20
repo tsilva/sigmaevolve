@@ -5,6 +5,7 @@ description = "Evolutionary training harness for immutable classification datase
 requires-python = ">=3.11"
 dependencies = [
   "numpy>=1.26",
+  "psycopg[binary]>=3.1",
   "sqlalchemy>=2.0",
   "torch>=2.0",
 ]

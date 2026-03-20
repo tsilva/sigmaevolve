@@ -31,6 +31,14 @@ from sigmaevolve.scoring import compute_score
 
 metadata = sa.MetaData()
 
+
+def normalize_database_url(database_url: str) -> str:
+    if database_url.startswith("postgres://"):
+        database_url = "postgresql://" + database_url[len("postgres://") :]
+    if database_url.startswith("postgresql://") and "+psycopg" not in database_url:
+        database_url = "postgresql+psycopg://" + database_url[len("postgresql://") :]
+    return database_url
+
 datasets_table = sa.Table(
     "datasets",
     metadata,
@@ -117,6 +125,7 @@ def _row_to_trial(row: sa.Row[Any]) -> TrialRecord:
 
 class SQLAlchemyRepository:
     def __init__(self, database_url: str) -> None:
+        database_url = normalize_database_url(database_url)
         connect_args = {"check_same_thread": False} if database_url.startswith("sqlite") else {}
         self.engine: Engine = sa.create_engine(database_url, future=True, connect_args=connect_args)
         metadata.create_all(self.engine)

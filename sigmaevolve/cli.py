@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -39,6 +40,10 @@ def _load_policy(policy_json: str | None, policy_file: str | None) -> dict[str, 
             raise argparse.ArgumentTypeError("Policy file must contain a JSON object.")
         return parsed
     return _json_arg(policy_json)
+
+
+def _default_database_url() -> str:
+    return os.getenv("SIGMAEVOLVE_DATABASE_URL") or os.getenv("DATABASE_URL") or "sqlite:///sigmaevolve.sqlite"
 
 
 def _make_system(args) -> Any:
@@ -202,8 +207,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="sigmaevolve")
     parser.add_argument(
         "--database-url",
-        default="sqlite:///sigmaevolve.sqlite",
-        help="SQLAlchemy database URL. Default: sqlite:///sigmaevolve.sqlite",
+        default=_default_database_url(),
+        help="SQLAlchemy database URL. Defaults to SIGMAEVOLVE_DATABASE_URL, DATABASE_URL, or sqlite:///sigmaevolve.sqlite",
     )
     parser.add_argument(
         "--dataset-root",
