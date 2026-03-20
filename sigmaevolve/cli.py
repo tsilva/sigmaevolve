@@ -1,0 +1,231 @@
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+from typing import Any
+
+from sigmaevolve import build_system
+from sigmaevolve.orchestrator import InlineRunnerLauncher, RecordingLauncher
+from sigmaevolve.runner import RunnerService
+
+
+def _json_arg(value: str | None) -> dict[str, Any]:
+    if not value:
+        return {}
+    parsed = json.loads(value)
+    if not isinstance(parsed, dict):
+        raise argparse.ArgumentTypeError("JSON value must be an object.")
+    return parsed
+
+
+def _make_system(args) -> Any:
+    system = build_system(
+        database_url=args.database_url,
+        dataset_root=args.dataset_root,
+        openrouter_api_key=args.openrouter_api_key,
+    )
+    if args.launcher == "inline":
+        runner = RunnerService(system.repository, system.dataset_manager)
+        launcher = InlineRunnerLauncher(runner)
+    else:
+        launcher = RecordingLauncher()
+    system.launcher = launcher
+    system.orchestrator.launcher = launcher
+    return system
+
+
+def _print_json(payload: Any) -> None:
+    print(json.dumps(payload, indent=2, sort_keys=True, default=str))
+
+
+def cmd_prepare_dataset(args) -> int:
+    system = _make_system(args)
+    record = system.prepare_dataset(args.dataset_id)
+    _print_json(
+        {
+            "dataset_id": record.dataset_id,
+            "manifest_path": record.manifest_path,
+            "created_at": record.created_at,
+        }
+    )
+    return 0
+
+
+def cmd_create_track(args) -> int:
+    system = _make_system(args)
+    policy = _json_arg(args.policy_json)
+    track = system.create_track(args.name, args.dataset_id, policy)
+    _print_json(
+        {
+            "track_id": track.track_id,
+            "name": track.name,
+            "dataset_id": track.dataset_id,
+            "policy_json": track.policy_json,
+            "created_at": track.created_at,
+        }
+    )
+    return 0
+
+
+def cmd_reconcile(args) -> int:
+    system = _make_system(args)
+    result = system.reconcile_track(args.track_id)
+    _print_json(
+        {
+            "generated_trial_ids": result.generated_trial_ids,
+            "launched_trial_ids": result.launched_trial_ids,
+            "duplicate_hashes": result.duplicate_hashes,
+            "requeued_trial_ids": result.requeued_trial_ids,
+            "stale_trial_ids": result.stale_trial_ids,
+            "errors": result.errors,
+        }
+    )
+    return 0
+
+
+def cmd_list_trials(args) -> int:
+    system = _make_system(args)
+    statuses = set(args.status) if args.status else None
+    trials = system.repository.list_trials(args.track_id, statuses=statuses)
+    _print_json(
+        [
+            {
+                "trial_id": trial.trial_id,
+                "status": trial.status,
+                "outcome_reason": trial.outcome_reason,
+                "score": trial.score,
+                "dispatch_attempts": trial.dispatch_attempts,
+                "runner_id": trial.runner_id,
+                "created_at": trial.created_at,
+                "started_at": trial.started_at,
+                "finished_at": trial.finished_at,
+                "script_hash": trial.script_hash,
+                "provenance_json": trial.provenance_json,
+                "metrics_json": trial.metrics_json,
+                "error_json": trial.error_json,
+            }
+            for trial in trials
+        ]
+    )
+    return 0
+
+
+def cmd_sample_context(args) -> int:
+    system = _make_system(args)
+    context = system.sample_trial_context(args.track_id, limit=args.limit)
+    _print_json(
+        [
+            {
+                "trial_id": trial.trial_id,
+                "score": trial.score,
+                "metrics_json": trial.metrics_json,
+                "provenance_json": trial.provenance_json,
+                "source": trial.source,
+            }
+            for trial in context
+        ]
+    )
+    return 0
+
+
+def cmd_rescore(args) -> int:
+    system = _make_system(args)
+    scorer_config = _json_arg(args.scorer_json)
+    target = "all" if args.all_tracks else args.track_id
+    result = system.rescore(target, scorer_config)
+    _print_json(
+        {
+            "updated_trials": result.updated_trials,
+            "scorer_config": result.scorer_config,
+        }
+    )
+    return 0
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="sigmaevolve")
+    parser.add_argument(
+        "--database-url",
+        default="sqlite:///sigmaevolve.sqlite",
+        help="SQLAlchemy database URL. Default: sqlite:///sigmaevolve.sqlite",
+    )
+    parser.add_argument(
+        "--dataset-root",
+        default="./artifacts/datasets",
+        help="Root directory for prepared datasets. Default: ./artifacts/datasets",
+    )
+    parser.add_argument(
+        "--openrouter-api-key",
+        default=None,
+        help="OpenRouter API key. Defaults to OPENROUTER_API_KEY.",
+    )
+    parser.add_argument(
+        "--launcher",
+        choices=["recording", "inline"],
+        default="recording",
+        help="Use recording to reserve/record dispatches only, or inline to execute locally.",
+    )
+
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    prepare_dataset = subparsers.add_parser("prepare-dataset", help="Prepare and register a dataset.")
+    prepare_dataset.add_argument("dataset_id")
+    prepare_dataset.set_defaults(func=cmd_prepare_dataset)
+
+    create_track = subparsers.add_parser("create-track", help="Create a track and seed the baseline trial.")
+    create_track.add_argument("dataset_id")
+    create_track.add_argument("--name", default=None)
+    create_track.add_argument(
+        "--policy-json",
+        default="{}",
+        help="JSON object overriding track policy fields.",
+    )
+    create_track.set_defaults(func=cmd_create_track)
+
+    reconcile = subparsers.add_parser("reconcile", help="Run one reconciliation pass for a track.")
+    reconcile.add_argument("track_id")
+    reconcile.set_defaults(func=cmd_reconcile)
+
+    list_trials = subparsers.add_parser("list-trials", help="List trials for a track.")
+    list_trials.add_argument("track_id")
+    list_trials.add_argument(
+        "--status",
+        action="append",
+        choices=["queued", "dispatching", "active", "finished"],
+        help="Filter by one or more statuses.",
+    )
+    list_trials.set_defaults(func=cmd_list_trials)
+
+    sample_context = subparsers.add_parser("sample-context", help="Show successful finished trials used for generation context.")
+    sample_context.add_argument("track_id")
+    sample_context.add_argument("--limit", type=int, default=5)
+    sample_context.set_defaults(func=cmd_sample_context)
+
+    rescore = subparsers.add_parser("rescore", help="Rescore finished trials without rerunning training.")
+    target = rescore.add_mutually_exclusive_group(required=True)
+    target.add_argument("--track-id")
+    target.add_argument("--all-tracks", action="store_true")
+    rescore.add_argument(
+        "--scorer-json",
+        required=True,
+        help='JSON object such as \'{"primary_metric":"accuracy"}\'.',
+    )
+    rescore.set_defaults(func=cmd_rescore)
+
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    try:
+        return int(args.func(args))
+    except Exception as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

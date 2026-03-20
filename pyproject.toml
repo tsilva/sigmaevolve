@@ -1,0 +1,31 @@
+[project]
+name = "sigmaevolve"
+version = "0.1.0"
+description = "Evolutionary training harness for immutable classification datasets."
+requires-python = ">=3.11"
+dependencies = [
+  "numpy>=1.26",
+  "sqlalchemy>=2.0",
+  "torch>=2.0",
+]
+
+[project.scripts]
+sigmaevolve = "sigmaevolve.cli:main"
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=9.0",
+]
+datasets = [
+  "torchvision>=0.18",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["sigmaevolve*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
