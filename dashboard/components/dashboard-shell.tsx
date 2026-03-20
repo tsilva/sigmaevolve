@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useDeferredValue, useEffect, useEffectEvent, useState, useTransition } from "react";
+import { Fragment, useDeferredValue, useEffect, useEffectEvent, useState, useTransition } from "react";
 
 import { useTrackLiveUpdates } from "@/hooks/use-track-live-updates";
 import type {
@@ -49,6 +49,32 @@ function formatDuration(value: number | null): string {
   const minutes = Math.floor(value / 60);
   const seconds = Math.round(value % 60);
   return `${minutes}m ${seconds}s`;
+}
+
+function formatJsonBlock(value: Record<string, unknown> | null): string {
+  if (!value) {
+    return "No error payload recorded.";
+  }
+  return JSON.stringify(value, null, 2);
+}
+
+function extractCrashDetails(value: Record<string, unknown> | null): string | null {
+  if (!value) {
+    return null;
+  }
+  const stderr = value.stderr;
+  if (typeof stderr === "string" && stderr.trim().length > 0) {
+    return stderr.trim();
+  }
+  const detail = value.detail;
+  if (typeof detail === "string" && detail.trim().length > 0) {
+    return detail.trim();
+  }
+  const reason = value.reason;
+  if (typeof reason === "string" && reason.trim().length > 0) {
+    return reason.trim();
+  }
+  return null;
 }
 
 type DashboardShellProps = {
@@ -284,42 +310,73 @@ export function DashboardShell({
                 </thead>
                 <tbody>
                   {deferredTrials.map((trial: TrialListItem) => (
-                    <tr key={trial.trialId}>
-                      <td>
-                        <code>{trial.trialId}</code>
-                        <div className="subtle">{trial.model ?? "unknown model"}</div>
-                      </td>
-                      <td>
-                        <span className="trial-status">
-                          <span className={`status-dot ${trial.status}`} />
-                          {trial.status}
-                        </span>
-                        <div className="subtle">{trial.outcomeReason ?? "in progress"}</div>
-                      </td>
-                      <td className="trial-score">{formatNumber(trial.score, 4)}</td>
-                      <td>
-                        <div>{formatNumber(trial.accuracy, 4)}</div>
-                        <div className="subtle">
-                          best eval {formatDuration(trial.timeToBestEvalSec)}
-                        </div>
-                      </td>
-                      <td>
-                        <div>{trial.backend ?? "unknown backend"}</div>
-                        {trial.timedOut ? <div className="trial-error">timed out</div> : null}
-                        {trial.hadUnscoredWorkAtTimeout ? (
-                          <div className="trial-error">unevaluated work before stop</div>
-                        ) : null}
-                        {trial.hasError ? <div className="trial-error">error recorded</div> : null}
-                      </td>
-                      <td>{trial.dispatchAttempts}</td>
-                      <td>{formatDate(trial.startedAt ?? trial.createdAt)}</td>
-                      <td>
-                        <div>{formatDuration(trial.durationSec)}</div>
-                        <div className="subtle">
-                          since eval {formatDuration(trial.timeSinceLastEvalSec)}
-                        </div>
-                      </td>
-                    </tr>
+                    <Fragment key={trial.trialId}>
+                      <tr key={trial.trialId}>
+                        <td>
+                          <code>{trial.trialId}</code>
+                          <div className="subtle">{trial.model ?? "unknown model"}</div>
+                        </td>
+                        <td>
+                          <span className="trial-status">
+                            <span className={`status-dot ${trial.status}`} />
+                            {trial.status}
+                          </span>
+                          <div className="subtle">{trial.outcomeReason ?? "in progress"}</div>
+                        </td>
+                        <td className="trial-score">{formatNumber(trial.score, 4)}</td>
+                        <td>
+                          <div>{formatNumber(trial.accuracy, 4)}</div>
+                          <div className="subtle">
+                            best eval {formatDuration(trial.timeToBestEvalSec)}
+                          </div>
+                        </td>
+                        <td>
+                          <div>{trial.backend ?? "unknown backend"}</div>
+                          {trial.timedOut ? <div className="trial-error">timed out</div> : null}
+                          {trial.hadUnscoredWorkAtTimeout ? (
+                            <div className="trial-error">unevaluated work before stop</div>
+                          ) : null}
+                          {trial.hasError ? <div className="trial-error">error recorded</div> : null}
+                        </td>
+                        <td>{trial.dispatchAttempts}</td>
+                        <td>{formatDate(trial.startedAt ?? trial.createdAt)}</td>
+                        <td>
+                          <div>{formatDuration(trial.durationSec)}</div>
+                          <div className="subtle">
+                            since eval {formatDuration(trial.timeSinceLastEvalSec)}
+                          </div>
+                        </td>
+                      </tr>
+                      <tr className="trial-detail-row">
+                        <td colSpan={8}>
+                          <details className="trial-details" open={trial.outcomeReason === "crashed"}>
+                            <summary>
+                              {trial.outcomeReason === "crashed" ? "Crash details and source" : "Source and payload"}
+                            </summary>
+                            <div className="trial-detail-grid">
+                              <section className="trial-detail-card">
+                                <h4>Crash reason</h4>
+                                <pre className="code-block">
+                                  <code>{extractCrashDetails(trial.errorJson) ?? "No crash stderr recorded."}</code>
+                                </pre>
+                              </section>
+                              <section className="trial-detail-card">
+                                <h4>Error payload</h4>
+                                <pre className="code-block">
+                                  <code>{formatJsonBlock(trial.errorJson)}</code>
+                                </pre>
+                              </section>
+                              <section className="trial-detail-card trial-detail-card-wide">
+                                <h4>Trial source</h4>
+                                <pre className="code-block">
+                                  <code>{trial.source}</code>
+                                </pre>
+                              </section>
+                            </div>
+                          </details>
+                        </td>
+                      </tr>
+                    </Fragment>
                   ))}
                 </tbody>
               </table>

@@ -53,6 +53,8 @@ describe("dashboard row mappers", () => {
       finishedAt: null,
       durationSec: null,
       hasError: true,
+      source: "print('hello')\n",
+      errorJson: { stderr: "boom" },
     });
 
     expect(mapped).toEqual({
@@ -74,6 +76,8 @@ describe("dashboard row mappers", () => {
       finishedAt: null,
       durationSec: null,
       hasError: true,
+      source: "print('hello')\n",
+      errorJson: { stderr: "boom" },
     });
   });
 });

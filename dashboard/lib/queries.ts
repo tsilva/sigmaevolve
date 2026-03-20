@@ -150,6 +150,8 @@ export async function listTrials(
         status,
         outcome_reason as "outcomeReason",
         score,
+        source,
+        error_json as "errorJson",
         nullif(metrics_json ->> 'accuracy', '')::double precision as accuracy,
         nullif(metrics_json ->> 'time_to_best_eval_sec', '')::double precision as "timeToBestEvalSec",
         coalesce((metrics_json ->> 'timed_out')::boolean, false) as "timedOut",

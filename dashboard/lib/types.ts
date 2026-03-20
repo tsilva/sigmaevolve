@@ -36,6 +36,8 @@ export type TrialListItem = {
   finishedAt: string | null;
   durationSec: number | null;
   hasError: boolean;
+  source: string;
+  errorJson: Record<string, unknown> | null;
 };
 
 export type PaginatedTrialsResponse = {
