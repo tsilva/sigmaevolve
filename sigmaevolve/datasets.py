@@ -144,9 +144,12 @@ class DatasetManager:
         self.dataset_root = dataset_root
         self.providers = providers
 
+    @staticmethod
+    def safe_dir_name(dataset_id: str) -> str:
+        return dataset_id.replace(":", "__")
+
     def manifest_path_for(self, dataset_id: str) -> Path:
-        safe_name = dataset_id.replace(":", "__")
-        return self.dataset_root / safe_name / "manifest.json"
+        return self.dataset_root / self.safe_dir_name(dataset_id) / "manifest.json"
 
     def prepare(self, dataset_id: str) -> DatasetManifest:
         provider = self.providers.get(dataset_id)

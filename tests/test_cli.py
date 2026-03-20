@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from types import SimpleNamespace
 
 from sigmaevolve.cli import main
 
@@ -170,3 +171,59 @@ def test_cli_loads_env_file_for_defaults(tmp_path, monkeypatch):
     assert main(["--database-url", f"sqlite:///{db_path}", "--dataset-root", str(dataset_root), "list-trials", "missing"]) == 0
     assert os.environ["OPENROUTER_API_KEY"] == "test-key"
     assert os.environ["SIGMAEVOLVE_SENTINEL"] == "loaded"
+
+
+def test_cli_modal_commands_call_support_helpers(tmp_path, monkeypatch):
+    from sigmaevolve import cli as cli_module
+
+    deployed = {}
+    synced = {}
+
+    def fake_deploy_modal_app(**kwargs):
+        deployed.update(kwargs)
+        return {"ok": True, **kwargs}
+
+    def fake_sync_dataset_to_modal(**kwargs):
+        synced.update(kwargs)
+        return {"ok": True, **kwargs}
+
+    monkeypatch.setattr(cli_module, "deploy_modal_app", fake_deploy_modal_app)
+    monkeypatch.setattr(cli_module, "sync_dataset_to_modal", fake_sync_dataset_to_modal)
+
+    assert main(["--modal-app-name", "custom-app", "modal-deploy"]) == 0
+    assert deployed["app_name"] == "custom-app"
+
+    assert main(["--dataset-root", str(tmp_path / "datasets"), "modal-sync-dataset", "mnist:v1"]) == 0
+    assert synced["dataset_id"] == "mnist:v1"
+
+
+def test_make_system_with_modal_launcher_uses_modal_proxy(monkeypatch, tmp_path):
+    from sigmaevolve import cli as cli_module
+
+    captured = {}
+
+    def fake_create_modal_launcher(**kwargs):
+        captured.update(kwargs)
+        return object()
+
+    def fake_build_system(**kwargs):
+        orchestrator = SimpleNamespace(launcher=None)
+        return SimpleNamespace(launcher=None, orchestrator=orchestrator)
+
+    monkeypatch.setattr(cli_module, "create_modal_launcher", fake_create_modal_launcher)
+    monkeypatch.setattr(cli_module, "build_system", fake_build_system)
+    args = cli_module.build_parser().parse_args(
+        [
+            "--database-url",
+            "postgresql://example/db",
+            "--launcher",
+            "modal",
+            "--modal-app-name",
+            "sigmaevolve-runner",
+            "list-trials",
+            "track_1",
+        ]
+    )
+    system = cli_module._make_system(args)
+    assert captured["database_url"] == "postgresql://example/db"
+    assert system.launcher is not None

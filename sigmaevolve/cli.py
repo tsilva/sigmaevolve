@@ -8,6 +8,15 @@ from typing import Any
 
 from sigmaevolve import build_system
 from sigmaevolve.env import load_env_file
+from sigmaevolve.modal_support import (
+    DEFAULT_MODAL_APP_NAME,
+    DEFAULT_MODAL_DATASET_MOUNT,
+    DEFAULT_MODAL_DATASET_VOLUME,
+    DEFAULT_MODAL_FUNCTION_NAME,
+    create_modal_launcher,
+    deploy_modal_app,
+    sync_dataset_to_modal,
+)
 from sigmaevolve.orchestrator import InlineRunnerLauncher, RecordingLauncher
 from sigmaevolve.runner import RunnerService
 
@@ -41,6 +50,16 @@ def _make_system(args) -> Any:
     if args.launcher == "inline":
         runner = RunnerService(system.repository, system.dataset_manager)
         launcher = InlineRunnerLauncher(runner)
+    elif args.launcher == "modal":
+        if args.database_url.startswith("sqlite"):
+            raise RuntimeError("Modal launcher requires a network-accessible database URL; sqlite is not supported.")
+        launcher = create_modal_launcher(
+            app_name=args.modal_app_name,
+            function_name=args.modal_function_name,
+            database_url=args.database_url,
+            dataset_root=args.modal_dataset_mount,
+            environment_name=args.modal_environment_name,
+        )
     else:
         launcher = RecordingLauncher()
     system.launcher = launcher
@@ -156,6 +175,29 @@ def cmd_rescore(args) -> int:
     return 0
 
 
+def cmd_modal_deploy(args) -> int:
+    payload = deploy_modal_app(
+        app_name=args.modal_app_name,
+        function_name=args.modal_function_name,
+        dataset_volume_name=args.modal_dataset_volume,
+        dataset_mount_path=args.modal_dataset_mount,
+        environment_name=args.modal_environment_name,
+    )
+    _print_json(payload)
+    return 0
+
+
+def cmd_modal_sync_dataset(args) -> int:
+    payload = sync_dataset_to_modal(
+        dataset_id=args.dataset_id,
+        dataset_root=args.dataset_root,
+        volume_name=args.modal_dataset_volume,
+        environment_name=args.modal_environment_name,
+    )
+    _print_json(payload)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="sigmaevolve")
     parser.add_argument(
@@ -175,9 +217,34 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--launcher",
-        choices=["recording", "inline"],
+        choices=["recording", "inline", "modal"],
         default="recording",
-        help="Use recording to reserve/record dispatches only, or inline to execute locally.",
+        help="Use recording to reserve only, inline to execute locally, or modal to spawn remote runner jobs.",
+    )
+    parser.add_argument(
+        "--modal-app-name",
+        default=DEFAULT_MODAL_APP_NAME,
+        help=f"Deployed Modal app name. Default: {DEFAULT_MODAL_APP_NAME}",
+    )
+    parser.add_argument(
+        "--modal-function-name",
+        default=DEFAULT_MODAL_FUNCTION_NAME,
+        help=f"Deployed Modal function name. Default: {DEFAULT_MODAL_FUNCTION_NAME}",
+    )
+    parser.add_argument(
+        "--modal-dataset-volume",
+        default=DEFAULT_MODAL_DATASET_VOLUME,
+        help=f"Modal Volume name for dataset artifacts. Default: {DEFAULT_MODAL_DATASET_VOLUME}",
+    )
+    parser.add_argument(
+        "--modal-dataset-mount",
+        default=DEFAULT_MODAL_DATASET_MOUNT,
+        help=f"Dataset mount path inside Modal containers. Default: {DEFAULT_MODAL_DATASET_MOUNT}",
+    )
+    parser.add_argument(
+        "--modal-environment-name",
+        default=None,
+        help="Optional Modal environment name.",
     )
 
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -231,6 +298,13 @@ def build_parser() -> argparse.ArgumentParser:
         help='JSON object such as \'{"primary_metric":"accuracy"}\'.',
     )
     rescore.set_defaults(func=cmd_rescore)
+
+    modal_deploy = subparsers.add_parser("modal-deploy", help="Deploy the Modal runner app.")
+    modal_deploy.set_defaults(func=cmd_modal_deploy)
+
+    modal_sync_dataset = subparsers.add_parser("modal-sync-dataset", help="Upload a prepared dataset to the Modal dataset volume.")
+    modal_sync_dataset.add_argument("dataset_id")
+    modal_sync_dataset.set_defaults(func=cmd_modal_sync_dataset)
 
     return parser
 
