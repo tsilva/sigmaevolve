@@ -43,10 +43,12 @@ def _load_policy(policy_json: str | None, policy_file: str | None) -> dict[str, 
 
 
 def _default_database_url() -> str:
-    return os.getenv("SIGMAEVOLVE_DATABASE_URL") or os.getenv("DATABASE_URL") or "sqlite:///sigmaevolve.sqlite"
+    return os.getenv("SIGMAEVOLVE_DATABASE_URL") or os.getenv("DATABASE_URL") or ""
 
 
 def _make_system(args) -> Any:
+    if not args.database_url:
+        raise RuntimeError("A Postgres database URL is required. Set SIGMAEVOLVE_DATABASE_URL or DATABASE_URL.")
     system = build_system(
         database_url=args.database_url,
         dataset_root=args.dataset_root,
@@ -225,7 +227,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--database-url",
         default=_default_database_url(),
-        help="SQLAlchemy database URL. Defaults to SIGMAEVOLVE_DATABASE_URL, DATABASE_URL, or sqlite:///sigmaevolve.sqlite",
+        help="SQLAlchemy database URL. Defaults to SIGMAEVOLVE_DATABASE_URL or DATABASE_URL.",
     )
     parser.add_argument(
         "--dataset-root",

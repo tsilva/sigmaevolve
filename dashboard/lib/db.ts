@@ -1,7 +1,3 @@
-import fs from "node:fs";
-import path from "node:path";
-import { DatabaseSync } from "node:sqlite";
-
 import { Client, Pool } from "pg";
 
 import type { DashboardNotification } from "@/lib/types";
@@ -10,54 +6,18 @@ const DASHBOARD_CHANNEL = "sigmaevolve_dashboard";
 
 declare global {
   var __sigmaevolveDashboardPool: Pool | undefined;
-  var __sigmaevolveDashboardSqlite: DatabaseSync | undefined;
-  var __sigmaevolveDashboardSqlitePath: string | undefined;
 }
 
-const SQLITE_CANDIDATE_PATHS = [
-  process.env.SIGMAEVOLVE_SQLITE_PATH,
-  path.join(process.cwd(), "sigmaevolve.sqlite"),
-  path.join(process.cwd(), "../sigmaevolve.sqlite"),
-  path.join(process.cwd(), "../../sigmaevolve.sqlite"),
-].filter((value): value is string => Boolean(value));
-
 export function hasDatabaseUrl(): boolean {
-  return Boolean(process.env.DATABASE_URL);
+  return Boolean(process.env.DATABASE_URL || process.env.SIGMAEVOLVE_DATABASE_URL);
 }
 
 function databaseUrl(): string {
-  const value = process.env.DATABASE_URL;
+  const value = process.env.DATABASE_URL || process.env.SIGMAEVOLVE_DATABASE_URL;
   if (!value) {
-    throw new Error("DATABASE_URL is required.");
+    throw new Error("DATABASE_URL or SIGMAEVOLVE_DATABASE_URL is required.");
   }
   return value;
-}
-
-export function findSqliteDatabasePath(): string | null {
-  for (const candidate of SQLITE_CANDIDATE_PATHS) {
-    if (fs.existsSync(candidate)) {
-      return candidate;
-    }
-  }
-  return null;
-}
-
-export function getSqliteDatabase(): DatabaseSync | null {
-  const sqlitePath = findSqliteDatabasePath();
-  if (!sqlitePath) {
-    return null;
-  }
-
-  if (
-    !globalThis.__sigmaevolveDashboardSqlite ||
-    globalThis.__sigmaevolveDashboardSqlitePath !== sqlitePath
-  ) {
-    globalThis.__sigmaevolveDashboardSqlite?.close();
-    globalThis.__sigmaevolveDashboardSqlite = new DatabaseSync(sqlitePath);
-    globalThis.__sigmaevolveDashboardSqlitePath = sqlitePath;
-  }
-
-  return globalThis.__sigmaevolveDashboardSqlite;
 }
 
 export function getPool(): Pool {
