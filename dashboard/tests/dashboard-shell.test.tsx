@@ -219,21 +219,18 @@ describe("DashboardShell", () => {
     expect(screen.getByRole("heading", { name: "trial_queued" })).toBeTruthy();
   });
 
-  it("closes and reopens the detail pane while redistributing layout", async () => {
-    const { container } = renderShell({
+  it("keeps the inspector mounted for the selected trial", async () => {
+    renderShell({
       initialSelectedTrialId: "trial_2",
       search: "trial=trial_2",
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "Close detail panel" }));
+    await waitFor(() => {
+      expect(screen.getByRole("heading", { name: "trial_2" })).toBeTruthy();
+    });
 
-    expect(screen.queryByRole("heading", { name: "trial_2" })).toBeNull();
-    expect(screen.getByRole("button", { name: "Open detail panel" })).toBeTruthy();
-    expect(container.querySelector("main")?.className).toContain("shell-layout-tracks-trials");
-
-    fireEvent.click(screen.getByRole("button", { name: "Open detail panel" }));
-
-    expect(screen.getByRole("heading", { name: "trial_2" })).toBeTruthy();
+    expect(screen.getByText("Why the selected run behaved that way")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Close detail panel" })).toBeNull();
   });
 
   it("clears the detail pane when a filter returns no trials", async () => {
@@ -253,6 +250,6 @@ describe("DashboardShell", () => {
       expect(navigationState.replace).toHaveBeenCalledWith("/tracks/track_1", { scroll: false });
     });
 
-    expect(screen.getByText("Detail pane cleared")).toBeTruthy();
+    expect(screen.getByText("Select a trial to inspect it.")).toBeTruthy();
   });
 });

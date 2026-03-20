@@ -16,15 +16,6 @@ import type {
 
 const STATUS_OPTIONS: TrialStatusFilter[] = ["all", "queued", "dispatching", "active", "finished"];
 
-type ActivePane = "tracks" | "trials" | "detail";
-type PaneState = Record<ActivePane, boolean>;
-const PANE_ORDER: ActivePane[] = ["tracks", "trials", "detail"];
-const DEFAULT_OPEN_PANES: PaneState = {
-  tracks: true,
-  trials: true,
-  detail: true,
-};
-
 async function fetchJson<T>(input: string): Promise<T> {
   const response = await fetch(input, { cache: "no-store" });
   if (!response.ok) {
@@ -37,10 +28,28 @@ function formatDate(value: string | null): string {
   if (!value) {
     return "Pending";
   }
+
   return new Intl.DateTimeFormat(undefined, {
     dateStyle: "medium",
     timeStyle: "short",
   }).format(new Date(value));
+}
+
+function formatRelativeMinutes(value: string): string {
+  const deltaMs = new Date().getTime() - new Date(value).getTime();
+  const deltaMinutes = Math.max(0, Math.round(deltaMs / 60_000));
+  if (deltaMinutes < 1) {
+    return "just now";
+  }
+  if (deltaMinutes < 60) {
+    return `${deltaMinutes}m ago`;
+  }
+  const deltaHours = Math.round(deltaMinutes / 60);
+  if (deltaHours < 24) {
+    return `${deltaHours}h ago`;
+  }
+  const deltaDays = Math.round(deltaHours / 24);
+  return `${deltaDays}d ago`;
 }
 
 function formatNumber(value: number | null, digits = 3): string {
@@ -48,6 +57,13 @@ function formatNumber(value: number | null, digits = 3): string {
     return "—";
   }
   return value.toFixed(digits);
+}
+
+function formatPercent(value: number): string {
+  if (!Number.isFinite(value)) {
+    return "0%";
+  }
+  return `${Math.round(value)}%`;
 }
 
 function formatDuration(value: number | null): string {
@@ -64,7 +80,7 @@ function formatDuration(value: number | null): string {
 
 function formatJsonBlock(value: Record<string, unknown> | null): string {
   if (!value) {
-    return "No error payload recorded.";
+    return "No payload recorded.";
   }
   return JSON.stringify(value, null, 2);
 }
@@ -73,18 +89,22 @@ function extractCrashDetails(value: Record<string, unknown> | null): string | nu
   if (!value) {
     return null;
   }
+
   const stderr = value.stderr;
   if (typeof stderr === "string" && stderr.trim().length > 0) {
     return stderr.trim();
   }
+
   const detail = value.detail;
   if (typeof detail === "string" && detail.trim().length > 0) {
     return detail.trim();
   }
+
   const reason = value.reason;
   if (typeof reason === "string" && reason.trim().length > 0) {
     return reason.trim();
   }
+
   return null;
 }
 
@@ -98,15 +118,18 @@ function asPromptMessages(value: Record<string, unknown> | null): PromptMessage[
   if (!Array.isArray(raw)) {
     return [];
   }
+
   return raw.flatMap((entry) => {
     if (!entry || typeof entry !== "object") {
       return [];
     }
+
     const role = (entry as { role?: unknown }).role;
     const content = (entry as { content?: unknown }).content;
     if (typeof role !== "string" || typeof content !== "string") {
       return [];
     }
+
     return [{ role, content }];
   });
 }
@@ -115,12 +138,21 @@ function formatGenerationProperties(value: Record<string, unknown> | null): stri
   if (!value) {
     return "No provenance payload recorded.";
   }
+
   const payload: Record<string, unknown> = {};
-  for (const key of ["backend", "model", "generation_index", "provider_response_id", "generation_config", "context_trial_ids"]) {
+  for (const key of [
+    "backend",
+    "model",
+    "generation_index",
+    "provider_response_id",
+    "generation_config",
+    "context_trial_ids",
+  ]) {
     if (key in value) {
       payload[key] = value[key];
     }
   }
+
   return JSON.stringify(payload, null, 2);
 }
 
@@ -130,6 +162,87 @@ function detectPromptLanguage(content: string): "json" | "markdown" {
     return "json";
   }
   return "markdown";
+}
+
+function getTrackLabel(track: TrackListItem): string {
+  return track.name ?? track.trackId;
+}
+
+function getProgressPercent(track: TrackListItem): number {
+  if (track.totalTrials === 0) {
+    return 0;
+  }
+  return (track.finishedTrials / track.totalTrials) * 100;
+}
+
+function getCoveragePercent(track: TrackListItem): number {
+  if (track.totalTrials === 0) {
+    return 0;
+  }
+  return (track.succeededTrials / track.totalTrials) * 100;
+}
+
+function getAttentionCount(track: TrackListItem): number {
+  return Math.max(0, track.finishedTrials - track.succeededTrials);
+}
+
+function getTrialTone(trial: TrialListItem): "success" | "warning" | "danger" | "neutral" {
+  if (trial.status !== "finished") {
+    return "neutral";
+  }
+  if (trial.hasError) {
+    return "danger";
+  }
+  if (trial.timedOut || trial.hadUnscoredWorkAtTimeout) {
+    return "warning";
+  }
+  return "success";
+}
+
+function getTrialNarrative(trial: TrialListItem): string {
+  if (trial.status === "queued") {
+    return "Waiting to be dispatched.";
+  }
+  if (trial.status === "dispatching") {
+    return `Dispatching attempt ${trial.dispatchAttempts}.`;
+  }
+  if (trial.status === "active") {
+    return trial.lastPhase ? `Running in ${trial.lastPhase}.` : "Currently executing.";
+  }
+  if (trial.hasError) {
+    return "Finished with an execution error.";
+  }
+  if (trial.timedOut) {
+    return "Timed out before evaluation stabilized.";
+  }
+  if (trial.hadUnscoredWorkAtTimeout) {
+    return "Ended with unevaluated work still pending.";
+  }
+  return trial.outcomeReason ?? "Finished cleanly.";
+}
+
+function matchesSearch(trial: TrialListItem, query: string): boolean {
+  if (!query) {
+    return true;
+  }
+
+  const haystack = [
+    trial.trialId,
+    trial.status,
+    trial.outcomeReason,
+    trial.backend,
+    trial.model,
+    trial.lastPhase,
+    trial.source,
+  ]
+    .filter((value): value is string => typeof value === "string" && value.length > 0)
+    .join(" ")
+    .toLowerCase();
+
+  return query
+    .split(/\s+/)
+    .filter(Boolean)
+    .every((part) => haystack.includes(part));
 }
 
 type DashboardShellProps = {
@@ -153,32 +266,45 @@ export function DashboardShell({
   const [tracks, setTracks] = useState(initialTracks);
   const [detail, setDetail] = useState(initialDetail);
   const [status, setStatus] = useState<TrialStatusFilter>("all");
+  const [searchText, setSearchText] = useState("");
   const [selectedTrialId, setSelectedTrialId] = useState<string | null>(initialSelectedTrialId);
   const [urlTrialId, setUrlTrialId] = useState<string | null>(initialSelectedTrialId);
-  const [openPanes, setOpenPanes] = useState<PaneState>(DEFAULT_OPEN_PANES);
-  const [activePane, setActivePane] = useState<ActivePane>("trials");
   const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
-  const deferredTrials = useDeferredValue(detail.trials);
-  const selectedTrial = detail.trials.find((trial) => trial.trialId === selectedTrialId) ?? null;
-  const visiblePanes = PANE_ORDER.filter((pane) => openPanes[pane]);
-  const shellLayoutClass = `shell-layout-${visiblePanes.join("-")}`;
-  const canClosePane = visiblePanes.length > 1;
+  const deferredSearchText = useDeferredValue(searchText.trim().toLowerCase());
 
   useEffect(() => {
     setTracks(initialTracks);
     setDetail(initialDetail);
     setStatus("all");
+    setSearchText("");
     setSelectedTrialId(initialSelectedTrialId);
     setUrlTrialId(initialSelectedTrialId);
-    setOpenPanes(DEFAULT_OPEN_PANES);
-    setActivePane("trials");
     setError(null);
   }, [initialDetail, initialSelectedTrialId, initialTracks, selectedTrackId]);
 
   useEffect(() => {
     setUrlTrialId(routeTrialId);
   }, [routeTrialId]);
+
+  const visibleTrials = detail.trials.filter((trial) => matchesSearch(trial, deferredSearchText));
+  const selectedTrial =
+    visibleTrials.find((trial) => trial.trialId === selectedTrialId) ??
+    detail.trials.find((trial) => trial.trialId === selectedTrialId) ??
+    null;
+  const selectedTrialRank =
+    selectedTrial === null
+      ? null
+      : detail.trials.filter((trial) => trial.score > selectedTrial.score).length + 1;
+  const selectedPromptMessages = asPromptMessages(selectedTrial?.provenanceJson ?? null);
+  const selectedCrashDetails = extractCrashDetails(selectedTrial?.errorJson ?? null);
+  const progressPercent = getProgressPercent(detail.track);
+  const coveragePercent = getCoveragePercent(detail.track);
+  const attentionCount = getAttentionCount(detail.track);
+  const bestTrial =
+    detail.trials.length === 0
+      ? null
+      : detail.trials.reduce((best, trial) => (trial.score > best.score ? trial : best), detail.trials[0]);
 
   const updateTrialUrl = useEffectEvent((nextTrialId: string | null) => {
     const params = new URLSearchParams(searchParams.toString());
@@ -211,6 +337,7 @@ export function DashboardShell({
     if (cursor) {
       params.set("cursor", cursor);
     }
+
     return fetchJson<PaginatedTrialsResponse>(`/api/tracks/${selectedTrackId}/trials?${params.toString()}`);
   });
 
@@ -220,6 +347,7 @@ export function DashboardShell({
         fetchJson<TrackListItem[]>("/api/tracks"),
         loadTrials(status),
       ]);
+
       setTracks(nextTracks);
       setDetail((current) => ({
         track: nextTracks.find((track) => track.trackId === selectedTrackId) ?? current.track,
@@ -233,7 +361,7 @@ export function DashboardShell({
   });
 
   useEffect(() => {
-    if (detail.trials.length === 0) {
+    if (visibleTrials.length === 0) {
       if (selectedTrialId !== null) {
         syncSelectedTrial(null);
       }
@@ -241,7 +369,7 @@ export function DashboardShell({
     }
 
     if (urlTrialId) {
-      const routeTrial = detail.trials.find((trial) => trial.trialId === urlTrialId);
+      const routeTrial = visibleTrials.find((trial) => trial.trialId === urlTrialId);
       if (routeTrial) {
         if (urlTrialId !== selectedTrialId) {
           setSelectedTrialId(urlTrialId);
@@ -249,16 +377,16 @@ export function DashboardShell({
         return;
       }
 
-      syncSelectedTrial(detail.trials[0].trialId);
+      syncSelectedTrial(visibleTrials[0].trialId);
       return;
     }
 
-    if (selectedTrialId && detail.trials.some((trial) => trial.trialId === selectedTrialId)) {
+    if (selectedTrialId && visibleTrials.some((trial) => trial.trialId === selectedTrialId)) {
       return;
     }
 
-    syncSelectedTrial(detail.trials[0].trialId);
-  }, [detail.trials, selectedTrialId, syncSelectedTrial, urlTrialId]);
+    syncSelectedTrial(visibleTrials[0].trialId);
+  }, [selectedTrialId, syncSelectedTrial, urlTrialId, visibleTrials]);
 
   const liveMode = useTrackLiveUpdates({
     streamUrl: `/api/tracks/${selectedTrackId}/stream`,
@@ -292,6 +420,7 @@ export function DashboardShell({
     if (!detail.nextCursor) {
       return;
     }
+
     startTransition(() => {
       void (async () => {
         try {
@@ -309,373 +438,444 @@ export function DashboardShell({
     });
   };
 
-  const handleTrialSelect = (trialId: string) => {
-    setOpenPanes((current) => ({ ...current, detail: true }));
-    setActivePane("detail");
-    syncSelectedTrial(trialId);
-  };
-
-  const openPane = (pane: ActivePane) => {
-    setOpenPanes((current) => ({ ...current, [pane]: true }));
-    setActivePane(pane);
-  };
-
-  const closePane = (pane: ActivePane) => {
-    if (!canClosePane) {
-      return;
-    }
-
-    setOpenPanes((current) => {
-      if (!current[pane]) {
-        return current;
-      }
-
-      const next = {
-        ...current,
-        [pane]: false,
-      };
-
-      const nextVisible = PANE_ORDER.filter((item) => next[item]);
-      if (!nextVisible.includes(activePane)) {
-        const closedIndex = PANE_ORDER.indexOf(pane);
-        const fallback =
-          PANE_ORDER.slice(closedIndex + 1).find((item) => next[item]) ??
-          PANE_ORDER.slice(0, closedIndex).reverse().find((item) => next[item]) ??
-          nextVisible[0];
-        if (fallback) {
-          setActivePane(fallback);
-        }
-      }
-
-      return next;
-    });
-  };
-
   return (
-    <main className={`shell ${shellLayoutClass}`}>
-      {visiblePanes.length < PANE_ORDER.length ? (
-        <div className="closed-pane-bar">
-          {PANE_ORDER.filter((pane) => !openPanes[pane]).map((pane) => (
-            <button
-              key={pane}
-              type="button"
-              className="closed-pane-toggle"
-              onClick={() => openPane(pane)}
-            >
-              {`Open ${pane} panel`}
-            </button>
-          ))}
-        </div>
-      ) : null}
-
-      {openPanes.tracks ? (
-      <aside
-        className={`workspace-pane tracks-pane ${activePane === "tracks" ? "mobile-visible" : ""}`}
-        onFocusCapture={() => setActivePane("tracks")}
-        onPointerDown={() => setActivePane("tracks")}
-      >
-        <div className="pane-header">
-          <div className="pane-header-top">
-            <div>
-              <div className="eyebrow">Tracks</div>
-              <h1 className="pane-title">Experiment tracks</h1>
-            </div>
-            <button
-              type="button"
-              className="pane-close"
-              onClick={() => closePane("tracks")}
-              disabled={!canClosePane}
-            >
-              Close tracks panel
-            </button>
-          </div>
-          <p className="subtle pane-copy">{tracks.length} active lanes available.</p>
+    <main className="research-shell">
+      <aside className="workspace-card track-column">
+        <div className="section-heading">
+          <div className="eyebrow">Tracks</div>
+          <h1 className="section-title">Research lanes</h1>
+          <p className="section-copy">Switch tracks without losing the current trial context.</p>
         </div>
 
-        <div className="track-rail">
-          {tracks.map((track) => (
-            <Link
-              key={track.trackId}
-              href={`/tracks/${track.trackId}`}
-              className={`track-rail-item ${track.trackId === selectedTrackId ? "active" : ""}`}
-            >
-              <div className="track-rail-top">
-                <h2 className="track-name">{track.name ?? track.trackId}</h2>
-                <span className="track-rail-score">{formatNumber(track.bestScore, 4)}</span>
-              </div>
-              <div className="track-rail-meta">
-                <span>{track.datasetId}</span>
-                <span>{track.totalTrials} trials</span>
-              </div>
-              <div className="track-rail-meta">
-                <span>Updated {formatDate(track.lastActivityAt)}</span>
-              </div>
-            </Link>
-          ))}
+        <div className="track-stack">
+          {tracks.map((track) => {
+            const isActive = track.trackId === selectedTrackId;
+            return (
+              <Link
+                key={track.trackId}
+                href={`/tracks/${track.trackId}`}
+                className={`track-card ${isActive ? "active" : ""}`}
+              >
+                <div className="track-card-top">
+                  <div>
+                    <div className="track-card-title">{getTrackLabel(track)}</div>
+                    <div className="track-card-subtitle">{track.datasetId}</div>
+                  </div>
+                  <div className="track-score">{formatNumber(track.bestScore, 4)}</div>
+                </div>
+                <div className="track-card-bar">
+                  <span style={{ width: `${getProgressPercent(track)}%` }} />
+                </div>
+                <div className="track-card-meta">
+                  <span>{track.finishedTrials}/{track.totalTrials} finished</span>
+                  <span>{track.activeTrials} active</span>
+                </div>
+                <div className="track-card-meta">
+                  <span>{track.succeededTrials} scored</span>
+                  <span>{formatRelativeMinutes(track.lastActivityAt)}</span>
+                </div>
+              </Link>
+            );
+          })}
         </div>
       </aside>
-      ) : null}
 
-      {openPanes.trials ? (
-      <section
-        className={`workspace-pane trials-pane ${activePane === "trials" ? "mobile-visible" : ""}`}
-        onFocusCapture={() => setActivePane("trials")}
-        onPointerDown={() => setActivePane("trials")}
-      >
-        <div className="pane-header pane-header-sticky">
-          <div className="pane-header-top">
-            <div className="pane-header-stack">
-              <button type="button" className="pane-back" onClick={() => setActivePane("tracks")}>
-                Tracks
-              </button>
-              <div className="eyebrow">Trials</div>
-              <h2 className="pane-title">{detail.track.name ?? detail.track.trackId}</h2>
+      <section className="research-main">
+        <section className="workspace-card overview-panel">
+          <div className="overview-hero">
+            <div>
+              <div className="eyebrow">Track Overview</div>
+              <h2 className="hero-title">{getTrackLabel(detail.track)}</h2>
+              <p className="hero-copy">
+                Debug research progress from the queue down to the exact source, prompt context, and failure
+                payload for each trial.
+              </p>
             </div>
-            <button
-              type="button"
-              className="pane-close"
-              onClick={() => closePane("trials")}
-              disabled={!canClosePane}
-            >
-              Close trials panel
-            </button>
+            <div className="hero-meta">
+              <span className="meta-chip">{detail.track.trackId}</span>
+              <span className="meta-chip">{detail.track.datasetId}</span>
+              <span className="meta-chip">Created {formatDate(detail.track.createdAt)}</span>
+              <span className="meta-chip">Live via {liveMode}</span>
+            </div>
           </div>
-          <div className="detail-meta">
-            <span>{detail.track.trackId}</span>
-            <span>{detail.track.datasetId}</span>
-            <span>Created {formatDate(detail.track.createdAt)}</span>
-          </div>
-          <div className="track-summary-grid">
-            <div className="metric">
+
+          <div className="hero-metrics">
+            <article className="metric-tile">
               <span className="metric-label">Best Score</span>
-              <span className="metric-value">{formatNumber(detail.track.bestScore, 4)}</span>
-            </div>
-            <div className="metric">
-              <span className="metric-label">Trials</span>
-              <span className="metric-value">{detail.track.totalTrials}</span>
-            </div>
-            <div className="metric">
-              <span className="metric-label">Scored</span>
-              <span className="metric-value">{detail.track.succeededTrials}</span>
-            </div>
+              <strong className="metric-value">{formatNumber(detail.track.bestScore, 4)}</strong>
+              <span className="metric-note">
+                {bestTrial ? `${bestTrial.trialId} leads the visible sample.` : "Waiting for scored trials."}
+              </span>
+            </article>
+            <article className="metric-tile">
+              <span className="metric-label">Completion</span>
+              <strong className="metric-value">{formatPercent(progressPercent)}</strong>
+              <span className="metric-note">
+                {detail.track.finishedTrials} of {detail.track.totalTrials} trials have finished.
+              </span>
+            </article>
+            <article className="metric-tile">
+              <span className="metric-label">Coverage</span>
+              <strong className="metric-value">{formatPercent(coveragePercent)}</strong>
+              <span className="metric-note">{detail.track.succeededTrials} runs produced scored metrics.</span>
+            </article>
+            <article className="metric-tile">
+              <span className="metric-label">Attention</span>
+              <strong className="metric-value">{attentionCount}</strong>
+              <span className="metric-note">
+                {detail.track.activeTrials > 0
+                  ? `${detail.track.activeTrials} trials are still running.`
+                  : "No active trials right now."}
+              </span>
+            </article>
           </div>
-          <div className="summary-strip">
-            <span className="pill">
-              <span className="status-dot queued" />
-              Queued {detail.track.queuedTrials}
-            </span>
-            <span className="pill">
-              <span className="status-dot dispatching" />
-              Dispatching {detail.track.dispatchingTrials}
-            </span>
-            <span className="pill">
-              <span className="status-dot active" />
-              Active {detail.track.activeTrials}
-            </span>
-            <span className="pill">
-              <span className="status-dot finished" />
-              Finished {detail.track.finishedTrials}
-            </span>
-          </div>
-          <div className="toolbar">
-            <div className="live-state">
-              Live transport: <strong>{liveMode}</strong>
-              {isPending ? " · refreshing" : ""}
-            </div>
-            <div className="live-state">Newest first</div>
-          </div>
-          <div className="status-filter" role="tablist" aria-label="Trial status filters">
-            {STATUS_OPTIONS.map((option) => (
-              <button
-                key={option}
-                type="button"
-                className={`status-chip ${status === option ? "active" : ""}`}
-                onClick={() => handleStatusChange(option)}
-                disabled={isPending}
-              >
-                {option}
-              </button>
-            ))}
-          </div>
-          {error ? <div className="error-banner">{error}</div> : null}
-        </div>
 
-        <div className="trial-list" aria-label="Trials">
-          {deferredTrials.length === 0 ? (
-            <section className="panel empty-panel">
-              <div className="eyebrow">No trials</div>
-              <h3>No trials match the current filter.</h3>
-              <p className="subtle">Change the status filter or wait for new runs to appear.</p>
-            </section>
-          ) : (
-            deferredTrials.map((trial: TrialListItem) => (
-              <button
-                key={trial.trialId}
-                type="button"
-                aria-label={`Select trial ${trial.trialId}`}
-                aria-pressed={selectedTrial?.trialId === trial.trialId}
-                className={`trial-row ${selectedTrial?.trialId === trial.trialId ? "active" : ""}`}
-                onClick={() => handleTrialSelect(trial.trialId)}
-              >
-                <div className="trial-row-top">
-                  <div>
-                    <code>{trial.trialId}</code>
-                    <div className="subtle">{trial.model ?? "unknown model"}</div>
-                  </div>
-                  <span className="trial-status">
-                    <span className={`status-dot ${trial.status}`} />
-                    {trial.status}
-                  </span>
-                </div>
-                <div className="trial-row-grid">
-                  <div>
-                    <span className="trial-kicker">Score</span>
-                    <strong>{formatNumber(trial.score, 4)}</strong>
-                  </div>
-                  <div>
-                    <span className="trial-kicker">Accuracy</span>
-                    <strong>{formatNumber(trial.accuracy, 4)}</strong>
-                  </div>
-                  <div>
-                    <span className="trial-kicker">Backend</span>
-                    <strong>{trial.backend ?? "unknown backend"}</strong>
-                  </div>
-                  <div>
-                    <span className="trial-kicker">Duration</span>
-                    <strong>{formatDuration(trial.durationSec)}</strong>
-                  </div>
-                </div>
-                <div className="trial-flags">
-                  <span>{trial.outcomeReason ?? "in progress"}</span>
-                  <span>Dispatches {trial.dispatchAttempts}</span>
-                  <span>Started {formatDate(trial.startedAt ?? trial.createdAt)}</span>
-                  {trial.timedOut ? <span className="trial-error">timed out</span> : null}
-                  {trial.hadUnscoredWorkAtTimeout ? <span className="trial-error">unevaluated work</span> : null}
-                  {trial.hasError ? <span className="trial-error">error recorded</span> : null}
-                </div>
-              </button>
-            ))
-          )}
-        </div>
-
-        {detail.nextCursor ? (
-          <button type="button" className="load-more" onClick={loadMore} disabled={isPending}>
-            {isPending ? "Loading…" : "Load more"}
-          </button>
-        ) : null}
-      </section>
-      ) : null}
-
-      {openPanes.detail ? (
-      <section
-        className={`workspace-pane detail-pane ${activePane === "detail" ? "mobile-visible" : ""}`}
-        onFocusCapture={() => setActivePane("detail")}
-        onPointerDown={() => setActivePane("detail")}
-      >
-        <div className="pane-header pane-header-sticky">
-          <div className="pane-header-top">
-            <div className="pane-header-stack">
-              <button type="button" className="pane-back" onClick={() => setActivePane("trials")}>
-                Trials
-              </button>
-              <div className="eyebrow">Selected Trial</div>
-            </div>
-            <button
-              type="button"
-              className="pane-close"
-              onClick={() => closePane("detail")}
-              disabled={!canClosePane}
-            >
-              Close detail panel
-            </button>
-          </div>
-          {selectedTrial ? (
-            <>
-              <div className="detail-title-row">
-                <h2 className="pane-title">{selectedTrial.trialId}</h2>
-                <span className="trial-status">
-                  <span className={`status-dot ${selectedTrial.status}`} />
-                  {selectedTrial.status}
-                </span>
+          <div className="overview-grid">
+            <article className="analysis-card">
+              <div className="analysis-card-header">
+                <h3>Progress breakdown</h3>
+                <span>{formatPercent(progressPercent)} complete</span>
               </div>
-              <div className="detail-meta">
-                <span>{selectedTrial.model ?? "unknown model"}</span>
-                <span>{selectedTrial.backend ?? "unknown backend"}</span>
-                <span>{selectedTrial.outcomeReason ?? "in progress"}</span>
+              <div className="progress-strip" aria-label="Track progress">
+                <span className="queued" style={{ width: `${detail.track.totalTrials === 0 ? 0 : (detail.track.queuedTrials / detail.track.totalTrials) * 100}%` }} />
+                <span className="dispatching" style={{ width: `${detail.track.totalTrials === 0 ? 0 : (detail.track.dispatchingTrials / detail.track.totalTrials) * 100}%` }} />
+                <span className="active" style={{ width: `${detail.track.totalTrials === 0 ? 0 : (detail.track.activeTrials / detail.track.totalTrials) * 100}%` }} />
+                <span className="finished" style={{ width: `${detail.track.totalTrials === 0 ? 0 : (detail.track.finishedTrials / detail.track.totalTrials) * 100}%` }} />
               </div>
-              <div className="detail-summary-grid">
-                <div className="metric">
-                  <span className="metric-label">Score</span>
-                  <span className="metric-value">{formatNumber(selectedTrial.score, 4)}</span>
+              <div className="legend-grid">
+                <div className="legend-row">
+                  <span className="status-indicator queued" />
+                  <span>Queued</span>
+                  <strong>{detail.track.queuedTrials}</strong>
                 </div>
-                <div className="metric">
-                  <span className="metric-label">Accuracy</span>
-                  <span className="metric-value">{formatNumber(selectedTrial.accuracy, 4)}</span>
+                <div className="legend-row">
+                  <span className="status-indicator dispatching" />
+                  <span>Dispatching</span>
+                  <strong>{detail.track.dispatchingTrials}</strong>
                 </div>
-                <div className="metric">
-                  <span className="metric-label">Duration</span>
-                  <span className="metric-value">{formatDuration(selectedTrial.durationSec)}</span>
+                <div className="legend-row">
+                  <span className="status-indicator active" />
+                  <span>Active</span>
+                  <strong>{detail.track.activeTrials}</strong>
                 </div>
-                <div className="metric">
-                  <span className="metric-label">Since Eval</span>
-                  <span className="metric-value">{formatDuration(selectedTrial.timeSinceLastEvalSec)}</span>
+                <div className="legend-row">
+                  <span className="status-indicator finished" />
+                  <span>Finished</span>
+                  <strong>{detail.track.finishedTrials}</strong>
                 </div>
               </div>
-            </>
-          ) : (
-            <>
-              <h2 className="pane-title">No selected trial</h2>
-              <p className="subtle pane-copy">No trials match the current filter for this track.</p>
-            </>
-          )}
-        </div>
+            </article>
 
-        {selectedTrial ? (
-          <div className="trial-detail-grid">
-            <section className="trial-detail-card">
-              <h3>Crash reason</h3>
-              <HighlightedCode
-                code={extractCrashDetails(selectedTrial.errorJson) ?? "No crash stderr recorded."}
-                language="markdown"
-                wrap
-              />
-            </section>
-            <section className="trial-detail-card">
-              <h3>Error payload</h3>
-              <HighlightedCode code={formatJsonBlock(selectedTrial.errorJson)} language="json" wrap />
-            </section>
-            <section className="trial-detail-card">
-              <h3>Generation metadata</h3>
-              <HighlightedCode
-                code={formatGenerationProperties(selectedTrial.provenanceJson)}
-                language="json"
-                wrap
-              />
-            </section>
-            {asPromptMessages(selectedTrial.provenanceJson).map((message, index) => (
-              <section className="trial-detail-card" key={`${selectedTrial.trialId}-prompt-${index}`}>
-                <h3>{`Prompt ${index + 1} · ${message.role}`}</h3>
-                <HighlightedCode
-                  code={message.content}
-                  language={detectPromptLanguage(message.content)}
-                  wrap
+            <article className="analysis-card">
+              <div className="analysis-card-header">
+                <h3>Debug priorities</h3>
+                <span>{visibleTrials.length} visible trials</span>
+              </div>
+              <div className="priority-list">
+                <div className="priority-item">
+                  <span className="priority-label">Error payloads</span>
+                  <strong>{detail.trials.filter((trial) => trial.hasError).length}</strong>
+                </div>
+                <div className="priority-item">
+                  <span className="priority-label">Timed out runs</span>
+                  <strong>{detail.trials.filter((trial) => trial.timedOut).length}</strong>
+                </div>
+                <div className="priority-item">
+                  <span className="priority-label">Unevaluated exits</span>
+                  <strong>{detail.trials.filter((trial) => trial.hadUnscoredWorkAtTimeout).length}</strong>
+                </div>
+                <div className="priority-item">
+                  <span className="priority-label">Last activity</span>
+                  <strong>{formatDate(detail.track.lastActivityAt)}</strong>
+                </div>
+              </div>
+            </article>
+          </div>
+        </section>
+
+        <div className="workspace-grid">
+          <section className="workspace-card explorer-panel">
+            <div className="section-heading">
+              <div className="eyebrow">Trial Explorer</div>
+              <h2 className="section-title">How each run went</h2>
+              <p className="section-copy">
+                Scan outcomes quickly, then open the run inspector to compare source, crash detail, and
+                provenance.
+              </p>
+            </div>
+
+            <div className="toolbar-row">
+              <label className="search-field">
+                <span className="search-label">Search trials</span>
+                <input
+                  type="search"
+                  value={searchText}
+                  onChange={(event) => setSearchText(event.target.value)}
+                  placeholder="trial id, model, phase, outcome"
                 />
-              </section>
-            ))}
-            <section className="trial-detail-card trial-detail-card-wide">
-              <h3>Trial source</h3>
-              <HighlightedCode code={selectedTrial.source} language="python" />
-            </section>
-          </div>
-        ) : (
-          <section className="panel empty-panel detail-empty-panel">
-            <div className="eyebrow">Trial detail</div>
-            <h3>Detail pane cleared</h3>
-            <p className="subtle">Select a visible trial or adjust the filter to restore detail content.</p>
+              </label>
+              <div className="toolbar-meta">
+                <span className="meta-chip">{visibleTrials.length} shown</span>
+                <span className="meta-chip">{isPending ? "Refreshing" : "Stable"}</span>
+              </div>
+            </div>
+
+            <div className="status-filter" role="tablist" aria-label="Trial status filters">
+              {STATUS_OPTIONS.map((option) => (
+                <button
+                  key={option}
+                  type="button"
+                  className={`filter-chip ${status === option ? "active" : ""}`}
+                  onClick={() => handleStatusChange(option)}
+                  disabled={isPending}
+                >
+                  {option}
+                </button>
+              ))}
+            </div>
+
+            {error ? <div className="error-banner">{error}</div> : null}
+
+            <div className="trial-list" aria-label="Trials">
+              {visibleTrials.length === 0 ? (
+                <section className="empty-panel">
+                  <div className="eyebrow">No matching trials</div>
+                  <h3>Nothing matches the current filter.</h3>
+                  <p className="section-copy">Change the status filter or search query to bring runs back into view.</p>
+                </section>
+              ) : (
+                visibleTrials.map((trial) => (
+                  <button
+                    key={trial.trialId}
+                    type="button"
+                    aria-label={`Select trial ${trial.trialId}`}
+                    aria-pressed={selectedTrial?.trialId === trial.trialId}
+                    className={`trial-card tone-${getTrialTone(trial)} ${selectedTrial?.trialId === trial.trialId ? "active" : ""}`}
+                    onClick={() => syncSelectedTrial(trial.trialId)}
+                  >
+                    <div className="trial-card-top">
+                      <div>
+                        <div className="trial-id">{trial.trialId}</div>
+                        <div className="trial-headline">{getTrialNarrative(trial)}</div>
+                      </div>
+                      <span className={`status-badge status-${trial.status}`}>
+                        <span className={`status-indicator ${trial.status}`} />
+                        {trial.status}
+                      </span>
+                    </div>
+
+                    <div className="trial-stat-grid">
+                      <div>
+                        <span className="trial-stat-label">Score</span>
+                        <strong>{formatNumber(trial.score, 4)}</strong>
+                      </div>
+                      <div>
+                        <span className="trial-stat-label">Accuracy</span>
+                        <strong>{formatNumber(trial.accuracy, 4)}</strong>
+                      </div>
+                      <div>
+                        <span className="trial-stat-label">Duration</span>
+                        <strong>{formatDuration(trial.durationSec)}</strong>
+                      </div>
+                      <div>
+                        <span className="trial-stat-label">Last Phase</span>
+                        <strong>{trial.lastPhase ?? "—"}</strong>
+                      </div>
+                    </div>
+
+                    <div className="trial-foot">
+                      <span>{trial.model ?? "unknown model"}</span>
+                      <span>{trial.backend ?? "unknown backend"}</span>
+                      <span>Dispatches {trial.dispatchAttempts}</span>
+                    </div>
+
+                    <div className="flag-row">
+                      {trial.outcomeReason ? <span className="flag-chip">{trial.outcomeReason}</span> : null}
+                      {trial.timedOut ? <span className="flag-chip flag-warning">timed out</span> : null}
+                      {trial.hadUnscoredWorkAtTimeout ? <span className="flag-chip flag-warning">unevaluated work</span> : null}
+                      {trial.hasError ? <span className="flag-chip flag-danger">error payload</span> : null}
+                    </div>
+                  </button>
+                ))
+              )}
+            </div>
+
+            {detail.nextCursor ? (
+              <button type="button" className="load-more" onClick={loadMore} disabled={isPending}>
+                {isPending ? "Loading…" : "Load more trials"}
+              </button>
+            ) : null}
           </section>
-        )}
+
+          <section className="workspace-card inspector-panel">
+            <div className="section-heading">
+              <div className="eyebrow">Run Inspector</div>
+              <h2 className="section-title">Why the selected run behaved that way</h2>
+              <p className="section-copy">
+                Inspect lifecycle timing, outcome context, prompt provenance, and the exact source evaluated.
+              </p>
+            </div>
+
+            {selectedTrial ? (
+              <>
+                <div className="inspector-hero">
+                  <div>
+                    <div className="inspector-label">Selected trial</div>
+                    <h2 className="inspector-title">{selectedTrial.trialId}</h2>
+                    <p className="section-copy">{getTrialNarrative(selectedTrial)}</p>
+                  </div>
+                  <div className="inspector-meta">
+                    <span className={`status-badge status-${selectedTrial.status}`}>
+                      <span className={`status-indicator ${selectedTrial.status}`} />
+                      {selectedTrial.status}
+                    </span>
+                    {selectedTrialRank ? <span className="meta-chip">Rank #{selectedTrialRank} by score</span> : null}
+                    <span className="meta-chip">{selectedTrial.model ?? "unknown model"}</span>
+                    <span className="meta-chip">{selectedTrial.backend ?? "unknown backend"}</span>
+                  </div>
+                </div>
+
+                <div className="inspector-metrics">
+                  <article className="metric-tile compact">
+                    <span className="metric-label">Score</span>
+                    <strong className="metric-value">{formatNumber(selectedTrial.score, 4)}</strong>
+                  </article>
+                  <article className="metric-tile compact">
+                    <span className="metric-label">Accuracy</span>
+                    <strong className="metric-value">{formatNumber(selectedTrial.accuracy, 4)}</strong>
+                  </article>
+                  <article className="metric-tile compact">
+                    <span className="metric-label">Time To Best Eval</span>
+                    <strong className="metric-value">{formatDuration(selectedTrial.timeToBestEvalSec)}</strong>
+                  </article>
+                  <article className="metric-tile compact">
+                    <span className="metric-label">Duration</span>
+                    <strong className="metric-value">{formatDuration(selectedTrial.durationSec)}</strong>
+                  </article>
+                  <article className="metric-tile compact">
+                    <span className="metric-label">Dispatch Attempts</span>
+                    <strong className="metric-value">{selectedTrial.dispatchAttempts}</strong>
+                  </article>
+                  <article className="metric-tile compact">
+                    <span className="metric-label">Idle Since Eval</span>
+                    <strong className="metric-value">{formatDuration(selectedTrial.timeSinceLastEvalSec)}</strong>
+                  </article>
+                </div>
+
+                <div className="flag-row inspector-flags">
+                  {selectedTrial.outcomeReason ? <span className="flag-chip">{selectedTrial.outcomeReason}</span> : null}
+                  {selectedTrial.timedOut ? <span className="flag-chip flag-warning">timed out</span> : null}
+                  {selectedTrial.hadUnscoredWorkAtTimeout ? (
+                    <span className="flag-chip flag-warning">left work unscored</span>
+                  ) : null}
+                  {selectedTrial.hasError ? <span className="flag-chip flag-danger">error payload captured</span> : null}
+                </div>
+
+                <div className="inspector-grid">
+                  <article className="analysis-card">
+                    <div className="analysis-card-header">
+                      <h3>Run timeline</h3>
+                    </div>
+                    <div className="timeline-list">
+                      <div className="timeline-row">
+                        <span>Queued</span>
+                        <strong>{formatDate(selectedTrial.createdAt)}</strong>
+                      </div>
+                      <div className="timeline-row">
+                        <span>Started</span>
+                        <strong>{formatDate(selectedTrial.startedAt)}</strong>
+                      </div>
+                      <div className="timeline-row">
+                        <span>Finished</span>
+                        <strong>{formatDate(selectedTrial.finishedAt)}</strong>
+                      </div>
+                      <div className="timeline-row">
+                        <span>Last known phase</span>
+                        <strong>{selectedTrial.lastPhase ?? "—"}</strong>
+                      </div>
+                    </div>
+                  </article>
+
+                  <article className="analysis-card">
+                    <div className="analysis-card-header">
+                      <h3>Failure context</h3>
+                    </div>
+                    <div className="context-stack">
+                      <div className="context-row">
+                        <span>Outcome reason</span>
+                        <strong>{selectedTrial.outcomeReason ?? "Not reported"}</strong>
+                      </div>
+                      <div className="context-row">
+                        <span>Crash detail</span>
+                        <strong>{selectedCrashDetails ?? "No crash detail recorded."}</strong>
+                      </div>
+                    </div>
+                  </article>
+
+                  <article className="analysis-card">
+                    <div className="analysis-card-header">
+                      <h3>Provenance</h3>
+                    </div>
+                    <div className="context-stack">
+                      <div className="context-row">
+                        <span>Backend</span>
+                        <strong>{selectedTrial.backend ?? "Unknown"}</strong>
+                      </div>
+                      <div className="context-row">
+                        <span>Model</span>
+                        <strong>{selectedTrial.model ?? "Unknown"}</strong>
+                      </div>
+                    </div>
+                    <HighlightedCode code={formatGenerationProperties(selectedTrial.provenanceJson)} language="json" wrap />
+                  </article>
+
+                  {selectedPromptMessages.length > 0 ? (
+                    <article className="analysis-card wide-card">
+                      <div className="analysis-card-header">
+                        <h3>Prompt context</h3>
+                        <span>{selectedPromptMessages.length} messages</span>
+                      </div>
+                      <div className="prompt-stack">
+                        {selectedPromptMessages.map((message, index) => (
+                          <section key={`${message.role}-${index}`} className="prompt-card">
+                            <div className="prompt-role">{message.role}</div>
+                            <HighlightedCode code={message.content} language={detectPromptLanguage(message.content)} wrap />
+                          </section>
+                        ))}
+                      </div>
+                    </article>
+                  ) : null}
+
+                  {selectedTrial.hasError ? (
+                    <article className="analysis-card wide-card">
+                      <div className="analysis-card-header">
+                        <h3>Error payload</h3>
+                      </div>
+                      <HighlightedCode code={formatJsonBlock(selectedTrial.errorJson)} language="json" wrap />
+                    </article>
+                  ) : null}
+
+                  <article className="analysis-card wide-card">
+                    <div className="analysis-card-header">
+                      <h3>Source under test</h3>
+                    </div>
+                    <HighlightedCode code={selectedTrial.source || "// No source captured."} language="python" wrap />
+                  </article>
+                </div>
+              </>
+            ) : (
+              <section className="empty-panel">
+                <div className="eyebrow">No selection</div>
+                <h3>Select a trial to inspect it.</h3>
+                <p className="section-copy">
+                  The right-hand pane is reserved for why-this-run debugging: outcome context, provenance, and
+                  source.
+                </p>
+              </section>
+            )}
+          </section>
+        </div>
       </section>
-      ) : null}
     </main>
   );
 }
