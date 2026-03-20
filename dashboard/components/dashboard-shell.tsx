@@ -291,6 +291,7 @@ export function DashboardShell({
   const [detail, setDetail] = useState(initialDetail);
   const [status, setStatus] = useState<TrialStatusFilter>("all");
   const [searchText, setSearchText] = useState("");
+  const [isTracksCollapsed, setIsTracksCollapsed] = useState(false);
   const [selectedTrialId, setSelectedTrialId] = useState<string | null>(initialSelectedTrialId);
   const [urlTrialId, setUrlTrialId] = useState<string | null>(initialSelectedTrialId);
   const [error, setError] = useState<string | null>(null);
@@ -302,6 +303,7 @@ export function DashboardShell({
     setDetail(initialDetail);
     setStatus("all");
     setSearchText("");
+    setIsTracksCollapsed(false);
     setSelectedTrialId(initialSelectedTrialId);
     setUrlTrialId(initialSelectedTrialId);
     setError(null);
@@ -464,48 +466,74 @@ export function DashboardShell({
   };
 
   return (
-    <main className="research-shell">
-      <aside className="workspace-card track-column">
-        <div className="section-heading">
-          <div className="eyebrow">Tracks</div>
-          <h1 className="section-title">Research lanes</h1>
-          <p className="section-copy">Switch tracks without losing the current trial context.</p>
-        </div>
-
-        <div className="track-stack">
-          {tracks.map((track) => {
-            const isActive = track.trackId === selectedTrackId;
-            return (
-              <Link
-                key={track.trackId}
-                href={`/tracks/${track.trackId}`}
-                className={`track-card ${isActive ? "active" : ""}`}
+    <main className={`research-shell ${isTracksCollapsed ? "tracks-collapsed" : ""}`.trim()}>
+      {isTracksCollapsed ? null : (
+        <aside className="workspace-card track-column">
+          <div className="section-heading">
+            <div className="sidebar-header">
+              <div>
+                <div className="eyebrow">Tracks</div>
+                <h1 className="section-title">Research lanes</h1>
+              </div>
+              <button
+                type="button"
+                className="panel-toggle"
+                onClick={() => setIsTracksCollapsed(true)}
+                aria-label="Collapse tracks sidebar"
               >
-                <div className="track-card-top">
-                  <div>
-                    <div className="track-card-title">{getTrackLabel(track)}</div>
-                    <div className="track-card-subtitle">{track.datasetId}</div>
+                Hide
+              </button>
+            </div>
+            <p className="section-copy">Switch tracks without losing the current trial context.</p>
+          </div>
+
+          <div className="track-stack">
+            {tracks.map((track) => {
+              const isActive = track.trackId === selectedTrackId;
+              return (
+                <Link
+                  key={track.trackId}
+                  href={`/tracks/${track.trackId}`}
+                  className={`track-card ${isActive ? "active" : ""}`}
+                >
+                  <div className="track-card-top">
+                    <div>
+                      <div className="track-card-title">{getTrackLabel(track)}</div>
+                      <div className="track-card-subtitle">{track.datasetId}</div>
+                    </div>
+                    <div className="track-score">{formatNumber(track.bestScore, 4)}</div>
                   </div>
-                  <div className="track-score">{formatNumber(track.bestScore, 4)}</div>
-                </div>
-                <div className="track-card-bar">
-                  <span style={{ width: `${getProgressPercent(track)}%` }} />
-                </div>
-                <div className="track-card-meta">
-                  <span>{track.finishedTrials}/{track.totalTrials} finished</span>
-                  <span>{track.activeTrials} active</span>
-                </div>
-                <div className="track-card-meta">
-                  <span>{track.succeededTrials} scored</span>
-                  <span>{formatRelativeMinutes(track.lastActivityAt)}</span>
-                </div>
-              </Link>
-            );
-          })}
-        </div>
-      </aside>
+                  <div className="track-card-bar">
+                    <span style={{ width: `${getProgressPercent(track)}%` }} />
+                  </div>
+                  <div className="track-card-meta">
+                    <span>{track.finishedTrials}/{track.totalTrials} finished</span>
+                    <span>{track.activeTrials} active</span>
+                  </div>
+                  <div className="track-card-meta">
+                    <span>{track.succeededTrials} scored</span>
+                    <span>{formatRelativeMinutes(track.lastActivityAt)}</span>
+                  </div>
+                </Link>
+              );
+            })}
+          </div>
+        </aside>
+      )}
 
       <section className="research-main">
+        {isTracksCollapsed ? (
+          <div className="main-toolbar">
+            <button
+              type="button"
+              className="panel-toggle"
+              onClick={() => setIsTracksCollapsed(false)}
+              aria-label="Expand tracks sidebar"
+            >
+              Show tracks
+            </button>
+          </div>
+        ) : null}
         <section className="workspace-card overview-panel">
           <div className="overview-hero">
             <div>

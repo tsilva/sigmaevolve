@@ -233,6 +233,23 @@ describe("DashboardShell", () => {
     expect(screen.queryByRole("button", { name: "Close detail panel" })).toBeNull();
   });
 
+  it("collapses and re-expands the tracks sidebar", () => {
+    const { container } = renderShell({
+      initialSelectedTrialId: "trial_2",
+      search: "trial=trial_2",
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Collapse tracks sidebar" }));
+
+    expect(screen.queryByRole("heading", { name: "Research lanes" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Expand tracks sidebar" })).toBeTruthy();
+    expect(container.querySelector("main")?.className).toContain("tracks-collapsed");
+
+    fireEvent.click(screen.getByRole("button", { name: "Expand tracks sidebar" }));
+
+    expect(screen.getByRole("heading", { name: "Research lanes" })).toBeTruthy();
+  });
+
   it("clears the detail pane when a filter returns no trials", async () => {
     vi.mocked(globalThis.fetch).mockResolvedValueOnce({
       ok: true,

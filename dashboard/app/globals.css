@@ -14,7 +14,7 @@
   --success: #1a6a40;
   --warning: #a06411;
   --danger: #b33a2d;
-  --shadow: 0 14px 40px rgba(46, 35, 22, 0.09);
+  --shadow: 0 10px 28px rgba(46, 35, 22, 0.08);
 }
 
 * {
@@ -52,22 +52,26 @@ button {
 
 .research-shell {
   display: grid;
-  grid-template-columns: minmax(240px, 280px) minmax(0, 1fr);
-  gap: 16px;
+  grid-template-columns: minmax(220px, 252px) minmax(0, 1fr);
+  gap: 12px;
   min-height: 100vh;
-  padding: 16px;
+  padding: 12px;
+}
+
+.research-shell.tracks-collapsed {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .research-main {
   display: grid;
-  gap: 16px;
+  gap: 12px;
   min-width: 0;
 }
 
 .workspace-grid {
   display: grid;
-  grid-template-columns: minmax(320px, 0.78fr) minmax(0, 1.22fr);
-  gap: 16px;
+  grid-template-columns: minmax(300px, 0.76fr) minmax(0, 1.24fr);
+  gap: 12px;
   min-width: 0;
 }
 
@@ -80,14 +84,14 @@ button {
 .trial-card,
 .prompt-card {
   border: 1px solid var(--line);
-  border-radius: 18px;
+  border-radius: 16px;
   background: var(--bg-soft);
   box-shadow: var(--shadow);
   backdrop-filter: blur(16px);
 }
 
 .workspace-card {
-  padding: 18px;
+  padding: 14px;
 }
 
 .track-column,
@@ -98,12 +102,24 @@ button {
 
 .section-heading {
   display: grid;
-  gap: 8px;
+  gap: 6px;
+}
+
+.sidebar-header,
+.main-toolbar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.main-toolbar {
+  justify-content: flex-end;
 }
 
 .eyebrow {
-  font-size: 0.74rem;
-  letter-spacing: 0.16em;
+  font-size: 0.68rem;
+  letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--muted);
 }
@@ -116,36 +132,36 @@ button {
 }
 
 .section-title {
-  font-size: clamp(1.15rem, 1.8vw, 1.55rem);
+  font-size: clamp(1rem, 1.5vw, 1.35rem);
 }
 
 .hero-title {
-  font-size: clamp(1.85rem, 3vw, 3rem);
-  max-width: 14ch;
+  font-size: clamp(1.45rem, 2.2vw, 2.25rem);
+  max-width: 16ch;
 }
 
 .inspector-title {
-  font-size: clamp(1.3rem, 2vw, 2rem);
+  font-size: clamp(1.1rem, 1.6vw, 1.5rem);
 }
 
 .section-copy,
 .hero-copy {
   margin: 0;
   color: var(--muted);
-  line-height: 1.45;
-  font-size: 0.96rem;
+  line-height: 1.38;
+  font-size: 0.88rem;
 }
 
 .track-stack {
   display: grid;
-  gap: 12px;
-  margin-top: 14px;
+  gap: 10px;
+  margin-top: 10px;
 }
 
 .track-card {
   display: grid;
-  gap: 10px;
-  padding: 14px;
+  gap: 8px;
+  padding: 11px;
   transition: transform 160ms ease, border-color 160ms ease, background 160ms ease;
 }
 
@@ -170,7 +186,7 @@ button {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 12px;
+  gap: 10px;
 }
 
 .track-card-top > *,
@@ -183,7 +199,7 @@ button {
 }
 
 .track-card-title {
-  font-size: 0.96rem;
+  font-size: 0.88rem;
   font-weight: 600;
   overflow-wrap: anywhere;
 }
@@ -215,8 +231,8 @@ button {
 .track-card-meta {
   display: flex;
   flex-wrap: wrap;
-  gap: 10px;
-  font-size: 0.84rem;
+  gap: 8px;
+  font-size: 0.76rem;
 }
 
 .track-score,
@@ -224,18 +240,24 @@ button {
 .status-badge,
 .flag-chip,
 .filter-chip,
+.panel-toggle,
 .load-more {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  min-height: 32px;
+  gap: 6px;
+  min-height: 28px;
   max-width: 100%;
-  padding: 0 12px;
+  padding: 0 10px;
   border-radius: 999px;
   border: 1px solid var(--line);
   background: rgba(255, 255, 255, 0.72);
   white-space: normal;
   overflow-wrap: anywhere;
+  font-size: 0.8rem;
+}
+
+.panel-toggle {
+  cursor: pointer;
 }
 
 .track-score {
@@ -251,7 +273,7 @@ button {
 
 .overview-panel {
   display: grid;
-  gap: 18px;
+  gap: 14px;
 }
 
 .overview-hero {
@@ -265,44 +287,44 @@ button {
 .inspector-meta {
   display: flex;
   flex-wrap: wrap;
-  gap: 10px;
+  gap: 8px;
 }
 
 .hero-metrics,
 .inspector-metrics {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(112px, 1fr));
+  gap: 10px;
 }
 
 .metric-tile {
   display: grid;
-  gap: 8px;
-  padding: 14px;
+  gap: 6px;
+  padding: 11px;
   background: rgba(255, 255, 255, 0.68);
 }
 
 .metric-tile.compact {
-  padding: 16px;
+  padding: 11px;
   box-shadow: none;
 }
 
 .metric-label,
 .trial-stat-label {
-  font-size: 0.72rem;
-  letter-spacing: 0.1em;
+  font-size: 0.66rem;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--muted);
 }
 
 .metric-value {
-  font-size: clamp(1.05rem, 1.8vw, 1.55rem);
+  font-size: clamp(0.98rem, 1.4vw, 1.25rem);
   line-height: 1;
 }
 
 .metric-note {
-  font-size: 0.82rem;
-  line-height: 1.45;
+  font-size: 0.74rem;
+  line-height: 1.35;
   overflow-wrap: anywhere;
 }
 
@@ -310,7 +332,7 @@ button {
 .inspector-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
+  gap: 10px;
 }
 
 .inspector-grid {
@@ -319,25 +341,25 @@ button {
 
 .analysis-card {
   display: grid;
-  gap: 12px;
-  padding: 14px;
+  gap: 10px;
+  padding: 11px;
   background: rgba(255, 255, 255, 0.58);
 }
 
 .analysis-card h3 {
   margin: 0;
-  font-size: 0.92rem;
+  font-size: 0.84rem;
 }
 
 .analysis-card-header span {
   color: var(--muted);
-  font-size: 0.86rem;
+  font-size: 0.76rem;
 }
 
 .progress-strip {
   display: flex;
   overflow: hidden;
-  height: 12px;
+  height: 10px;
   border-radius: 999px;
   background: rgba(62, 50, 35, 0.08);
 }
@@ -368,7 +390,7 @@ button {
 .timeline-list,
 .context-stack {
   display: grid;
-  gap: 10px;
+  gap: 8px;
 }
 
 .legend-row,
@@ -378,17 +400,18 @@ button {
   display: grid;
   grid-template-columns: auto 1fr auto;
   align-items: center;
-  gap: 10px;
-  padding: 10px 12px;
-  border-radius: 14px;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 12px;
   background: rgba(255, 255, 255, 0.68);
   border: 1px solid rgba(62, 50, 35, 0.08);
+  font-size: 0.84rem;
 }
 
 .priority-item,
 .timeline-row,
 .context-row {
-  grid-template-columns: minmax(120px, 160px) minmax(0, 1fr);
+  grid-template-columns: minmax(104px, 136px) minmax(0, 1fr);
   align-items: start;
 }
 
@@ -404,8 +427,8 @@ button {
 }
 
 .status-indicator {
-  width: 10px;
-  height: 10px;
+  width: 8px;
+  height: 8px;
   border-radius: 999px;
   display: inline-block;
 }
@@ -430,7 +453,7 @@ button {
 .inspector-panel {
   display: grid;
   align-content: start;
-  gap: 16px;
+  gap: 12px;
 }
 
 .toolbar-row {
@@ -439,18 +462,19 @@ button {
 
 .search-field {
   display: grid;
-  gap: 8px;
-  min-width: min(100%, 420px);
+  gap: 6px;
+  min-width: min(100%, 360px);
 }
 
 .search-field input {
   width: 100%;
-  min-height: 42px;
-  padding: 0 16px;
+  min-height: 36px;
+  padding: 0 12px;
   border: 1px solid var(--line);
-  border-radius: 14px;
+  border-radius: 12px;
   background: rgba(255, 255, 255, 0.86);
   color: var(--text);
+  font-size: 0.86rem;
 }
 
 .search-field input:focus {
@@ -459,7 +483,7 @@ button {
 }
 
 .status-filter {
-  gap: 8px;
+  gap: 6px;
 }
 
 .filter-chip {
@@ -479,29 +503,29 @@ button {
 
 .trial-list {
   display: grid;
-  gap: 12px;
+  gap: 10px;
 }
 
 .trial-card {
   width: 100%;
   display: grid;
-  gap: 12px;
-  padding: 14px;
+  gap: 10px;
+  padding: 11px;
   text-align: left;
   cursor: pointer;
   transition: transform 160ms ease, border-color 160ms ease, background 160ms ease;
 }
 
 .trial-id {
-  font-size: 0.82rem;
+  font-size: 0.76rem;
   font-weight: 500;
   overflow-wrap: anywhere;
 }
 
 .trial-headline {
-  margin-top: 4px;
-  font-size: 0.88rem;
-  line-height: 1.35;
+  margin-top: 3px;
+  font-size: 0.8rem;
+  line-height: 1.3;
 }
 
 .status-badge {
@@ -528,31 +552,31 @@ button {
 .trial-stat-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
+  gap: 8px;
 }
 
 .trial-stat-grid strong {
   display: block;
-  margin-top: 4px;
-  font-size: 0.95rem;
+  margin-top: 3px;
+  font-size: 0.86rem;
 }
 
 .trial-foot {
   display: flex;
   flex-wrap: wrap;
-  gap: 10px;
-  font-size: 0.8rem;
+  gap: 8px;
+  font-size: 0.72rem;
   color: var(--muted);
 }
 
 .flag-row {
-  gap: 8px;
+  gap: 6px;
 }
 
 .flag-chip {
-  min-height: 28px;
-  padding: 0 10px;
-  font-size: 0.76rem;
+  min-height: 24px;
+  padding: 0 8px;
+  font-size: 0.68rem;
 }
 
 .flag-warning {
@@ -588,13 +612,13 @@ button {
 }
 
 .inspector-label {
-  font-size: 0.76rem;
+  font-size: 0.68rem;
   text-transform: uppercase;
-  letter-spacing: 0.12em;
+  letter-spacing: 0.1em;
 }
 
 .inspector-flags {
-  margin-top: -4px;
+  margin-top: -2px;
 }
 
 .wide-card {
@@ -603,7 +627,7 @@ button {
 
 .prompt-stack {
   display: grid;
-  gap: 12px;
+  gap: 10px;
 }
 
 .prompt-card {
@@ -613,10 +637,10 @@ button {
 }
 
 .prompt-role {
-  padding: 12px 14px;
+  padding: 9px 10px;
   border-bottom: 1px solid var(--line);
-  font-size: 0.76rem;
-  letter-spacing: 0.12em;
+  font-size: 0.68rem;
+  letter-spacing: 0.1em;
   text-transform: uppercase;
   color: var(--muted);
 }
@@ -627,23 +651,24 @@ button {
 }
 
 .error-banner {
-  padding: 12px 14px;
-  border-radius: 18px;
+  padding: 10px 12px;
+  border-radius: 14px;
   border: 1px solid rgba(179, 58, 45, 0.18);
   background: rgba(179, 58, 45, 0.08);
   color: var(--danger);
+  font-size: 0.82rem;
 }
 
 .empty-panel {
   display: grid;
-  gap: 10px;
-  padding: 16px;
+  gap: 8px;
+  padding: 12px;
   background: rgba(255, 255, 255, 0.74);
 }
 
 .empty-panel h3 {
   margin: 0;
-  font-size: 1.2rem;
+  font-size: 1rem;
 }
 
 .empty-state {
@@ -669,12 +694,12 @@ button {
 .code-block {
   margin: 0;
   max-width: 100%;
-  padding: 12px;
+  padding: 10px;
   overflow: auto;
-  font: 0.78rem/1.5 var(--font-mono), monospace;
+  font: 0.72rem/1.42 var(--font-mono), monospace;
   white-space: pre;
   border: 0;
-  border-radius: 14px;
+  border-radius: 12px;
 }
 
 .code-block-wrap {
@@ -689,7 +714,7 @@ button {
 
 @media (max-width: 1240px) {
   .research-shell {
-    grid-template-columns: minmax(220px, 260px) minmax(0, 1fr);
+    grid-template-columns: minmax(200px, 230px) minmax(0, 1fr);
   }
 
   .workspace-grid,
@@ -701,11 +726,11 @@ button {
 @media (max-width: 900px) {
   .research-shell {
     grid-template-columns: 1fr;
-    padding: 14px;
+    padding: 10px;
   }
 
   .workspace-card {
-    padding: 18px;
+    padding: 12px;
   }
 
   .workspace-grid,
@@ -724,10 +749,10 @@ button {
   }
 
   .hero-title {
-    font-size: clamp(1.5rem, 8vw, 2.2rem);
+    font-size: clamp(1.25rem, 7vw, 1.8rem);
   }
 
   .inspector-title {
-    font-size: clamp(1.1rem, 6vw, 1.6rem);
+    font-size: clamp(1rem, 5vw, 1.3rem);
   }
 }
