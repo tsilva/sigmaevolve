@@ -111,4 +111,32 @@ describe("dashboard row mappers", () => {
     expect(mapped.hasError).toBe(false);
     expect(mapped.errorJson).toEqual({ stderr: "", eval_artifacts: ["/tmp/eval_0001.npz"] });
   });
+
+  it("ignores a truthy hasError row value when the payload has no error signal", () => {
+    const mapped = mapTrialListItem({
+      trialId: "trial_success_string_flag",
+      status: "finished",
+      outcomeReason: "succeeded",
+      score: "0.927",
+      accuracy: "0.927",
+      timeToBestEvalSec: "1.97",
+      timedOut: false,
+      timeSinceLastEvalSec: "4.19",
+      hadUnscoredWorkAtTimeout: false,
+      lastPhase: "finished",
+      backend: "baseline",
+      model: "linear-classifier",
+      dispatchAttempts: "1",
+      createdAt: "2026-03-20T15:00:00.000Z",
+      startedAt: "2026-03-20T15:01:00.000Z",
+      finishedAt: "2026-03-20T15:02:00.000Z",
+      durationSec: "60",
+      hasError: "f" as unknown as boolean,
+      source: "print('ok')\n",
+      errorJson: { stderr: "", eval_artifacts: ["/tmp/eval_0001.npz"] },
+      provenanceJson: { model: "baseline", request_messages: [] },
+    });
+
+    expect(mapped.hasError).toBe(false);
+  });
 });

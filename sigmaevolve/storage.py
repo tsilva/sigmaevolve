@@ -140,6 +140,21 @@ def _trial_summary_sort_key(summary: TrialSummary) -> tuple[float, float, float]
     return (-accuracy, float(time_to_best), -summary.score)
 
 
+def _has_error_signal(payload: dict[str, Any] | None) -> bool:
+    if not payload:
+        return False
+    reason = payload.get("reason")
+    if isinstance(reason, str) and reason.strip():
+        return True
+    detail = payload.get("detail")
+    if isinstance(detail, str) and detail.strip():
+        return True
+    stderr = payload.get("stderr")
+    if isinstance(stderr, str) and stderr.strip():
+        return True
+    return payload.get("returncode") is not None
+
+
 class SQLAlchemyRepository:
     def __init__(self, database_url: str) -> None:
         database_url = normalize_database_url(database_url)
@@ -471,7 +486,7 @@ class SQLAlchemyRepository:
                         trials_table.c.runner_id == runner_id,
                     )
                 )
-                .values(heartbeat_at=now_utc(), error_json=payload or None)
+                .values(heartbeat_at=now_utc(), error_json=payload if _has_error_signal(payload) else None)
             )
 
     def finalize_trial(
@@ -487,6 +502,9 @@ class SQLAlchemyRepository:
             raise ValueError(f"Unsupported outcome_reason: {outcome_reason}")
         if metrics is None:
             score = 0.0
+        persisted_error_info = dict(error_info) if error_info else None
+        if outcome_reason in SUCCESS_OUTCOMES and not _has_error_signal(persisted_error_info):
+            persisted_error_info = None
         with self.transaction() as conn:
             where = [trials_table.c.trial_id == trial_id]
             if runner_id is not None:
@@ -506,7 +524,7 @@ class SQLAlchemyRepository:
                     heartbeat_at=now_utc(),
                     metrics_json=metrics,
                     score=score,
-                    error_json=error_info,
+                    error_json=persisted_error_info,
                 )
             )
             if result.rowcount and track_id is not None:

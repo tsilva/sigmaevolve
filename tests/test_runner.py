@@ -184,6 +184,7 @@ def test_successful_run_produces_metrics_and_score(repository, dataset_manager):
     assert finished.outcome_reason == "succeeded"
     assert finished.metrics_json["accuracy"] >= 0.0
     assert finished.score == finished.metrics_json["accuracy"]
+    assert finished.error_json is None
 
 
 def test_timeout_with_no_completed_eval_finalizes_with_zero_score(repository, dataset_manager):
@@ -211,6 +212,7 @@ def test_timeout_with_completed_eval_keeps_best_score(repository, dataset_manage
     assert finished.metrics_json["time_to_best_eval_sec"] == 0.1
     assert finished.metrics_json["had_unscored_work_at_timeout"] is True
     assert finished.metrics_json["time_since_last_eval_sec"] > 0.0
+    assert finished.error_json is None
 
 
 def test_equal_accuracy_uses_lower_time_to_best_eval_as_tiebreaker(repository, dataset_manager):

@@ -44,6 +44,25 @@ type TrialRow = {
 
 const FAILURE_OUTCOMES = new Set(["crashed", "eval_failed", "stale"]);
 
+function hasErrorSignal(value: Record<string, unknown> | null): boolean {
+  if (!value) {
+    return false;
+  }
+  const reason = value.reason;
+  if (typeof reason === "string" && reason.trim().length > 0) {
+    return true;
+  }
+  const detail = value.detail;
+  if (typeof detail === "string" && detail.trim().length > 0) {
+    return true;
+  }
+  const stderr = value.stderr;
+  if (typeof stderr === "string" && stderr.trim().length > 0) {
+    return true;
+  }
+  return value.returncode !== null && value.returncode !== undefined;
+}
+
 function asIsoDate(value: string | Date | null | undefined): string | null {
   if (!value) {
     return null;
@@ -83,7 +102,7 @@ export function mapTrackListItem(row: TrackRow): TrackListItem {
 }
 
 export function mapTrialListItem(row: TrialRow): TrialListItem {
-  const hasError = FAILURE_OUTCOMES.has(row.outcomeReason ?? "") || Boolean(row.hasError);
+  const hasError = FAILURE_OUTCOMES.has(row.outcomeReason ?? "") || hasErrorSignal(row.errorJson ?? null);
   return {
     trialId: row.trialId,
     status: row.status,
