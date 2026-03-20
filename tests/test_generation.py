@@ -89,11 +89,12 @@ def test_openrouter_generation_uses_model_pool_round_robin(monkeypatch):
     assert second_result.provenance_json["generation_config"]["temperature"] == 0.8
     assert first_result.provenance_json["request_messages"] == payloads[0]["messages"]
 
-    first_prompt = json.loads(payloads[0]["messages"][1]["content"])
-    assert first_prompt["task_contract"]["max_eval_gap_sec"] == 15
-    assert "progress_path" in first_prompt["task_contract"]["required_outputs"]
-    assert first_prompt["task_contract"]["config_keys"]["validation_split_path"].startswith("Path to the validation")
-    assert any(
-        "exact keys listed in config_keys" in rule for rule in first_prompt["task_contract"]["writing_rules"]
-    )
-    assert first_prompt["negative_trials"] == []
+    first_prompt = payloads[0]["messages"][1]["content"]
+    assert not first_prompt.lstrip().startswith("{")
+    assert "Write a complete Python train.py for dataset mnist:v1." in first_prompt
+    assert "Follow this task contract exactly:" in first_prompt
+    assert "- max_eval_gap_sec: 15" in first_prompt
+    assert "- progress_path: JSON heartbeat with current phase, elapsed_time_sec, and last_completed_eval_sec" in first_prompt
+    assert "- validation_split_path: Path to the validation .npz file with features only." in first_prompt
+    assert "Read the config JSON using the exact keys listed in config_keys" in first_prompt
+    assert "No recent negative trials are available." in first_prompt

@@ -1,15 +1,23 @@
 import type { Metadata } from "next";
 
 const payload: Omit<Metadata, "metadataBase"> = {
-  "title": "SigmaEvolve",
-  "description": "SigmaEvolve is a nodejs project.",
+  "title": "SigmaEvolve Dashboard",
+  "applicationName": "SigmaEvolve Dashboard",
+  "description": "Live dashboard for SigmaEvolve experiment tracks, trials, and telemetry.",
   "keywords": [
     "sigmaevolve",
-    "nodejs"
+    "experiment tracking",
+    "trial telemetry",
+    "model evaluation",
+    "dashboard"
   ],
+  "alternates": {
+    "canonical": "/"
+  },
   "openGraph": {
-    "title": "SigmaEvolve",
-    "description": "SigmaEvolve is a nodejs project.",
+    "title": "SigmaEvolve Dashboard",
+    "description": "Live dashboard for SigmaEvolve experiment tracks, trials, and telemetry.",
+    "url": "/",
     "images": [
       {
         "url": "/brand/web-seo/og-image-1200x630.png",
@@ -21,8 +29,8 @@ const payload: Omit<Metadata, "metadataBase"> = {
   },
   "twitter": {
     "card": "summary_large_image",
-    "title": "SigmaEvolve",
-    "description": "SigmaEvolve is a nodejs project.",
+    "title": "SigmaEvolve Dashboard",
+    "description": "Live dashboard for SigmaEvolve experiment tracks, trials, and telemetry.",
     "images": [
       "/brand/web-seo/og-image-1200x630.png"
     ]

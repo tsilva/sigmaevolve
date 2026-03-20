@@ -76,6 +76,173 @@ class OpenRouterGenerationBackend:
             "retry_count": generation_policy.get("retry_count", 2),
         }
 
+    def _format_scalar(self, value: object) -> str:
+        if value is None:
+            return "none"
+        if isinstance(value, bool):
+            return "true" if value else "false"
+        if isinstance(value, float):
+            return f"{value:.6g}"
+        return str(value)
+
+    def _format_mapping(self, payload: dict[str, object], indent: int = 0) -> list[str]:
+        lines: list[str] = []
+        prefix = " " * indent
+        for key, value in payload.items():
+            label = str(key)
+            if isinstance(value, dict):
+                lines.append(f"{prefix}- {label}:")
+                lines.extend(self._format_mapping(value, indent + 2))
+                continue
+            if isinstance(value, list):
+                if not value:
+                    lines.append(f"{prefix}- {label}: none")
+                    continue
+                if all(not isinstance(item, (dict, list)) for item in value):
+                    rendered = ", ".join(self._format_scalar(item) for item in value)
+                    lines.append(f"{prefix}- {label}: {rendered}")
+                    continue
+                lines.append(f"{prefix}- {label}:")
+                for item in value:
+                    if isinstance(item, dict):
+                        lines.extend(self._format_mapping(item, indent + 2))
+                    elif isinstance(item, list):
+                        nested = ", ".join(self._format_scalar(part) for part in item)
+                        lines.append(f"{' ' * (indent + 2)}- {nested}")
+                    else:
+                        lines.append(f"{' ' * (indent + 2)}- {self._format_scalar(item)}")
+                continue
+            lines.append(f"{prefix}- {label}: {self._format_scalar(value)}")
+        return lines
+
+    def _build_user_prompt_text(
+        self,
+        track: TrackRecord,
+        dataset_manifest: DatasetManifest,
+        context_trials: list[TrialSummary],
+        negative_trials: list[TrialSummary],
+        selected_config: dict[str, object],
+    ) -> str:
+        task_contract = {
+            "entrypoint": "train.py --config /abs/path/run_config.json",
+            "config keys": {
+                "dataset_dir": "Directory containing the prepared dataset assets.",
+                "train_split_path": "Path to the training .npz file with features and labels arrays.",
+                "validation_split_path": "Path to the validation .npz file with features only.",
+                "budget_sec": "Hard wall-clock training budget in seconds.",
+                "max_eval_gap_sec": "Maximum allowed gap between completed validation passes.",
+                "random_seed": "Deterministic seed to use for numpy/torch setup.",
+                "predictions_output_path": "Compatibility fallback output path for predictions.npz.",
+                "progress_path": "Path for heartbeat/progress JSON updates.",
+                "eval_dir": "Directory for atomically written evaluation artifacts.",
+                "debug_output_path": "Path for optional debug JSON output.",
+                "dataset_metadata": "Dataset metadata object from the harness.",
+            },
+            "train split format": "npz with arrays: features, labels",
+            "validation split format": "npz with arrays: features",
+            "required outputs": {
+                "progress_path": "JSON heartbeat with current phase, elapsed_time_sec, and last_completed_eval_sec",
+                "eval_dir": "Directory of atomically written .npz eval artifacts with predictions, eval_index, elapsed_time_sec, and optional epoch",
+                "legacy_predictions_output_path": "Optional compatibility fallback only; prefer eval_dir artifacts",
+            },
+            "allowed packages": ["argparse", "json", "pathlib", "numpy", "torch"],
+            "budget_sec": track.policy_json["budget_sec"],
+            "max_eval_gap_sec": track.policy_json.get("max_eval_gap_sec", 15),
+            "writing rules": [
+                "Read the config JSON using the exact keys listed in config_keys; do not invent alternate key names.",
+                "Write eval artifacts atomically by saving to a temp path and renaming into eval_dir.",
+                "Do not spend long uninterrupted stretches training without finishing a validation pass.",
+                "When validation accuracy ties, lower elapsed wall time to that eval wins.",
+            ],
+        }
+        lines = [
+            f"Write a complete Python train.py for dataset {track.dataset_id}.",
+            "",
+            "Use the dataset metadata below when choosing the model and loss setup:",
+        ]
+        if dataset_manifest.metadata:
+            lines.extend(self._format_mapping(dict(dataset_manifest.metadata), indent=0))
+        else:
+            lines.append("- No dataset metadata was provided.")
+        lines.extend(
+            [
+                "",
+                "Follow this task contract exactly:",
+            ]
+        )
+        lines.extend(self._format_mapping(task_contract, indent=0))
+        lines.extend(
+            [
+                "",
+                "This attempt was selected with the following generation settings:",
+            ]
+        )
+        lines.extend(self._format_mapping(dict(selected_config), indent=0))
+        lines.extend(
+            [
+                "",
+                "The broader generation policy for the track is:",
+            ]
+        )
+        lines.extend(self._format_mapping(dict(track.policy_json["generation_backend"]), indent=0))
+        lines.extend(
+            [
+                "",
+                "Learn from these prior successful or promising trials:",
+            ]
+        )
+        if context_trials:
+            for trial in context_trials:
+                lines.extend(
+                    [
+                        f"Trial {trial.trial_id}:",
+                        f"- score: {self._format_scalar(trial.score)}",
+                        f"- outcome reason: {self._format_scalar(trial.outcome_reason)}",
+                    ]
+                )
+                if trial.metrics_json:
+                    lines.append("- metrics:")
+                    lines.extend(self._format_mapping(dict(trial.metrics_json), indent=2))
+                lines.extend(
+                    [
+                        "- source preview:",
+                        "```python",
+                        trial.source[:1500].rstrip(),
+                        "```",
+                    ]
+                )
+        else:
+            lines.append("No prior trials are available.")
+        lines.extend(
+            [
+                "",
+                "Avoid the failure modes seen in these recent negative trials:",
+            ]
+        )
+        if negative_trials:
+            for trial in negative_trials:
+                lines.extend(
+                    [
+                        f"Trial {trial.trial_id}:",
+                        f"- score: {self._format_scalar(trial.score)}",
+                        f"- outcome reason: {self._format_scalar(trial.outcome_reason)}",
+                    ]
+                )
+                if trial.metrics_json:
+                    lines.append("- metrics:")
+                    lines.extend(self._format_mapping(dict(trial.metrics_json), indent=2))
+                lines.extend(
+                    [
+                        "- source preview:",
+                        "```python",
+                        trial.source[:1200].rstrip(),
+                        "```",
+                    ]
+                )
+        else:
+            lines.append("No recent negative trials are available.")
+        return "\n".join(lines)
+
     def _build_prompt(
         self,
         track: TrackRecord,
@@ -84,74 +251,23 @@ class OpenRouterGenerationBackend:
         negative_trials: list[TrialSummary],
         selected_config: dict[str, object],
     ) -> list[dict[str, str]]:
-        summaries = [
-            {
-                "trial_id": trial.trial_id,
-                "score": trial.score,
-                "outcome_reason": trial.outcome_reason,
-                "metrics": trial.metrics_json,
-                "source_preview": trial.source[:1500],
-            }
-            for trial in context_trials
-        ]
-        timeout_summaries = [
-            {
-                "trial_id": trial.trial_id,
-                "score": trial.score,
-                "outcome_reason": trial.outcome_reason,
-                "metrics": trial.metrics_json,
-                "source_preview": trial.source[:1200],
-            }
-            for trial in negative_trials
-        ]
         system_prompt = (
             "You are generating a self-contained Python train.py script for a classification harness. "
             "Return only Python source, with no markdown fences or commentary. "
             "Optimize for best validation accuracy, but you must publish completed validation checkpoints regularly so the harness can score them before timeout."
         )
-        user_prompt = {
-            "dataset_id": track.dataset_id,
-            "dataset_metadata": dataset_manifest.metadata,
-            "task_contract": {
-                "entrypoint": "train.py --config /abs/path/run_config.json",
-                "config_keys": {
-                    "dataset_dir": "Directory containing the prepared dataset assets.",
-                    "train_split_path": "Path to the training .npz file with features and labels arrays.",
-                    "validation_split_path": "Path to the validation .npz file with features only.",
-                    "budget_sec": "Hard wall-clock training budget in seconds.",
-                    "max_eval_gap_sec": "Maximum allowed gap between completed validation passes.",
-                    "random_seed": "Deterministic seed to use for numpy/torch setup.",
-                    "predictions_output_path": "Compatibility fallback output path for predictions.npz.",
-                    "progress_path": "Path for heartbeat/progress JSON updates.",
-                    "eval_dir": "Directory for atomically written evaluation artifacts.",
-                    "debug_output_path": "Path for optional debug JSON output.",
-                    "dataset_metadata": "Dataset metadata object from the harness.",
-                },
-                "train_split_format": "npz with arrays: features, labels",
-                "validation_split_format": "npz with arrays: features",
-                "required_outputs": {
-                    "progress_path": "JSON heartbeat with current phase, elapsed_time_sec, and last_completed_eval_sec",
-                    "eval_dir": "Directory of atomically written .npz eval artifacts with predictions, eval_index, elapsed_time_sec, and optional epoch",
-                    "legacy_predictions_output_path": "Optional compatibility fallback only; prefer eval_dir artifacts",
-                },
-                "allowed_packages": ["argparse", "json", "pathlib", "numpy", "torch"],
-                "budget_sec": track.policy_json["budget_sec"],
-                "max_eval_gap_sec": track.policy_json.get("max_eval_gap_sec", 15),
-                "writing_rules": [
-                    "Read the config JSON using the exact keys listed in config_keys; do not invent alternate key names.",
-                    "Write eval artifacts atomically by saving to a temp path and renaming into eval_dir.",
-                    "Do not spend long uninterrupted stretches training without finishing a validation pass.",
-                    "When validation accuracy ties, lower elapsed wall time to that eval wins.",
-                ],
-            },
-            "generation_policy": track.policy_json["generation_backend"],
-            "selected_generation_config": selected_config,
-            "context_trials": summaries,
-            "negative_trials": timeout_summaries,
-        }
         return [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": json.dumps(user_prompt, sort_keys=True)},
+            {
+                "role": "user",
+                "content": self._build_user_prompt_text(
+                    track,
+                    dataset_manifest,
+                    context_trials,
+                    negative_trials,
+                    selected_config,
+                ),
+            },
         ]
 
     def _extract_source(self, raw_text: str) -> str:

@@ -1,6 +1,9 @@
 import type { Metadata } from "next";
 import { IBM_Plex_Mono, Space_Grotesk } from "next/font/google";
 
+import { getSiteUrl } from "@/lib/site";
+import { createMetadata } from "@/web-seo-metadata";
+
 import "./globals.css";
 
 const sans = Space_Grotesk({
@@ -14,10 +17,7 @@ const mono = IBM_Plex_Mono({
   variable: "--font-mono",
 });
 
-export const metadata: Metadata = {
-  title: "SigmaEvolve Dashboard",
-  description: "Track experiment tracks and trials in real time.",
-};
+export const metadata: Metadata = createMetadata(getSiteUrl());
 
 export default function RootLayout({
   children,
