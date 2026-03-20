@@ -350,6 +350,11 @@ button {
   white-space: pre;
 }
 
+.code-block-wrap {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .trial-error {
   color: var(--danger);
   font-weight: 600;

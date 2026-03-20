@@ -55,6 +55,7 @@ describe("dashboard row mappers", () => {
       hasError: true,
       source: "print('hello')\n",
       errorJson: { stderr: "boom" },
+      provenanceJson: { model: "google/gemini", request_messages: [] },
     });
 
     expect(mapped).toEqual({
@@ -78,6 +79,7 @@ describe("dashboard row mappers", () => {
       hasError: true,
       source: "print('hello')\n",
       errorJson: { stderr: "boom" },
+      provenanceJson: { model: "google/gemini", request_messages: [] },
     });
   });
 });

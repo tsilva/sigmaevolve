@@ -38,6 +38,7 @@ export type TrialListItem = {
   hasError: boolean;
   source: string;
   errorJson: Record<string, unknown> | null;
+  provenanceJson: Record<string, unknown> | null;
 };
 
 export type PaginatedTrialsResponse = {

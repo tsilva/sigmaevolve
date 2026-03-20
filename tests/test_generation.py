@@ -80,11 +80,14 @@ def test_openrouter_generation_uses_model_pool_round_robin(monkeypatch):
     monkeypatch.setattr("sigmaevolve.generation.request.urlopen", fake_urlopen)
 
     track = _track_with_pool()
-    backend.generate(track, _manifest(), _context(), generation_index=0)
-    backend.generate(track, _manifest(), _context(), generation_index=1)
+    first_result = backend.generate(track, _manifest(), _context(), generation_index=0)
+    second_result = backend.generate(track, _manifest(), _context(), generation_index=1)
 
     assert payloads[0]["model"] == "openai/gpt-4o-mini"
     assert payloads[1]["model"] == "anthropic/claude-3.5-sonnet"
+    assert first_result.provenance_json["model"] == "openai/gpt-4o-mini"
+    assert second_result.provenance_json["generation_config"]["temperature"] == 0.8
+    assert first_result.provenance_json["request_messages"] == payloads[0]["messages"]
 
     first_prompt = json.loads(payloads[0]["messages"][1]["content"])
     assert first_prompt["task_contract"]["max_eval_gap_sec"] == 15

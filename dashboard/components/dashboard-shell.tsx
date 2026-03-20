@@ -77,6 +77,42 @@ function extractCrashDetails(value: Record<string, unknown> | null): string | nu
   return null;
 }
 
+type PromptMessage = {
+  role: string;
+  content: string;
+};
+
+function asPromptMessages(value: Record<string, unknown> | null): PromptMessage[] {
+  const raw = value?.request_messages;
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  return raw.flatMap((entry) => {
+    if (!entry || typeof entry !== "object") {
+      return [];
+    }
+    const role = (entry as { role?: unknown }).role;
+    const content = (entry as { content?: unknown }).content;
+    if (typeof role !== "string" || typeof content !== "string") {
+      return [];
+    }
+    return [{ role, content }];
+  });
+}
+
+function formatGenerationProperties(value: Record<string, unknown> | null): string {
+  if (!value) {
+    return "No provenance payload recorded.";
+  }
+  const payload: Record<string, unknown> = {};
+  for (const key of ["backend", "model", "generation_index", "provider_response_id", "generation_config", "context_trial_ids"]) {
+    if (key in value) {
+      payload[key] = value[key];
+    }
+  }
+  return JSON.stringify(payload, null, 2);
+}
+
 type DashboardShellProps = {
   initialDetail: TrackDetailResponse;
   initialTracks: TrackListItem[];
@@ -366,6 +402,20 @@ export function DashboardShell({
                                   <code>{formatJsonBlock(trial.errorJson)}</code>
                                 </pre>
                               </section>
+                              <section className="trial-detail-card">
+                                <h4>Generation metadata</h4>
+                                <pre className="code-block">
+                                  <code>{formatGenerationProperties(trial.provenanceJson)}</code>
+                                </pre>
+                              </section>
+                              {asPromptMessages(trial.provenanceJson).map((message, index) => (
+                                <section className="trial-detail-card" key={`${trial.trialId}-prompt-${index}`}>
+                                  <h4>{`Prompt ${index + 1} · ${message.role}`}</h4>
+                                  <pre className="code-block code-block-wrap">
+                                    <code>{message.content}</code>
+                                  </pre>
+                                </section>
+                              ))}
                               <section className="trial-detail-card trial-detail-card-wide">
                                 <h4>Trial source</h4>
                                 <pre className="code-block">

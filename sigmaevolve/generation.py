@@ -42,6 +42,7 @@ class FixedGenerationBackend:
                 "backend": "fixed",
                 "model": self.model_name,
                 "generation_index": generation_index,
+                "request_messages": [],
                 "context_trial_ids": [trial.trial_id for trial in context_trials],
             },
         )
@@ -198,6 +199,7 @@ class OpenRouterGenerationBackend:
         with request.urlopen(req, timeout=120) as response:
             body = json.loads(response.read().decode("utf-8"))
         content = body["choices"][0]["message"]["content"]
+        request_messages = payload["messages"]
         return GenerationResult(
             source=self._extract_source(content),
             provenance_json={
@@ -206,6 +208,7 @@ class OpenRouterGenerationBackend:
                 "generation_config": selected_config,
                 "generation_index": generation_index,
                 "provider_response_id": body.get("id"),
+                "request_messages": request_messages,
                 "context_trial_ids": [trial.trial_id for trial in context_trials],
             },
         )

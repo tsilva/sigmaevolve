@@ -39,6 +39,7 @@ type TrialRow = {
   hasError: boolean | null;
   source: string | null;
   errorJson: Record<string, unknown> | null;
+  provenanceJson: Record<string, unknown> | null;
 };
 
 function asIsoDate(value: string | Date | null | undefined): string | null {
@@ -101,5 +102,6 @@ export function mapTrialListItem(row: TrialRow): TrialListItem {
     hasError: Boolean(row.hasError),
     source: row.source ?? "",
     errorJson: row.errorJson ?? null,
+    provenanceJson: row.provenanceJson ?? null,
   };
 }
