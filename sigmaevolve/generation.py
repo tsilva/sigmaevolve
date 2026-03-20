@@ -175,8 +175,11 @@ class OpenRouterGenerationBackend:
                     "When validation accuracy ties, lower elapsed wall time to that eval wins.",
                 ],
         }
+        primary_parent = context_trials[0] if context_trials else None
         lines = [
             f"Write a complete Python train.py for dataset {track.dataset_id}.",
+            "",
+            "Treat this as an evolutionary mutation task, not a rewrite from scratch.",
             "",
             "Use the dataset metadata below when choosing the model and loss setup:",
         ]
@@ -208,30 +211,36 @@ class OpenRouterGenerationBackend:
         lines.extend(
             [
                 "",
-                "Learn from these prior successful or promising trials:",
+                "Use this parent trial as the base candidate:",
             ]
         )
-        if context_trials:
-            for trial in context_trials:
-                lines.extend(
-                    [
-                        f"Trial {trial.trial_id}:",
-                        f"- score: {self._format_scalar(trial.score)}",
-                        f"- outcome reason: {self._format_scalar(trial.outcome_reason)}",
-                    ]
-                )
-                if trial.metrics_json:
-                    lines.append("- metrics:")
-                    lines.extend(self._format_mapping(dict(trial.metrics_json), indent=2))
-                lines.extend(self._summarize_error(trial.error_json))
-                lines.extend(
-                    [
-                        "- source preview:",
-                        "```python",
-                        trial.source.rstrip(),
-                        "```",
-                    ]
-                )
+        if primary_parent is not None:
+            lines.extend(
+                [
+                    f"Trial {primary_parent.trial_id}:",
+                    f"- score: {self._format_scalar(primary_parent.score)}",
+                    f"- outcome reason: {self._format_scalar(primary_parent.outcome_reason)}",
+                ]
+            )
+            if primary_parent.metrics_json:
+                lines.append("- metrics:")
+                lines.extend(self._format_mapping(dict(primary_parent.metrics_json), indent=2))
+            lines.extend(self._summarize_error(primary_parent.error_json))
+            lines.extend(
+                [
+                    "",
+                    "Mutation instructions:",
+                    "- Preserve the parent's working harness integration unless a change is required.",
+                    "- Produce a mutated descendant of the parent, not a fresh rewrite.",
+                    "- Make exactly one substantive improvement likely to improve validation accuracy within the time budget.",
+                    "- Avoid cosmetic refactors or rename-only changes.",
+                    "",
+                    "Parent source:",
+                    "```python",
+                    primary_parent.source.rstrip(),
+                    "```",
+                ]
+            )
         else:
             lines.append("No prior trials are available.")
         lines.extend(

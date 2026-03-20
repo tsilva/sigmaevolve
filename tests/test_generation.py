@@ -109,11 +109,14 @@ def test_openrouter_generation_uses_model_pool_round_robin(monkeypatch):
     first_prompt = payloads[0]["messages"][1]["content"]
     assert not first_prompt.lstrip().startswith("{")
     assert "Write a complete Python train.py for dataset mnist:v1." in first_prompt
+    assert "Treat this as an evolutionary mutation task, not a rewrite from scratch." in first_prompt
     assert "Follow this task contract exactly:" in first_prompt
     assert "- max_eval_gap_sec: 15" in first_prompt
     assert "- progress_path: JSON heartbeat with current phase, elapsed_time_sec, and last_completed_eval_sec" in first_prompt
     assert "- validation_split_path: Path to the validation .npz file with features only." in first_prompt
     assert "Read the config JSON using the exact keys listed in config_keys" in first_prompt
+    assert "Use this parent trial as the base candidate:" in first_prompt
+    assert "Produce a mutated descendant of the parent, not a fresh rewrite." in first_prompt
     assert "No recent negative trials are available." in first_prompt
 
 
@@ -146,6 +149,7 @@ def test_openrouter_generation_prompt_includes_failure_feedback(monkeypatch):
 
     prompt = payloads[0]["messages"][1]["content"]
     assert "if you use linear layers, flatten both train and validation batches consistently" in prompt
+    assert "Make exactly one substantive improvement likely to improve validation accuracy within the time budget." in prompt
     assert "Trial trial_failed:" in prompt
     assert "- returncode: 1" in prompt
     assert "mat1 and mat2 shapes cannot be multiplied" in prompt
