@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { useDeferredValue, useEffect, useEffectEvent, useState, useTransition } from "react";
+import { useDeferredValue, useEffect, useEffectEvent, useState, useTransition, type KeyboardEvent } from "react";
 
 import { HighlightedCode } from "@/components/highlighted-code";
 import { useTrackLiveUpdates } from "@/hooks/use-track-live-updates";
@@ -276,6 +276,8 @@ type DashboardShellProps = {
   selectedTrackId: string;
 };
 
+type ActiveWorkspace = "explorer" | "inspector";
+
 export function DashboardShell({
   initialDetail,
   initialTracks,
@@ -297,6 +299,9 @@ export function DashboardShell({
   const [status, setStatus] = useState<TrialStatusFilter>("all");
   const [searchText, setSearchText] = useState("");
   const [isTracksCollapsed, setIsTracksCollapsed] = useState(false);
+  const [activeWorkspace, setActiveWorkspace] = useState<ActiveWorkspace>(
+    initialSelectedTrialId ? "inspector" : "explorer",
+  );
   const [selectedTrialId, setSelectedTrialId] = useState<string | null>(initialSelectedTrialId);
   const [urlTrialId, setUrlTrialId] = useState<string | null>(initialSelectedTrialId);
   const [error, setError] = useState<string | null>(null);
@@ -309,6 +314,7 @@ export function DashboardShell({
     setStatus("all");
     setSearchText("");
     setIsTracksCollapsed(false);
+    setActiveWorkspace(initialSelectedTrialId ? "inspector" : "explorer");
     setSelectedTrialId(initialSelectedTrialId);
     setUrlTrialId(initialSelectedTrialId);
     setError(null);
@@ -387,7 +393,11 @@ export function DashboardShell({
   useEffect(() => {
     if (visibleTrials.length === 0) {
       if (selectedTrialId !== null) {
-        syncSelectedTrial(null);
+        setSelectedTrialId(null);
+      }
+      if (urlTrialId !== null) {
+        updateTrialUrl(null);
+        setUrlTrialId(null);
       }
       return;
     }
@@ -401,6 +411,7 @@ export function DashboardShell({
         return;
       }
 
+      setActiveWorkspace("inspector");
       syncSelectedTrial(visibleTrials[0].trialId);
       return;
     }
@@ -409,8 +420,8 @@ export function DashboardShell({
       return;
     }
 
-    syncSelectedTrial(visibleTrials[0].trialId);
-  }, [selectedTrialId, syncSelectedTrial, urlTrialId, visibleTrials]);
+    setSelectedTrialId(visibleTrials[0].trialId);
+  }, [selectedTrialId, syncSelectedTrial, updateTrialUrl, urlTrialId, visibleTrials]);
 
   const liveMode = useTrackLiveUpdates({
     streamUrl: `/api/tracks/${selectedTrackId}/stream`,
@@ -460,6 +471,26 @@ export function DashboardShell({
         }
       })();
     });
+  };
+
+  const openInspector = (trialId: string) => {
+    setActiveWorkspace("inspector");
+    syncSelectedTrial(trialId);
+  };
+
+  const returnToExplorer = () => {
+    setActiveWorkspace("explorer");
+    updateTrialUrl(null);
+    setUrlTrialId(null);
+  };
+
+  const handleTrialKeyDown = (event: KeyboardEvent<HTMLTableRowElement>, trialId: string) => {
+    if (event.key !== "Enter" && event.key !== " ") {
+      return;
+    }
+
+    event.preventDefault();
+    openInspector(trialId);
   };
 
   return (
@@ -645,7 +676,8 @@ export function DashboardShell({
           </div>
         </section>
 
-        <div className="workspace-grid">
+        <div className={`workspace-stage workspace-stage-${activeWorkspace}`}>
+          {activeWorkspace === "explorer" ? (
           <section className="workspace-card explorer-panel">
             <div className="section-heading">
               <div className="eyebrow">Trial Explorer</div>
@@ -688,7 +720,7 @@ export function DashboardShell({
 
             {error ? <div className="error-banner">{error}</div> : null}
 
-            <div className="trial-list" aria-label="Trials">
+            <div className="trial-table-shell" aria-label="Trials">
               {visibleTrials.length === 0 ? (
                 <section className="empty-panel">
                   <div className="eyebrow">No matching trials</div>
@@ -696,59 +728,58 @@ export function DashboardShell({
                   <p className="section-copy">Change the status filter or search query to bring runs back into view.</p>
                 </section>
               ) : (
-                visibleTrials.map((trial) => (
-                  <button
-                    key={trial.trialId}
-                    type="button"
-                    aria-label={`Select trial ${trial.trialId}`}
-                    aria-pressed={selectedTrial?.trialId === trial.trialId}
-                    className={`trial-card tone-${getTrialTone(trial)} ${selectedTrial?.trialId === trial.trialId ? "active" : ""}`}
-                    onClick={() => syncSelectedTrial(trial.trialId)}
-                  >
-                    <div className="trial-card-top">
-                      <div>
-                        <div className="trial-id">{trial.trialId}</div>
-                        <div className="trial-headline">{getTrialNarrative(trial)}</div>
-                      </div>
-                      <span className={`status-badge status-${trial.status}`}>
-                        <span className={`status-indicator ${trial.status}`} />
-                        {trial.status}
-                      </span>
-                    </div>
-
-                    <div className="trial-stat-grid">
-                      <div>
-                        <span className="trial-stat-label">Score</span>
-                        <strong>{formatNumber(trial.score, 4)}</strong>
-                      </div>
-                      <div>
-                        <span className="trial-stat-label">Accuracy</span>
-                        <strong>{formatNumber(trial.accuracy, 4)}</strong>
-                      </div>
-                      <div>
-                        <span className="trial-stat-label">Duration</span>
-                        <strong>{formatDuration(trial.durationSec)}</strong>
-                      </div>
-                      <div>
-                        <span className="trial-stat-label">Last Phase</span>
-                        <strong>{trial.lastPhase ?? "—"}</strong>
-                      </div>
-                    </div>
-
-                    <div className="trial-foot">
-                      <span>{trial.model ?? "unknown model"}</span>
-                      <span>{trial.backend ?? "unknown backend"}</span>
-                      <span>Dispatches {trial.dispatchAttempts}</span>
-                    </div>
-
-                    <div className="flag-row">
-                      {trial.outcomeReason ? <span className="flag-chip">{trial.outcomeReason}</span> : null}
-                      {trial.timedOut ? <span className="flag-chip flag-warning">timed out</span> : null}
-                      {trial.hadUnscoredWorkAtTimeout ? <span className="flag-chip flag-warning">unevaluated work</span> : null}
-                      {trial.hasError ? <span className="flag-chip flag-danger">error payload</span> : null}
-                    </div>
-                  </button>
-                ))
+                <table className="trial-table">
+                  <thead>
+                    <tr>
+                      <th scope="col">Trial</th>
+                      <th scope="col">Status</th>
+                      <th scope="col">Score</th>
+                      <th scope="col">Accuracy</th>
+                      <th scope="col">Duration</th>
+                      <th scope="col">Model</th>
+                      <th scope="col">Notes</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {visibleTrials.map((trial) => (
+                      <tr
+                        key={trial.trialId}
+                        role="button"
+                        tabIndex={0}
+                        aria-label={`Open trial ${trial.trialId}`}
+                        className={`trial-row tone-${getTrialTone(trial)} ${selectedTrial?.trialId === trial.trialId ? "active" : ""}`}
+                        onClick={() => openInspector(trial.trialId)}
+                        onKeyDown={(event) => handleTrialKeyDown(event, trial.trialId)}
+                      >
+                        <td>
+                          <div className="trial-cell-primary">{trial.trialId}</div>
+                          <div className="trial-cell-secondary">{getTrialNarrative(trial)}</div>
+                        </td>
+                        <td>
+                          <span className={`status-badge status-${trial.status}`}>
+                            <span className={`status-indicator ${trial.status}`} />
+                            {trial.status}
+                          </span>
+                        </td>
+                        <td>{formatNumber(trial.score, 4)}</td>
+                        <td>{formatNumber(trial.accuracy, 4)}</td>
+                        <td>{formatDuration(trial.durationSec)}</td>
+                        <td>
+                          <div className="trial-cell-primary">{trial.model ?? "unknown model"}</div>
+                          <div className="trial-cell-secondary">{trial.backend ?? "unknown backend"}</div>
+                        </td>
+                        <td>
+                          <div className="trial-notes">
+                            {trial.outcomeReason ? <span className="flag-chip">{trial.outcomeReason}</span> : null}
+                            {trial.timedOut ? <span className="flag-chip flag-warning">timed out</span> : null}
+                            {trial.hadUnscoredWorkAtTimeout ? <span className="flag-chip flag-warning">unevaluated work</span> : null}
+                            {trial.hasError ? <span className="flag-chip flag-danger">error payload</span> : null}
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               )}
             </div>
 
@@ -758,11 +789,25 @@ export function DashboardShell({
               </button>
             ) : null}
           </section>
+          ) : null}
 
+          {activeWorkspace === "inspector" ? (
           <section className="workspace-card inspector-panel">
             <div className="section-heading">
-              <div className="eyebrow">Run Inspector</div>
-              <h2 className="section-title">Why the selected run behaved that way</h2>
+              <div className="inspector-header">
+                <div>
+                  <div className="eyebrow">Run Inspector</div>
+                  <h2 className="section-title">Why the selected run behaved that way</h2>
+                </div>
+                <button
+                  type="button"
+                  className="panel-toggle"
+                  onClick={returnToExplorer}
+                  aria-label="Back to trial explorer"
+                >
+                  Back to trials
+                </button>
+              </div>
               <p className="section-copy">
                 Inspect lifecycle timing, outcome context, prompt provenance, and the exact source evaluated.
               </p>
@@ -931,6 +976,7 @@ export function DashboardShell({
               </section>
             )}
           </section>
+          ) : null}
         </div>
       </section>
     </main>

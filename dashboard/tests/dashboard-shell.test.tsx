@@ -146,10 +146,11 @@ describe("DashboardShell", () => {
     renderShell();
 
     await waitFor(() => {
-      expect(navigationState.replace).toHaveBeenCalledWith("/tracks/track_1/trials/trial_2", { scroll: false });
+      expect(screen.getByText("How each run went")).toBeTruthy();
     });
 
-    expect(screen.getByRole("heading", { name: "trial_2" })).toBeTruthy();
+    expect(navigationState.replace).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Open trial trial_2" })).toBeTruthy();
   });
 
   it("respects a valid trial param on first render", () => {
@@ -175,20 +176,19 @@ describe("DashboardShell", () => {
   });
 
   it("updates the selected trial and URL when a user clicks another trial", async () => {
-    renderShell({
-      initialSelectedTrialId: "trial_2",
-    });
+    renderShell();
 
-    fireEvent.click(screen.getByRole("button", { name: "Select trial trial_1" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open trial trial_1" }));
 
     await waitFor(() => {
       expect(navigationState.replace).toHaveBeenCalledWith("/tracks/track_1/trials/trial_1", { scroll: false });
     });
 
     expect(screen.getByRole("heading", { name: "trial_1" })).toBeTruthy();
+    expect(screen.queryByText("How each run went")).toBeNull();
   });
 
-  it("falls back to the first visible filtered trial when the current trial is filtered out", async () => {
+  it("keeps the explorer visible when a filter changes the visible trial set", async () => {
     const queuedTrials = [
       createTrial({
         trialId: "trial_queued",
@@ -205,16 +205,16 @@ describe("DashboardShell", () => {
     } as Response);
 
     renderShell({
-      initialSelectedTrialId: "trial_2",
     });
 
     fireEvent.click(screen.getByRole("button", { name: "queued" }));
 
     await waitFor(() => {
-      expect(navigationState.replace).toHaveBeenCalledWith("/tracks/track_1/trials/trial_queued", { scroll: false });
+      expect(screen.getByRole("button", { name: "Open trial trial_queued" })).toBeTruthy();
     });
 
-    expect(screen.getByRole("heading", { name: "trial_queued" })).toBeTruthy();
+    expect(navigationState.replace).not.toHaveBeenCalled();
+    expect(screen.getByText("How each run went")).toBeTruthy();
   });
 
   it("keeps the inspector mounted for the selected trial", async () => {
@@ -228,6 +228,21 @@ describe("DashboardShell", () => {
 
     expect(screen.getByText("Why the selected run behaved that way")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Close detail panel" })).toBeNull();
+  });
+
+  it("returns from the inspector to the trial explorer", async () => {
+    renderShell({
+      initialSelectedTrialId: "trial_2",
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Back to trial explorer" }));
+
+    await waitFor(() => {
+      expect(navigationState.replace).toHaveBeenCalledWith("/tracks/track_1", { scroll: false });
+    });
+
+    expect(screen.getByText("How each run went")).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "trial_2" })).toBeNull();
   });
 
   it("collapses and re-expands the tracks sidebar", () => {
@@ -252,16 +267,14 @@ describe("DashboardShell", () => {
       json: async () => ({ trials: [], nextCursor: null }),
     } as Response);
 
-    renderShell({
-      initialSelectedTrialId: "trial_2",
-    });
+    renderShell();
 
     fireEvent.click(screen.getByRole("button", { name: "queued" }));
 
     await waitFor(() => {
-      expect(navigationState.replace).toHaveBeenCalledWith("/tracks/track_1", { scroll: false });
+      expect(screen.getByText("Nothing matches the current filter.")).toBeTruthy();
     });
 
-    expect(screen.getByText("Select a trial to inspect it.")).toBeTruthy();
+    expect(navigationState.replace).not.toHaveBeenCalled();
   });
 });
