@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Protocol
 
-from sigmaevolve.models import ReconcileResult
+from sigmaevolve.models import OUTCOME_TIMEOUT, ReconcileResult
 
 
 class RunnerLauncher(Protocol):
@@ -72,11 +72,17 @@ class Orchestrator:
             dataset_manifest = self.dataset_manager.verify(track.dataset_id)
             context_trials = self.repository.sample_trial_context(track_id, limit=5)
             if context_trials:
+                negative_trials = self.repository.list_recent_trial_summaries(
+                    track_id,
+                    outcome_reasons={OUTCOME_TIMEOUT},
+                    limit=3,
+                )
                 try:
                     generated = self.generator.generate(
                         track,
                         dataset_manifest,
                         context_trials,
+                        negative_trials=negative_trials,
                         generation_index=self.repository.count_trials(track_id),
                     )
                     trial, created = self.repository.create_queued_trial_if_absent(

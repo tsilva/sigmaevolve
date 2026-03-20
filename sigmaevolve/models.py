@@ -18,7 +18,7 @@ OUTCOME_CRASHED = "crashed"
 OUTCOME_EVAL_FAILED = "eval_failed"
 OUTCOME_STALE = "stale"
 
-SUCCESS_OUTCOMES = {OUTCOME_SUCCEEDED}
+SUCCESS_OUTCOMES = {OUTCOME_SUCCEEDED, OUTCOME_TIMEOUT}
 ACTIVE_STATUSES = {TRIAL_STATUS_DISPATCHING, TRIAL_STATUS_ACTIVE}
 TERMINAL_OUTCOMES = {
     OUTCOME_SUCCEEDED,
@@ -104,6 +104,7 @@ class DatasetManifest:
 @dataclass(frozen=True)
 class TrackPolicy:
     budget_sec: int = 60
+    max_eval_gap_sec: int = 15
     max_parallelism: int = 1
     ready_queue_threshold: int = 1
     dispatch_ttl_sec: int = 300
@@ -132,6 +133,7 @@ class TrackPolicy:
     def to_dict(self) -> dict[str, Any]:
         return {
             "budget_sec": self.budget_sec,
+            "max_eval_gap_sec": self.max_eval_gap_sec,
             "max_parallelism": self.max_parallelism,
             "ready_queue_threshold": self.ready_queue_threshold,
             "dispatch_ttl_sec": self.dispatch_ttl_sec,
@@ -150,6 +152,7 @@ class TrackPolicy:
         merged = _deep_merge_dict(merged, raw or {})
         return cls(
             budget_sec=int(merged["budget_sec"]),
+            max_eval_gap_sec=int(merged["max_eval_gap_sec"]),
             max_parallelism=int(merged["max_parallelism"]),
             ready_queue_threshold=int(merged["ready_queue_threshold"]),
             dispatch_ttl_sec=int(merged["dispatch_ttl_sec"]),
@@ -194,7 +197,7 @@ class TrialRecord:
 
     @property
     def succeeded(self) -> bool:
-        return self.status == TRIAL_STATUS_FINISHED and self.outcome_reason == OUTCOME_SUCCEEDED
+        return self.status == TRIAL_STATUS_FINISHED and self.outcome_reason in SUCCESS_OUTCOMES and self.metrics_json is not None
 
 
 @dataclass(frozen=True)
@@ -204,6 +207,7 @@ class TrialSummary:
     metrics_json: dict[str, Any] | None
     source: str
     provenance_json: dict[str, Any]
+    outcome_reason: str | None = None
 
 
 @dataclass(frozen=True)

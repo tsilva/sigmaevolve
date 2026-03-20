@@ -1,7 +1,8 @@
 import { notFound } from "next/navigation";
 
-import { getPool } from "@/lib/db";
+import { getPool, hasDatabaseUrl } from "@/lib/db";
 import { mapTrackListItem, mapTrialListItem } from "@/lib/mappers";
+import { getSqliteNewestTrackId, listSqliteTrackSummaries, listSqliteTrials } from "@/lib/sqlite";
 import type {
   PaginatedTrialsResponse,
   TrackDetailResponse,
@@ -36,6 +37,10 @@ function decodeCursor(value: string | null): TrialCursor | null {
   }
 }
 
+function logFallbackError(action: string, cause: unknown): void {
+  console.error(`Dashboard query failed during ${action}. Falling back to SQLite snapshot.`, cause);
+}
+
 export function parseStatusFilter(value: string | null): TrialStatusFilter {
   if (value === "queued" || value === "dispatching" || value === "active" || value === "finished") {
     return value;
@@ -55,47 +60,65 @@ export function parseLimit(value: string | null): number {
 }
 
 export async function listTrackSummaries(): Promise<TrackListItem[]> {
-  const pool = getPool();
-  const result = await pool.query(
-    `
-      select
-        t.track_id as "trackId",
-        t.name,
-        t.dataset_id as "datasetId",
-        t.created_at as "createdAt",
-        count(r.trial_id)::int as "totalTrials",
-        count(*) filter (where r.status = 'queued')::int as "queuedTrials",
-        count(*) filter (where r.status = 'dispatching')::int as "dispatchingTrials",
-        count(*) filter (where r.status = 'active')::int as "activeTrials",
-        count(*) filter (where r.status = 'finished')::int as "finishedTrials",
-        count(*) filter (
-          where r.status = 'finished'
-            and r.outcome_reason = 'succeeded'
-        )::int as "succeededTrials",
-        max(r.score) filter (
-          where r.status = 'finished'
-            and r.outcome_reason = 'succeeded'
-        ) as "bestScore",
-        greatest(
-          t.created_at,
-          coalesce(max(coalesce(r.finished_at, r.started_at, r.created_at)), t.created_at)
-        ) as "lastActivityAt"
-      from tracks t
-      left join trials r on r.track_id = t.track_id
-      group by t.track_id, t.name, t.dataset_id, t.created_at
-      order by "lastActivityAt" desc, t.created_at desc
-    `,
-  );
+  if (!hasDatabaseUrl()) {
+    return listSqliteTrackSummaries();
+  }
 
-  return result.rows.map(mapTrackListItem);
+  try {
+    const pool = getPool();
+    const result = await pool.query(
+      `
+        select
+          t.track_id as "trackId",
+          t.name,
+          t.dataset_id as "datasetId",
+          t.created_at as "createdAt",
+          count(r.trial_id)::int as "totalTrials",
+          count(*) filter (where r.status = 'queued')::int as "queuedTrials",
+          count(*) filter (where r.status = 'dispatching')::int as "dispatchingTrials",
+          count(*) filter (where r.status = 'active')::int as "activeTrials",
+          count(*) filter (where r.status = 'finished')::int as "finishedTrials",
+          count(*) filter (
+            where r.status = 'finished'
+              and r.metrics_json is not null
+          )::int as "succeededTrials",
+          max(r.score) filter (
+            where r.status = 'finished'
+              and r.metrics_json is not null
+          ) as "bestScore",
+          greatest(
+            t.created_at,
+            coalesce(max(coalesce(r.finished_at, r.started_at, r.created_at)), t.created_at)
+          ) as "lastActivityAt"
+        from tracks t
+        left join trials r on r.track_id = t.track_id
+        group by t.track_id, t.name, t.dataset_id, t.created_at
+        order by "lastActivityAt" desc, t.created_at desc
+      `,
+    );
+
+    return result.rows.map(mapTrackListItem);
+  } catch (cause) {
+    logFallbackError("track summary load", cause);
+    return listSqliteTrackSummaries();
+  }
 }
 
 export async function getNewestTrackId(): Promise<string | null> {
-  const pool = getPool();
-  const result = await pool.query<{ track_id: string }>(
-    `select track_id from tracks order by created_at desc limit 1`,
-  );
-  return result.rows[0]?.track_id ?? null;
+  if (!hasDatabaseUrl()) {
+    return getSqliteNewestTrackId();
+  }
+
+  try {
+    const pool = getPool();
+    const result = await pool.query<{ track_id: string }>(
+      `select track_id from tracks order by created_at desc limit 1`,
+    );
+    return result.rows[0]?.track_id ?? null;
+  } catch (cause) {
+    logFallbackError("newest track lookup", cause);
+    return getSqliteNewestTrackId();
+  }
 }
 
 export async function getTrackSummary(trackId: string): Promise<TrackListItem | null> {
@@ -111,67 +134,89 @@ export async function listTrials(
     limit?: number;
   } = {},
 ): Promise<PaginatedTrialsResponse> {
-  const pool = getPool();
-  const values: Array<string | number> = [trackId];
-  const whereClauses = [`track_id = $1`];
-
   const status = options.status ?? "all";
-  if (status !== "all") {
-    values.push(status);
-    whereClauses.push(`status = $${values.length}`);
-  }
-
-  const cursor = decodeCursor(options.cursor ?? null);
-  if (cursor) {
-    values.push(cursor.createdAt);
-    values.push(cursor.trialId);
-    whereClauses.push(`(created_at, trial_id) < ($${values.length - 1}::timestamptz, $${values.length})`);
-  }
-
   const limit = Math.min(options.limit ?? DEFAULT_TRIAL_LIMIT, MAX_TRIAL_LIMIT);
-  values.push(limit + 1);
+  if (!hasDatabaseUrl()) {
+    return listSqliteTrials(trackId, {
+      cursor: options.cursor ?? null,
+      limit,
+      status,
+    });
+  }
 
-  const result = await pool.query(
-    `
-      select
-        trial_id as "trialId",
-        status,
-        outcome_reason as "outcomeReason",
-        score,
-        nullif(metrics_json ->> 'accuracy', '')::double precision as accuracy,
-        provenance_json ->> 'backend' as backend,
-        provenance_json ->> 'model' as model,
-        dispatch_attempts as "dispatchAttempts",
-        created_at as "createdAt",
-        started_at as "startedAt",
-        finished_at as "finishedAt",
-        case
-          when started_at is null then null
-          else extract(epoch from (coalesce(finished_at, now()) - started_at))
-        end as "durationSec",
-        (error_json is not null) as "hasError"
-      from trials
-      where ${whereClauses.join(" and ")}
-      order by created_at desc, trial_id desc
-      limit $${values.length}
-    `,
-    values,
-  );
+  try {
+    const pool = getPool();
+    const values: Array<string | number> = [trackId];
+    const whereClauses = [`track_id = $1`];
 
-  const rows = result.rows.map(mapTrialListItem);
-  const page = rows.slice(0, limit);
-  const nextCursor =
-    rows.length > limit
-      ? encodeCursor({
-          createdAt: page[page.length - 1].createdAt,
-          trialId: page[page.length - 1].trialId,
-        })
-      : null;
+    if (status !== "all") {
+      values.push(status);
+      whereClauses.push(`status = $${values.length}`);
+    }
 
-  return {
-    trials: page,
-    nextCursor,
-  };
+    const cursor = decodeCursor(options.cursor ?? null);
+    if (cursor) {
+      values.push(cursor.createdAt);
+      values.push(cursor.trialId);
+      whereClauses.push(`(created_at, trial_id) < ($${values.length - 1}::timestamptz, $${values.length})`);
+    }
+
+    values.push(limit + 1);
+
+    const result = await pool.query(
+      `
+        select
+          trial_id as "trialId",
+          status,
+          outcome_reason as "outcomeReason",
+          score,
+          nullif(metrics_json ->> 'accuracy', '')::double precision as accuracy,
+          nullif(metrics_json ->> 'time_to_best_eval_sec', '')::double precision as "timeToBestEvalSec",
+          coalesce((metrics_json ->> 'timed_out')::boolean, false) as "timedOut",
+          nullif(metrics_json ->> 'time_since_last_eval_sec', '')::double precision as "timeSinceLastEvalSec",
+          coalesce((metrics_json ->> 'had_unscored_work_at_timeout')::boolean, false) as "hadUnscoredWorkAtTimeout",
+          metrics_json ->> 'last_phase' as "lastPhase",
+          provenance_json ->> 'backend' as backend,
+          provenance_json ->> 'model' as model,
+          dispatch_attempts as "dispatchAttempts",
+          created_at as "createdAt",
+          started_at as "startedAt",
+          finished_at as "finishedAt",
+          case
+            when started_at is null then null
+            else extract(epoch from (coalesce(finished_at, now()) - started_at))
+          end as "durationSec",
+          (error_json is not null) as "hasError"
+        from trials
+        where ${whereClauses.join(" and ")}
+        order by created_at desc, trial_id desc
+        limit $${values.length}
+      `,
+      values,
+    );
+
+    const rows = result.rows.map(mapTrialListItem);
+    const page = rows.slice(0, limit);
+    const nextCursor =
+      rows.length > limit
+        ? encodeCursor({
+            createdAt: page[page.length - 1].createdAt,
+            trialId: page[page.length - 1].trialId,
+          })
+        : null;
+
+    return {
+      trials: page,
+      nextCursor,
+    };
+  } catch (cause) {
+    logFallbackError(`trial list load for ${trackId}`, cause);
+    return listSqliteTrials(trackId, {
+      cursor: options.cursor ?? null,
+      limit,
+      status,
+    });
+  }
 }
 
 export async function getTrackDetail(trackId: string): Promise<TrackDetailResponse | null> {

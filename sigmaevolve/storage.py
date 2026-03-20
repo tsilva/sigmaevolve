@@ -12,7 +12,6 @@ from sigmaevolve.hashing import compute_script_hash, normalize_source
 from sigmaevolve.models import (
     ACTIVE_STATUSES,
     OUTCOME_STALE,
-    OUTCOME_SUCCEEDED,
     SUCCESS_OUTCOMES,
     TERMINAL_OUTCOMES,
     TRIAL_STATUS_ACTIVE,
@@ -130,6 +129,15 @@ def _row_to_trial(row: sa.Row[Any]) -> TrialRecord:
         dispatch_attempts=int(row.dispatch_attempts),
         created_at=row.created_at,
     )
+
+
+def _trial_summary_sort_key(summary: TrialSummary) -> tuple[float, float, float]:
+    metrics = summary.metrics_json or {}
+    accuracy = float(metrics.get("accuracy") or 0.0)
+    time_to_best = metrics.get("time_to_best_eval_sec")
+    if time_to_best is None:
+        time_to_best = float("inf")
+    return (-accuracy, float(time_to_best), -summary.score)
 
 
 class SQLAlchemyRepository:
@@ -297,11 +305,47 @@ class SQLAlchemyRepository:
                     trials_table.c.track_id == track_id,
                     trials_table.c.status == TRIAL_STATUS_FINISHED,
                     trials_table.c.outcome_reason.in_(sorted(SUCCESS_OUTCOMES)),
+                    trials_table.c.metrics_json.is_not(None),
                 )
             )
-            .order_by(trials_table.c.score.desc(), trials_table.c.finished_at.desc())
-            .limit(limit)
+            .order_by(trials_table.c.finished_at.desc(), trials_table.c.created_at.desc())
         )
+        with self.engine.connect() as conn:
+            rows = conn.execute(stmt).fetchall()
+        summaries = [
+            TrialSummary(
+                trial_id=row.trial_id,
+                score=float(row.score or 0.0),
+                metrics_json=dict(row.metrics_json) if row.metrics_json else None,
+                source=row.source,
+                provenance_json=dict(row.provenance_json or {}),
+                outcome_reason=row.outcome_reason,
+            )
+            for row in rows
+        ]
+        return sorted(summaries, key=_trial_summary_sort_key)[:limit]
+
+    def list_recent_trial_summaries(
+        self,
+        track_id: str,
+        *,
+        outcome_reasons: set[str] | None = None,
+        require_metrics: bool | None = None,
+        limit: int = 5,
+    ) -> list[TrialSummary]:
+        stmt = sa.select(trials_table).where(
+            sa.and_(
+                trials_table.c.track_id == track_id,
+                trials_table.c.status == TRIAL_STATUS_FINISHED,
+            )
+        )
+        if outcome_reasons:
+            stmt = stmt.where(trials_table.c.outcome_reason.in_(sorted(outcome_reasons)))
+        if require_metrics is True:
+            stmt = stmt.where(trials_table.c.metrics_json.is_not(None))
+        elif require_metrics is False:
+            stmt = stmt.where(trials_table.c.metrics_json.is_(None))
+        stmt = stmt.order_by(trials_table.c.finished_at.desc(), trials_table.c.created_at.desc()).limit(limit)
         with self.engine.connect() as conn:
             rows = conn.execute(stmt).fetchall()
         return [
@@ -311,6 +355,7 @@ class SQLAlchemyRepository:
                 metrics_json=dict(row.metrics_json) if row.metrics_json else None,
                 source=row.source,
                 provenance_json=dict(row.provenance_json or {}),
+                outcome_reason=row.outcome_reason,
             )
             for row in rows
         ]
@@ -438,7 +483,7 @@ class SQLAlchemyRepository:
     ) -> None:
         if outcome_reason not in TERMINAL_OUTCOMES:
             raise ValueError(f"Unsupported outcome_reason: {outcome_reason}")
-        if outcome_reason != OUTCOME_SUCCEEDED:
+        if metrics is None:
             score = 0.0
         with self.transaction() as conn:
             where = [trials_table.c.trial_id == trial_id]

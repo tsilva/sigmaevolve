@@ -24,6 +24,11 @@ type TrialRow = {
   outcomeReason: string | null;
   score: number | string | null;
   accuracy: number | string | null;
+  timeToBestEvalSec: number | string | null;
+  timedOut: boolean | null;
+  timeSinceLastEvalSec: number | string | null;
+  hadUnscoredWorkAtTimeout: boolean | null;
+  lastPhase: string | null;
   backend: string | null;
   model: string | null;
   dispatchAttempts: number | string | null;
@@ -79,6 +84,11 @@ export function mapTrialListItem(row: TrialRow): TrialListItem {
     outcomeReason: row.outcomeReason,
     score: asNumber(row.score),
     accuracy: asNullableNumber(row.accuracy),
+    timeToBestEvalSec: asNullableNumber(row.timeToBestEvalSec),
+    timedOut: Boolean(row.timedOut),
+    timeSinceLastEvalSec: asNullableNumber(row.timeSinceLastEvalSec),
+    hadUnscoredWorkAtTimeout: Boolean(row.hadUnscoredWorkAtTimeout),
+    lastPhase: row.lastPhase,
     backend: row.backend,
     model: row.model,
     dispatchAttempts: asNumber(row.dispatchAttempts),

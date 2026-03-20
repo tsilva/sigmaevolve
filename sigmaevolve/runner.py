@@ -7,11 +7,27 @@ import tempfile
 import threading
 import time
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
 from sigmaevolve.models import OUTCOME_CRASHED, OUTCOME_EVAL_FAILED, OUTCOME_SUCCEEDED, OUTCOME_TIMEOUT
 from sigmaevolve.scoring import compute_classification_metrics, compute_score
+
+
+def _coerce_optional_scalar(value: Any, cast) -> Any | None:
+    if value is None:
+        return None
+    array = np.asarray(value)
+    if array.size == 0:
+        return None
+    scalar = array.reshape(-1)[0]
+    if isinstance(scalar, np.generic):
+        scalar = scalar.item()
+    try:
+        return cast(scalar)
+    except (TypeError, ValueError):
+        return None
 
 
 class RunnerService:
@@ -30,6 +46,128 @@ class RunnerService:
         thread = threading.Thread(target=loop, daemon=True)
         thread.start()
         return stop_event, thread
+
+    def _read_progress(self, progress_path: Path) -> dict[str, Any] | None:
+        if not progress_path.exists():
+            return None
+        try:
+            payload = json.loads(progress_path.read_text())
+        except (OSError, json.JSONDecodeError):
+            return None
+        if not isinstance(payload, dict):
+            return None
+        return payload
+
+    def _load_eval_artifacts(
+        self,
+        eval_dir: Path,
+        labels_path: str,
+        fallback_predictions_path: Path,
+        fallback_elapsed_time_sec: float,
+    ) -> list[dict[str, Any]]:
+        labels = np.load(labels_path)
+        artifacts: list[dict[str, Any]] = []
+        for eval_path in sorted(eval_dir.glob("*.npz")):
+            with np.load(eval_path) as payload:
+                if "predictions" not in payload:
+                    continue
+                predictions = payload["predictions"]
+                if predictions.ndim > 1:
+                    predictions = predictions.argmax(axis=1)
+                metrics = compute_classification_metrics(predictions.astype(int).tolist(), labels.astype(int).tolist())
+                artifacts.append(
+                    {
+                        "path": str(eval_path),
+                        "eval_index": _coerce_optional_scalar(payload["eval_index"], int) if "eval_index" in payload else None,
+                        "elapsed_time_sec": _coerce_optional_scalar(payload["elapsed_time_sec"], float)
+                        if "elapsed_time_sec" in payload
+                        else None,
+                        "epoch": _coerce_optional_scalar(payload["epoch"], int) if "epoch" in payload else None,
+                        "metrics": metrics,
+                    }
+                )
+
+        if not artifacts and fallback_predictions_path.exists():
+            with np.load(fallback_predictions_path) as payload:
+                predictions = payload["predictions"]
+                if predictions.ndim > 1:
+                    predictions = predictions.argmax(axis=1)
+            metrics = compute_classification_metrics(predictions.astype(int).tolist(), labels.astype(int).tolist())
+            artifacts.append(
+                {
+                    "path": str(fallback_predictions_path),
+                    "eval_index": 0,
+                    "elapsed_time_sec": float(fallback_elapsed_time_sec),
+                    "epoch": None,
+                    "metrics": metrics,
+                }
+            )
+        return artifacts
+
+    def _select_best_eval(self, artifacts: list[dict[str, Any]]) -> dict[str, Any]:
+        return min(
+            artifacts,
+            key=lambda artifact: (
+                -float(artifact["metrics"]["accuracy"]),
+                float(artifact.get("elapsed_time_sec") if artifact.get("elapsed_time_sec") is not None else float("inf")),
+                int(artifact.get("eval_index") if artifact.get("eval_index") is not None else sys.maxsize),
+            ),
+        )
+
+    def _select_last_completed_eval(self, artifacts: list[dict[str, Any]]) -> dict[str, Any]:
+        return max(
+            artifacts,
+            key=lambda artifact: (
+                float(artifact.get("elapsed_time_sec") if artifact.get("elapsed_time_sec") is not None else -1.0),
+                int(artifact.get("eval_index") if artifact.get("eval_index") is not None else -1),
+            ),
+        )
+
+    def _build_metrics_payload(
+        self,
+        artifacts: list[dict[str, Any]],
+        progress_payload: dict[str, Any] | None,
+        process_elapsed_sec: float,
+        timed_out: bool,
+    ) -> dict[str, Any]:
+        best_artifact = self._select_best_eval(artifacts)
+        last_artifact = self._select_last_completed_eval(artifacts)
+        last_completed_eval_sec = last_artifact.get("elapsed_time_sec")
+        if last_completed_eval_sec is None and progress_payload:
+            last_completed_eval_sec = progress_payload.get("last_completed_eval_sec")
+        time_to_best_eval_sec = best_artifact.get("elapsed_time_sec")
+        time_since_last_eval_sec = None
+        if last_completed_eval_sec is not None:
+            time_since_last_eval_sec = max(0.0, float(process_elapsed_sec) - float(last_completed_eval_sec))
+        last_phase = None
+        if progress_payload:
+            last_phase = progress_payload.get("phase") or progress_payload.get("current_phase")
+        had_unscored_work_at_timeout = bool(
+            timed_out
+            and time_since_last_eval_sec is not None
+            and time_since_last_eval_sec > 0.05
+            and (last_phase in {None, "train"})
+        )
+
+        metrics = dict(best_artifact["metrics"])
+        metrics.update(
+            {
+                "best_accuracy": best_artifact["metrics"]["accuracy"],
+                "time_to_best_eval_sec": time_to_best_eval_sec,
+                "best_eval_index": best_artifact.get("eval_index"),
+                "best_eval_epoch": best_artifact.get("epoch"),
+                "best_eval_path": best_artifact["path"],
+                "last_completed_eval_sec": last_completed_eval_sec,
+                "last_completed_eval_index": last_artifact.get("eval_index"),
+                "timed_out": timed_out,
+                "time_since_last_eval_sec": time_since_last_eval_sec,
+                "had_unscored_work_at_timeout": had_unscored_work_at_timeout,
+                "last_phase": last_phase,
+                "eval_count": len(artifacts),
+                "process_elapsed_sec": float(process_elapsed_sec),
+            }
+        )
+        return metrics
 
     def run_reserved_trial(self, trial_id: str, dispatch_token: str, runner_id: str) -> None:
         trial = self.repository.claim_trial(trial_id, dispatch_token, runner_id)
@@ -51,7 +189,10 @@ class RunnerService:
                 script_path = temp_path / "train.py"
                 config_path = temp_path / "run_config.json"
                 predictions_path = temp_path / "predictions.npz"
+                progress_path = temp_path / "progress.json"
+                eval_dir = temp_path / "evals"
                 debug_path = temp_path / "debug.json"
+                eval_dir.mkdir(parents=True, exist_ok=True)
                 script_path.write_text(trial.source)
                 config_path.write_text(
                     json.dumps(
@@ -60,8 +201,11 @@ class RunnerService:
                             "train_split_path": manifest.train_split_path,
                             "validation_split_path": manifest.validation_split_path,
                             "budget_sec": int(policy["budget_sec"]),
+                            "max_eval_gap_sec": int(policy["max_eval_gap_sec"]),
                             "random_seed": 1234,
                             "predictions_output_path": str(predictions_path),
+                            "progress_path": str(progress_path),
+                            "eval_dir": str(eval_dir),
                             "debug_output_path": str(debug_path),
                             "dataset_metadata": manifest.metadata,
                         },
@@ -69,6 +213,11 @@ class RunnerService:
                     )
                 )
                 command = [self.python_executable, str(script_path), "--config", str(config_path)]
+                timed_out = False
+                completed: subprocess.CompletedProcess[str] | None = None
+                stdout: str | None = None
+                stderr: str | None = None
+                started_at = time.monotonic()
                 try:
                     completed = subprocess.run(
                         command,
@@ -77,44 +226,39 @@ class RunnerService:
                         timeout=int(policy["budget_sec"]),
                         check=False,
                     )
+                    stdout = completed.stdout
+                    stderr = completed.stderr
                 except subprocess.TimeoutExpired as exc:
-                    self.repository.finalize_trial(
-                        trial_id=trial.trial_id,
-                        runner_id=runner_id,
-                        outcome_reason=OUTCOME_TIMEOUT,
-                        metrics=None,
-                        score=0.0,
-                        error_info={"stdout": exc.stdout, "stderr": exc.stderr},
-                    )
-                    return
-                if completed.returncode != 0:
+                    timed_out = True
+                    stdout = exc.stdout
+                    stderr = exc.stderr
+                process_elapsed_sec = time.monotonic() - started_at
+                progress_payload = self._read_progress(progress_path)
+
+                if completed is not None and completed.returncode != 0:
                     self.repository.finalize_trial(
                         trial_id=trial.trial_id,
                         runner_id=runner_id,
                         outcome_reason=OUTCOME_CRASHED,
                         metrics=None,
                         score=0.0,
-                        error_info={"stdout": completed.stdout, "stderr": completed.stderr, "returncode": completed.returncode},
+                        error_info={
+                            "stdout": stdout,
+                            "stderr": stderr,
+                            "returncode": completed.returncode,
+                            "timed_out": False,
+                            "progress": progress_payload,
+                        },
                     )
                     return
-                if not predictions_path.exists():
-                    self.repository.finalize_trial(
-                        trial_id=trial.trial_id,
-                        runner_id=runner_id,
-                        outcome_reason=OUTCOME_EVAL_FAILED,
-                        metrics=None,
-                        score=0.0,
-                        error_info={"reason": "predictions_missing"},
-                    )
-                    return
+
                 try:
-                    predictions_npz = np.load(predictions_path)
-                    predictions = predictions_npz["predictions"]
-                    if predictions.ndim > 1:
-                        predictions = predictions.argmax(axis=1)
-                    labels = np.load(manifest.validation_labels_path)
-                    metrics = compute_classification_metrics(predictions.astype(int).tolist(), labels.astype(int).tolist())
-                    score = compute_score(metrics, OUTCOME_SUCCEEDED, policy["scorer_settings"])
+                    artifacts = self._load_eval_artifacts(
+                        eval_dir=eval_dir,
+                        labels_path=manifest.validation_labels_path,
+                        fallback_predictions_path=predictions_path,
+                        fallback_elapsed_time_sec=process_elapsed_sec,
+                    )
                 except Exception as exc:
                     self.repository.finalize_trial(
                         trial_id=trial.trial_id,
@@ -122,19 +266,59 @@ class RunnerService:
                         outcome_reason=OUTCOME_EVAL_FAILED,
                         metrics=None,
                         score=0.0,
-                        error_info={"reason": "prediction_load_failed", "detail": str(exc)},
+                        error_info={
+                            "reason": "prediction_load_failed",
+                            "detail": str(exc),
+                            "timed_out": timed_out,
+                            "stdout": stdout,
+                            "stderr": stderr,
+                            "progress": progress_payload,
+                        },
                     )
                     return
+
+                if not artifacts:
+                    outcome_reason = OUTCOME_TIMEOUT if timed_out else OUTCOME_EVAL_FAILED
+                    error_info: dict[str, Any] = {
+                        "reason": "completed_evals_missing" if timed_out else "predictions_missing",
+                        "timed_out": timed_out,
+                        "stdout": stdout,
+                        "stderr": stderr,
+                        "progress": progress_payload,
+                        "eval_dir": str(eval_dir),
+                    }
+                    self.repository.finalize_trial(
+                        trial_id=trial.trial_id,
+                        runner_id=runner_id,
+                        outcome_reason=outcome_reason,
+                        metrics=None,
+                        score=0.0,
+                        error_info=error_info,
+                    )
+                    return
+
+                metrics = self._build_metrics_payload(
+                    artifacts=artifacts,
+                    progress_payload=progress_payload,
+                    process_elapsed_sec=process_elapsed_sec,
+                    timed_out=timed_out,
+                )
+                outcome_reason = OUTCOME_TIMEOUT if timed_out else OUTCOME_SUCCEEDED
+                score = compute_score(metrics, outcome_reason, policy["scorer_settings"])
                 self.repository.finalize_trial(
                     trial_id=trial.trial_id,
                     runner_id=runner_id,
-                    outcome_reason=OUTCOME_SUCCEEDED,
+                    outcome_reason=outcome_reason,
                     metrics=metrics,
                     score=score,
                     error_info={
-                        "stdout": completed.stdout,
-                        "stderr": completed.stderr,
+                        "stdout": stdout,
+                        "stderr": stderr,
                         "debug_output_path": str(debug_path),
+                        "progress": progress_payload,
+                        "eval_dir": str(eval_dir),
+                        "eval_artifacts": [artifact["path"] for artifact in artifacts],
+                        "timed_out": timed_out,
                     },
                 )
         finally:

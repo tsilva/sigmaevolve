@@ -1,0 +1,8 @@
+.git/
+.pytest_cache/
+__pycache__/
+artifacts/
+dashboard/.next/
+dashboard/node_modules/
+dashboard/.vercel/
+dashboard/tsconfig.tsbuildinfo

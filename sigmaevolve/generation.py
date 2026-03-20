@@ -17,6 +17,7 @@ class GenerationBackend(Protocol):
         track: TrackRecord,
         dataset_manifest: DatasetManifest,
         context_trials: list[TrialSummary],
+        negative_trials: list[TrialSummary] | None = None,
         generation_index: int = 0,
     ) -> GenerationResult:
         ...
@@ -32,6 +33,7 @@ class FixedGenerationBackend:
         track: TrackRecord,
         dataset_manifest: DatasetManifest,
         context_trials: list[TrialSummary],
+        negative_trials: list[TrialSummary] | None = None,
         generation_index: int = 0,
     ) -> GenerationResult:
         return GenerationResult(
@@ -78,20 +80,33 @@ class OpenRouterGenerationBackend:
         track: TrackRecord,
         dataset_manifest: DatasetManifest,
         context_trials: list[TrialSummary],
+        negative_trials: list[TrialSummary],
         selected_config: dict[str, object],
     ) -> list[dict[str, str]]:
         summaries = [
             {
                 "trial_id": trial.trial_id,
                 "score": trial.score,
+                "outcome_reason": trial.outcome_reason,
                 "metrics": trial.metrics_json,
                 "source_preview": trial.source[:1500],
             }
             for trial in context_trials
         ]
+        timeout_summaries = [
+            {
+                "trial_id": trial.trial_id,
+                "score": trial.score,
+                "outcome_reason": trial.outcome_reason,
+                "metrics": trial.metrics_json,
+                "source_preview": trial.source[:1200],
+            }
+            for trial in negative_trials
+        ]
         system_prompt = (
             "You are generating a self-contained Python train.py script for a classification harness. "
-            "Return only Python source, with no markdown fences or commentary."
+            "Return only Python source, with no markdown fences or commentary. "
+            "Optimize for best validation accuracy, but you must publish completed validation checkpoints regularly so the harness can score them before timeout."
         )
         user_prompt = {
             "dataset_id": track.dataset_id,
@@ -100,13 +115,24 @@ class OpenRouterGenerationBackend:
                 "entrypoint": "train.py --config /abs/path/run_config.json",
                 "train_split_format": "npz with arrays: features, labels",
                 "validation_split_format": "npz with arrays: features",
-                "required_output": "npz with array: predictions",
+                "required_outputs": {
+                    "progress_path": "JSON heartbeat with current phase, elapsed_time_sec, and last_completed_eval_sec",
+                    "eval_dir": "Directory of atomically written .npz eval artifacts with predictions, eval_index, elapsed_time_sec, and optional epoch",
+                    "legacy_predictions_output_path": "Optional compatibility fallback only; prefer eval_dir artifacts",
+                },
                 "allowed_packages": ["argparse", "json", "pathlib", "numpy", "torch"],
                 "budget_sec": track.policy_json["budget_sec"],
+                "max_eval_gap_sec": track.policy_json.get("max_eval_gap_sec", 15),
+                "writing_rules": [
+                    "Write eval artifacts atomically by saving to a temp path and renaming into eval_dir.",
+                    "Do not spend long uninterrupted stretches training without finishing a validation pass.",
+                    "When validation accuracy ties, lower elapsed wall time to that eval wins.",
+                ],
             },
             "generation_policy": track.policy_json["generation_backend"],
             "selected_generation_config": selected_config,
             "context_trials": summaries,
+            "negative_trials": timeout_summaries,
         }
         return [
             {"role": "system", "content": system_prompt},
@@ -124,6 +150,7 @@ class OpenRouterGenerationBackend:
         track: TrackRecord,
         dataset_manifest: DatasetManifest,
         context_trials: list[TrialSummary],
+        negative_trials: list[TrialSummary] | None = None,
         generation_index: int = 0,
     ) -> GenerationResult:
         if not self.api_key:
@@ -133,7 +160,13 @@ class OpenRouterGenerationBackend:
         selected_config = self._normalize_generation_config(generation_policy)
         payload = {
             "model": selected_config["model"],
-            "messages": self._build_prompt(track, dataset_manifest, context_trials, selected_config),
+            "messages": self._build_prompt(
+                track,
+                dataset_manifest,
+                context_trials,
+                negative_trials or [],
+                selected_config,
+            ),
             "temperature": selected_config.get("temperature", 0.2),
             "max_tokens": selected_config.get("max_tokens", 2500),
         }

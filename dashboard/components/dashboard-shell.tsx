@@ -212,7 +212,7 @@ export function DashboardShell({
                 <span className="metric-value">{detail.track.totalTrials}</span>
               </div>
               <div className="metric">
-                <span className="metric-label">Succeeded</span>
+                <span className="metric-label">Scored</span>
                 <span className="metric-value">{detail.track.succeededTrials}</span>
               </div>
               <div className="metric">
@@ -297,14 +297,28 @@ export function DashboardShell({
                         <div className="subtle">{trial.outcomeReason ?? "in progress"}</div>
                       </td>
                       <td className="trial-score">{formatNumber(trial.score, 4)}</td>
-                      <td>{formatNumber(trial.accuracy, 4)}</td>
+                      <td>
+                        <div>{formatNumber(trial.accuracy, 4)}</div>
+                        <div className="subtle">
+                          best eval {formatDuration(trial.timeToBestEvalSec)}
+                        </div>
+                      </td>
                       <td>
                         <div>{trial.backend ?? "unknown backend"}</div>
+                        {trial.timedOut ? <div className="trial-error">timed out</div> : null}
+                        {trial.hadUnscoredWorkAtTimeout ? (
+                          <div className="trial-error">unevaluated work before stop</div>
+                        ) : null}
                         {trial.hasError ? <div className="trial-error">error recorded</div> : null}
                       </td>
                       <td>{trial.dispatchAttempts}</td>
                       <td>{formatDate(trial.startedAt ?? trial.createdAt)}</td>
-                      <td>{formatDuration(trial.durationSec)}</td>
+                      <td>
+                        <div>{formatDuration(trial.durationSec)}</div>
+                        <div className="subtle">
+                          since eval {formatDuration(trial.timeSinceLastEvalSec)}
+                        </div>
+                      </td>
                     </tr>
                   ))}
                 </tbody>

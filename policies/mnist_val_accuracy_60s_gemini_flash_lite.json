@@ -1,5 +1,6 @@
 {
   "budget_sec": 60,
+  "max_eval_gap_sec": 10,
   "max_parallelism": 2,
   "ready_queue_threshold": 2,
   "dispatch_ttl_sec": 300,

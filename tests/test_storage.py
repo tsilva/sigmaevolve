@@ -81,3 +81,41 @@ def test_trial_indexes_exist():
     assert rendered[0].endswith("track_id")
     assert rendered[1].endswith("status")
     assert "created_at" in rendered[2]
+
+
+def test_sample_trial_context_includes_scored_timeouts_and_uses_time_to_best_eval_tiebreak(repository):
+    repository.register_dataset("mnist:v1", "/tmp/manifest.json")
+    track = repository.create_track(name="context", dataset_id="mnist:v1", policy_json={})
+
+    fast_timeout, _ = repository.create_queued_trial_if_absent(
+        track.track_id,
+        "print('fast timeout')\n",
+        {"backend": "test", "model": "fast"},
+    )
+    slow_success, _ = repository.create_queued_trial_if_absent(
+        track.track_id,
+        "print('slow success')\n",
+        {"backend": "test", "model": "slow"},
+    )
+    assert fast_timeout is not None and slow_success is not None
+
+    repository.finalize_trial(
+        trial_id=fast_timeout.trial_id,
+        runner_id=None,
+        outcome_reason="timeout",
+        metrics={"accuracy": 0.9, "time_to_best_eval_sec": 1.0},
+        score=0.9,
+        error_info=None,
+    )
+    repository.finalize_trial(
+        trial_id=slow_success.trial_id,
+        runner_id=None,
+        outcome_reason="succeeded",
+        metrics={"accuracy": 0.9, "time_to_best_eval_sec": 3.0},
+        score=0.9,
+        error_info=None,
+    )
+
+    context = repository.sample_trial_context(track.track_id, limit=2)
+    assert [trial.trial_id for trial in context] == [fast_timeout.trial_id, slow_success.trial_id]
+    assert context[0].outcome_reason == "timeout"

@@ -85,3 +85,8 @@ def test_openrouter_generation_uses_model_pool_round_robin(monkeypatch):
 
     assert payloads[0]["model"] == "openai/gpt-4o-mini"
     assert payloads[1]["model"] == "anthropic/claude-3.5-sonnet"
+
+    first_prompt = json.loads(payloads[0]["messages"][1]["content"])
+    assert first_prompt["task_contract"]["max_eval_gap_sec"] == 15
+    assert "progress_path" in first_prompt["task_contract"]["required_outputs"]
+    assert first_prompt["negative_trials"] == []

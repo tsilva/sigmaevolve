@@ -23,6 +23,11 @@ export type TrialListItem = {
   outcomeReason: string | null;
   score: number;
   accuracy: number | null;
+  timeToBestEvalSec: number | null;
+  timedOut: boolean;
+  timeSinceLastEvalSec: number | null;
+  hadUnscoredWorkAtTimeout: boolean;
+  lastPhase: string | null;
   backend: string | null;
   model: string | null;
   dispatchAttempts: number;

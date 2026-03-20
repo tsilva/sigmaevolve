@@ -76,6 +76,20 @@ def _print_json(payload: Any) -> None:
     print(json.dumps(payload, indent=2, sort_keys=True, default=str))
 
 
+def _trial_diagnostics(metrics_json: dict[str, Any] | None) -> dict[str, Any]:
+    metrics = metrics_json or {}
+    return {
+        "accuracy": metrics.get("accuracy"),
+        "best_accuracy": metrics.get("best_accuracy", metrics.get("accuracy")),
+        "time_to_best_eval_sec": metrics.get("time_to_best_eval_sec"),
+        "last_completed_eval_sec": metrics.get("last_completed_eval_sec"),
+        "timed_out": metrics.get("timed_out", False),
+        "time_since_last_eval_sec": metrics.get("time_since_last_eval_sec"),
+        "had_unscored_work_at_timeout": metrics.get("had_unscored_work_at_timeout", False),
+        "last_phase": metrics.get("last_phase"),
+    }
+
+
 def cmd_prepare_dataset(args) -> int:
     system = _make_system(args)
     record = system.prepare_dataset(args.dataset_id)
@@ -132,6 +146,7 @@ def cmd_list_trials(args) -> int:
                 "status": trial.status,
                 "outcome_reason": trial.outcome_reason,
                 "score": trial.score,
+                **_trial_diagnostics(trial.metrics_json),
                 "dispatch_attempts": trial.dispatch_attempts,
                 "runner_id": trial.runner_id,
                 "created_at": trial.created_at,
@@ -156,6 +171,8 @@ def cmd_sample_context(args) -> int:
             {
                 "trial_id": trial.trial_id,
                 "score": trial.score,
+                "outcome_reason": trial.outcome_reason,
+                **_trial_diagnostics(trial.metrics_json),
                 "metrics_json": trial.metrics_json,
                 "provenance_json": trial.provenance_json,
                 "source": trial.source,

@@ -21,6 +21,7 @@ from sigmaevolve.system import EvolutionSystem
 def make_policy(**overrides):
     policy = {
         "budget_sec": 2,
+        "max_eval_gap_sec": 1,
         "max_parallelism": 1,
         "ready_queue_threshold": 1,
         "dispatch_ttl_sec": 1,

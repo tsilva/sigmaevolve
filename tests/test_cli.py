@@ -68,6 +68,7 @@ def test_cli_create_track_and_list_trials(tmp_path, monkeypatch):
     trials = json.loads(list_out.getvalue())
     assert len(trials) == 1
     assert trials[0]["status"] == "queued"
+    assert trials[0]["time_to_best_eval_sec"] is None
 
 
 def test_cli_create_track_from_policy_file(tmp_path, monkeypatch):
