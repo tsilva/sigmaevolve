@@ -29,6 +29,8 @@ TERMINAL_OUTCOMES = {
     OUTCOME_STALE,
 }
 
+CANDIDATE_KIND_STRATEGY_V1 = "strategy_v1"
+
 
 def now_utc() -> datetime:
     return datetime.now(timezone.utc)

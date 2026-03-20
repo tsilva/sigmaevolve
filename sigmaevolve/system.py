@@ -5,7 +5,15 @@ from pathlib import Path
 from sigmaevolve.baseline import build_baseline_linear_classifier
 from sigmaevolve.datasets import DatasetManager, TorchvisionClassificationProvider
 from sigmaevolve.generation import OpenRouterGenerationBackend
-from sigmaevolve.models import DatasetRecord, MigrationResult, TrackPolicy, TrackRecord, TrialRecord, TrialSummary
+from sigmaevolve.models import (
+    CANDIDATE_KIND_STRATEGY_V1,
+    DatasetRecord,
+    MigrationResult,
+    TrackPolicy,
+    TrackRecord,
+    TrialRecord,
+    TrialSummary,
+)
 from sigmaevolve.orchestrator import Orchestrator, RecordingLauncher
 from sigmaevolve.runner import RunnerService
 from sigmaevolve.scoring import compute_score
@@ -44,6 +52,7 @@ class EvolutionSystem:
             provenance_json={
                 "backend": "baseline",
                 "model": "linear-classifier",
+                "candidate_kind": CANDIDATE_KIND_STRATEGY_V1,
                 "parent_trial_ids": [],
             },
         )

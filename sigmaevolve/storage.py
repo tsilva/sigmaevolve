@@ -312,7 +312,7 @@ class SQLAlchemyRepository:
             rows = conn.execute(stmt).fetchall()
         return [_row_to_trial(row) for row in rows]
 
-    def sample_trial_context(self, track_id: str, limit: int) -> list[TrialSummary]:
+    def sample_trial_context(self, track_id: str, limit: int, candidate_kind: str | None = None) -> list[TrialSummary]:
         stmt = (
             sa.select(trials_table)
             .where(
@@ -338,6 +338,7 @@ class SQLAlchemyRepository:
                 error_json=dict(row.error_json) if row.error_json else None,
             )
             for row in rows
+            if candidate_kind is None or dict(row.provenance_json or {}).get("candidate_kind") == candidate_kind
         ]
         return sorted(summaries, key=_trial_summary_sort_key)[:limit]
 

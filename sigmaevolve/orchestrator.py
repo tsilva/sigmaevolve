@@ -4,7 +4,7 @@ import random
 from dataclasses import replace
 from typing import Protocol
 
-from sigmaevolve.models import ReconcileResult, TrialSummary
+from sigmaevolve.models import CANDIDATE_KIND_STRATEGY_V1, ReconcileResult, TrialSummary
 
 
 class RunnerLauncher(Protocol):
@@ -41,6 +41,8 @@ class ModalRemoteLauncher:
 
 
 class Orchestrator:
+    MAX_DUPLICATE_RETRIES = 3
+
     def __init__(self, repository, dataset_manager, generator, launcher) -> None:
         self.repository = repository
         self.dataset_manager = dataset_manager
@@ -48,7 +50,11 @@ class Orchestrator:
         self.launcher = launcher
 
     def _sample_successful_context_trials(self, track_id: str, sampling_settings: dict, generation_index: int) -> list[TrialSummary]:
-        candidates = self.repository.sample_trial_context(track_id, limit=self.repository.count_trials(track_id))
+        candidates = self.repository.sample_trial_context(
+            track_id,
+            limit=self.repository.count_trials(track_id),
+            candidate_kind=CANDIDATE_KIND_STRATEGY_V1,
+        )
         if not candidates:
             return []
         if len(candidates) == 1:
@@ -92,25 +98,29 @@ class Orchestrator:
                 generation_index,
             )
             if context_trials:
-                try:
-                    generated = self.generator.generate(
-                        track,
-                        dataset_manifest,
-                        context_trials,
-                        negative_trials=[],
-                        generation_index=generation_index,
-                    )
-                    trial, created = self.repository.create_queued_trial_if_absent(
-                        track_id=track_id,
-                        source=generated.source,
-                        provenance_json=generated.provenance_json,
-                    )
-                    if created and trial is not None:
-                        result.generated_trial_ids.append(trial.trial_id)
-                    elif trial is not None:
-                        result.duplicate_hashes.append(trial.script_hash)
-                except Exception as exc:
-                    result.errors.append(str(exc))
+                for duplicate_retry_count in range(self.MAX_DUPLICATE_RETRIES + 1):
+                    try:
+                        generated = self.generator.generate(
+                            track,
+                            dataset_manifest,
+                            context_trials,
+                            negative_trials=[],
+                            generation_index=generation_index,
+                            duplicate_retry_count=duplicate_retry_count,
+                        )
+                        trial, created = self.repository.create_queued_trial_if_absent(
+                            track_id=track_id,
+                            source=generated.source,
+                            provenance_json=generated.provenance_json,
+                        )
+                        if created and trial is not None:
+                            result.generated_trial_ids.append(trial.trial_id)
+                            break
+                        if trial is not None:
+                            result.duplicate_hashes.append(trial.script_hash)
+                    except Exception as exc:
+                        result.errors.append(str(exc))
+                        break
 
         reserved = self.repository.reserve_trials(
             track_id=track_id,

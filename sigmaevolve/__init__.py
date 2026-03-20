@@ -2,6 +2,7 @@ from sigmaevolve.datasets import ArrayDatasetProvider, DatasetManager, Torchvisi
 from sigmaevolve.env import load_env_file
 from sigmaevolve.generation import FixedGenerationBackend, OpenRouterGenerationBackend
 from sigmaevolve.models import (
+    CANDIDATE_KIND_STRATEGY_V1,
     DatasetManifest,
     DatasetRecord,
     GenerationResult,
@@ -18,6 +19,7 @@ from sigmaevolve.system import EvolutionSystem, build_system
 
 __all__ = [
     "ArrayDatasetProvider",
+    "CANDIDATE_KIND_STRATEGY_V1",
     "DatasetManager",
     "DatasetManifest",
     "DatasetRecord",

@@ -3,8 +3,11 @@ from __future__ import annotations
 import threading
 import time
 
+import pytest
+
 from sigmaevolve.baseline import build_baseline_linear_classifier
 from sigmaevolve.generation import FixedGenerationBackend
+from sigmaevolve.models import CANDIDATE_KIND_STRATEGY_V1
 from sigmaevolve.orchestrator import InlineRunnerLauncher, RecordingLauncher
 from sigmaevolve.runner import RunnerService
 from sigmaevolve.system import EvolutionSystem
@@ -17,17 +20,19 @@ def test_create_track_seeds_one_baseline_candidate(system):
     assert len(trials) == 1
     assert trials[0].status == "queued"
     assert trials[0].source == build_baseline_linear_classifier().replace("\r\n", "\n").rstrip("\n") + "\n"
+    assert trials[0].provenance_json["candidate_kind"] == CANDIDATE_KIND_STRATEGY_V1
 
 
 def test_same_source_is_deduped_within_track_and_allowed_across_tracks(system):
     system.prepare_dataset("mnist:v1")
     first = system.create_track("a", "mnist:v1", {})
     second = system.create_track("b", "mnist:v1", {})
-    duplicate_source = "print('candidate')\n"
+    duplicate_source = "def initialize(ctx):\n    return {}\n"
+    provenance = {"backend": "test", "candidate_kind": CANDIDATE_KIND_STRATEGY_V1}
 
-    original, created = system.repository.create_queued_trial_if_absent(first.track_id, duplicate_source, {"backend": "test"})
-    again, created_again = system.repository.create_queued_trial_if_absent(first.track_id, duplicate_source, {"backend": "test"})
-    other_track, other_created = system.repository.create_queued_trial_if_absent(second.track_id, duplicate_source, {"backend": "test"})
+    original, created = system.repository.create_queued_trial_if_absent(first.track_id, duplicate_source, provenance)
+    again, created_again = system.repository.create_queued_trial_if_absent(first.track_id, duplicate_source, provenance)
+    other_track, other_created = system.repository.create_queued_trial_if_absent(second.track_id, duplicate_source, provenance)
 
     assert created is True
     assert created_again is False
@@ -103,8 +108,142 @@ def test_reconcile_generates_duplicates_without_dispatching_more_work(repository
     )
 
     result = system.reconcile_track(track.track_id)
-    assert result.duplicate_hashes
+    assert len(result.duplicate_hashes) == 4
     assert result.launched_trial_ids == []
+
+
+def test_reconcile_retries_duplicate_generation_with_incremented_retry_count(repository, dataset_manager):
+    class RetryingDuplicateGenerator:
+        def __init__(self, source: str):
+            self.source = source
+            self.retry_counts = []
+
+        def generate(
+            self,
+            track,
+            dataset_manifest,
+            context_trials,
+            negative_trials=None,
+            generation_index=0,
+            duplicate_retry_count=0,
+        ):
+            self.retry_counts.append(duplicate_retry_count)
+            return type(
+                "Generated",
+                (),
+                {
+                    "source": self.source,
+                    "provenance_json": {
+                        "backend": "fixed",
+                        "model": "retry-capture",
+                        "candidate_kind": CANDIDATE_KIND_STRATEGY_V1,
+                        "duplicate_retry_count": duplicate_retry_count,
+                    },
+                },
+            )()
+
+    dataset_manager.prepare("mnist:v1")
+    repository.register_dataset("mnist:v1", str(dataset_manager.manifest_path_for("mnist:v1")))
+    runner = RunnerService(repository=repository, dataset_manager=dataset_manager)
+    generator = RetryingDuplicateGenerator(build_baseline_linear_classifier())
+    system = EvolutionSystem(
+        repository,
+        dataset_manager,
+        generator,
+        InlineRunnerLauncher(runner),
+        runner,
+    )
+    track = system.create_track("dup-retries", "mnist:v1", {"ready_queue_threshold": 2, "dispatch_ttl_sec": 1, "budget_sec": 2})
+    baseline = system.repository.list_trials(track.track_id)[0]
+    system.repository.finalize_trial(
+        trial_id=baseline.trial_id,
+        runner_id=None,
+        outcome_reason="succeeded",
+        metrics={"accuracy": 0.5},
+        score=0.5,
+        error_info={"reason": "test_setup"},
+    )
+
+    result = system.reconcile_track(track.track_id)
+
+    assert generator.retry_counts == [0, 1, 2, 3]
+    assert len(result.duplicate_hashes) == 4
+    assert result.generated_trial_ids == []
+    assert result.launched_trial_ids == []
+
+
+def test_reconcile_persists_successful_retry_generation_params(repository, dataset_manager):
+    class DuplicateThenUniqueGenerator:
+        def __init__(self, duplicate_source: str, unique_source: str):
+            self.duplicate_source = duplicate_source
+            self.unique_source = unique_source
+            self.retry_counts = []
+
+        def generate(
+            self,
+            track,
+            dataset_manifest,
+            context_trials,
+            negative_trials=None,
+            generation_index=0,
+            duplicate_retry_count=0,
+        ):
+            self.retry_counts.append(duplicate_retry_count)
+            source = self.duplicate_source if duplicate_retry_count == 0 else self.unique_source
+            return type(
+                "Generated",
+                (),
+                {
+                    "source": source,
+                    "provenance_json": {
+                        "backend": "openrouter",
+                        "model": "retry-capture",
+                        "candidate_kind": CANDIDATE_KIND_STRATEGY_V1,
+                        "generation_index": generation_index,
+                        "duplicate_retry_count": duplicate_retry_count,
+                        "generation_config": {
+                            "model": "retry-capture",
+                            "temperature": 0.2 + (0.1 * duplicate_retry_count),
+                            "max_tokens": 1500,
+                        },
+                    },
+                },
+            )()
+
+    dataset_manager.prepare("mnist:v1")
+    repository.register_dataset("mnist:v1", str(dataset_manager.manifest_path_for("mnist:v1")))
+    runner = RunnerService(repository=repository, dataset_manager=dataset_manager)
+    duplicate_source = build_baseline_linear_classifier()
+    unique_source = "def initialize(ctx):\n    return {'unique': True}\n"
+    generator = DuplicateThenUniqueGenerator(duplicate_source=duplicate_source, unique_source=unique_source)
+    system = EvolutionSystem(
+        repository,
+        dataset_manager,
+        generator,
+        RecordingLauncher(),
+        runner,
+    )
+    track = system.create_track("dup-success", "mnist:v1", {"ready_queue_threshold": 2, "dispatch_ttl_sec": 1, "budget_sec": 2})
+    baseline = system.repository.list_trials(track.track_id)[0]
+    system.repository.finalize_trial(
+        trial_id=baseline.trial_id,
+        runner_id=None,
+        outcome_reason="succeeded",
+        metrics={"accuracy": 0.5},
+        score=0.5,
+        error_info={"reason": "test_setup"},
+    )
+
+    result = system.reconcile_track(track.track_id)
+    trials = system.repository.list_trials(track.track_id)
+    created_trial = next(trial for trial in trials if trial.source == unique_source)
+
+    assert generator.retry_counts == [0, 1]
+    assert len(result.duplicate_hashes) == 1
+    assert result.generated_trial_ids == [created_trial.trial_id]
+    assert created_trial.provenance_json["duplicate_retry_count"] == 1
+    assert created_trial.provenance_json["generation_index"] == 1
+    assert created_trial.provenance_json["generation_config"]["temperature"] == pytest.approx(0.3)
 
 
 def test_expired_dispatch_is_marked_stale_when_retries_exhausted(system):
@@ -144,8 +283,16 @@ def test_weighted_successful_sampling_favors_higher_scores(repository, dataset_m
 
     trials = repository.list_trials(track.track_id)
     baseline = trials[0]
-    mid, _ = repository.create_queued_trial_if_absent(track.track_id, "print('mid')\n", {"backend": "test", "model": "mid"})
-    low, _ = repository.create_queued_trial_if_absent(track.track_id, "print('low')\n", {"backend": "test", "model": "low"})
+    mid, _ = repository.create_queued_trial_if_absent(
+        track.track_id,
+        "print('mid')\n",
+        {"backend": "test", "model": "mid", "candidate_kind": CANDIDATE_KIND_STRATEGY_V1},
+    )
+    low, _ = repository.create_queued_trial_if_absent(
+        track.track_id,
+        "print('low')\n",
+        {"backend": "test", "model": "low", "candidate_kind": CANDIDATE_KIND_STRATEGY_V1},
+    )
     assert mid is not None and low is not None
 
     repository.finalize_trial(
@@ -191,15 +338,27 @@ def test_reconcile_never_passes_failed_trials_as_generation_context(repository, 
             self.context_trials = None
             self.negative_trials = None
 
-        def generate(self, track, dataset_manifest, context_trials, negative_trials=None, generation_index=0):
+        def generate(
+            self,
+            track,
+            dataset_manifest,
+            context_trials,
+            negative_trials=None,
+            generation_index=0,
+            duplicate_retry_count=0,
+        ):
             self.context_trials = context_trials
             self.negative_trials = negative_trials or []
             return type(
                 "Generated",
                 (),
                 {
-                    "source": "print('candidate')\n",
-                    "provenance_json": {"backend": "fixed", "model": "capture"},
+                    "source": "def initialize(ctx):\n    return {'capture': True}\n",
+                    "provenance_json": {
+                        "backend": "fixed",
+                        "model": "capture",
+                        "candidate_kind": CANDIDATE_KIND_STRATEGY_V1,
+                    },
                 },
             )()
 
@@ -222,8 +381,8 @@ def test_reconcile_never_passes_failed_trials_as_generation_context(repository, 
     )
     failed, _ = repository.create_queued_trial_if_absent(
         track.track_id,
-        "print('broken candidate')\n",
-        {"backend": "openrouter", "model": "test/model"},
+        "def initialize(ctx):\n    raise RuntimeError('broken')\n",
+        {"backend": "openrouter", "model": "test/model", "candidate_kind": CANDIDATE_KIND_STRATEGY_V1},
     )
     assert failed is not None
     repository.finalize_trial(
@@ -241,3 +400,69 @@ def test_reconcile_never_passes_failed_trials_as_generation_context(repository, 
     assert [trial.trial_id for trial in generator.context_trials] == [baseline.trial_id]
     assert generator.negative_trials is not None
     assert generator.negative_trials == []
+
+
+def test_reconcile_does_not_mutate_legacy_successes(repository, dataset_manager):
+    class CapturingGenerator:
+        def __init__(self):
+            self.called = False
+
+        def generate(
+            self,
+            track,
+            dataset_manifest,
+            context_trials,
+            negative_trials=None,
+            generation_index=0,
+            duplicate_retry_count=0,
+        ):
+            self.called = True
+            return type(
+                "Generated",
+                (),
+                {
+                    "source": "def initialize(ctx):\n    return {}\n",
+                    "provenance_json": {
+                        "backend": "fixed",
+                        "model": "capture",
+                        "candidate_kind": CANDIDATE_KIND_STRATEGY_V1,
+                    },
+                },
+            )()
+
+    dataset_manager.prepare("mnist:v1")
+    repository.register_dataset("mnist:v1", str(dataset_manager.manifest_path_for("mnist:v1")))
+    generator = CapturingGenerator()
+    runner = RunnerService(repository=repository, dataset_manager=dataset_manager)
+    system = EvolutionSystem(repository, dataset_manager, generator, RecordingLauncher(), runner)
+    track = system.create_track("legacy-only", "mnist:v1", {"ready_queue_threshold": 1})
+
+    baseline = repository.list_trials(track.track_id)[0]
+    repository.finalize_trial(
+        trial_id=baseline.trial_id,
+        runner_id=None,
+        outcome_reason="stale",
+        metrics=None,
+        score=0.0,
+        error_info={"reason": "test_setup"},
+    )
+    legacy, created = repository.create_queued_trial_if_absent(
+        track.track_id,
+        "print('legacy train script')\n",
+        {"backend": "legacy"},
+    )
+    assert created is True
+    assert legacy is not None
+    repository.finalize_trial(
+        trial_id=legacy.trial_id,
+        runner_id=None,
+        outcome_reason="succeeded",
+        metrics={"accuracy": 0.8},
+        score=0.8,
+        error_info=None,
+    )
+
+    result = system.reconcile_track(track.track_id)
+
+    assert generator.called is False
+    assert result.generated_trial_ids == []

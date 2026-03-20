@@ -30,6 +30,14 @@ def _coerce_optional_scalar(value: Any, cast) -> Any | None:
         return None
 
 
+def _coerce_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return str(value)
+
+
 class RunnerService:
     def __init__(self, repository, dataset_manager, python_executable: str | None = None) -> None:
         self.repository = repository
@@ -52,6 +60,17 @@ class RunnerService:
             return None
         try:
             payload = json.loads(progress_path.read_text())
+        except (OSError, json.JSONDecodeError):
+            return None
+        if not isinstance(payload, dict):
+            return None
+        return payload
+
+    def _read_debug_payload(self, debug_path: Path) -> dict[str, Any] | None:
+        if not debug_path.exists():
+            return None
+        try:
+            payload = json.loads(debug_path.read_text())
         except (OSError, json.JSONDecodeError):
             return None
         if not isinstance(payload, dict):
@@ -186,24 +205,22 @@ class RunnerService:
         try:
             with tempfile.TemporaryDirectory(prefix=f"sigmaevolve_{trial.trial_id}_") as temp_dir:
                 temp_path = Path(temp_dir)
-                script_path = temp_path / "train.py"
+                strategy_path = temp_path / "strategy.py"
                 config_path = temp_path / "run_config.json"
-                predictions_path = temp_path / "predictions.npz"
                 progress_path = temp_path / "progress.json"
                 eval_dir = temp_path / "evals"
                 debug_path = temp_path / "debug.json"
                 eval_dir.mkdir(parents=True, exist_ok=True)
-                script_path.write_text(trial.source)
+                strategy_path.write_text(trial.source)
                 config_path.write_text(
                     json.dumps(
                         {
-                            "dataset_dir": manifest.root_dir,
+                            "strategy_path": str(strategy_path),
                             "train_split_path": manifest.train_split_path,
                             "validation_split_path": manifest.validation_split_path,
                             "budget_sec": int(policy["budget_sec"]),
                             "max_eval_gap_sec": int(policy["max_eval_gap_sec"]),
                             "random_seed": 1234,
-                            "predictions_output_path": str(predictions_path),
                             "progress_path": str(progress_path),
                             "eval_dir": str(eval_dir),
                             "debug_output_path": str(debug_path),
@@ -212,7 +229,7 @@ class RunnerService:
                         sort_keys=True,
                     )
                 )
-                command = [self.python_executable, str(script_path), "--config", str(config_path)]
+                command = [self.python_executable, "-m", "sigmaevolve.strategy_runtime", "--config", str(config_path)]
                 timed_out = False
                 completed: subprocess.CompletedProcess[str] | None = None
                 stdout: str | None = None
@@ -223,19 +240,40 @@ class RunnerService:
                         command,
                         capture_output=True,
                         text=True,
-                        timeout=int(policy["budget_sec"]),
+                        timeout=float(policy["budget_sec"]) + float(policy["max_eval_gap_sec"]) + 1.0,
                         check=False,
                     )
-                    stdout = completed.stdout
-                    stderr = completed.stderr
+                    stdout = _coerce_text(completed.stdout)
+                    stderr = _coerce_text(completed.stderr)
                 except subprocess.TimeoutExpired as exc:
                     timed_out = True
-                    stdout = exc.stdout
-                    stderr = exc.stderr
+                    stdout = _coerce_text(exc.stdout)
+                    stderr = _coerce_text(exc.stderr)
                 process_elapsed_sec = time.monotonic() - started_at
                 progress_payload = self._read_progress(progress_path)
+                debug_payload = self._read_debug_payload(debug_path)
+                timed_out = bool(timed_out or (debug_payload or {}).get("timed_out"))
 
                 if completed is not None and completed.returncode != 0:
+                    failure_outcome = (debug_payload or {}).get("failure_outcome")
+                    if failure_outcome == OUTCOME_EVAL_FAILED:
+                        self.repository.finalize_trial(
+                            trial_id=trial.trial_id,
+                            runner_id=runner_id,
+                            outcome_reason=OUTCOME_EVAL_FAILED,
+                            metrics=None,
+                            score=0.0,
+                            error_info={
+                                "reason": (debug_payload or {}).get("failure_reason") or "strategy_contract_violation",
+                                "detail": (debug_payload or {}).get("detail"),
+                                "stdout": stdout,
+                                "stderr": stderr,
+                                "returncode": completed.returncode,
+                                "timed_out": timed_out,
+                                "progress": progress_payload,
+                            },
+                        )
+                        return
                     self.repository.finalize_trial(
                         trial_id=trial.trial_id,
                         runner_id=runner_id,
@@ -246,7 +284,7 @@ class RunnerService:
                             "stdout": stdout,
                             "stderr": stderr,
                             "returncode": completed.returncode,
-                            "timed_out": False,
+                            "timed_out": timed_out,
                             "progress": progress_payload,
                         },
                     )
@@ -256,7 +294,7 @@ class RunnerService:
                     artifacts = self._load_eval_artifacts(
                         eval_dir=eval_dir,
                         labels_path=manifest.validation_labels_path,
-                        fallback_predictions_path=predictions_path,
+                        fallback_predictions_path=temp_path / "unused_predictions.npz",
                         fallback_elapsed_time_sec=process_elapsed_sec,
                     )
                 except Exception as exc:
@@ -314,6 +352,7 @@ class RunnerService:
                     error_info={
                         "stdout": stdout,
                         "stderr": stderr,
+                        "debug": debug_payload,
                         "debug_output_path": str(debug_path),
                         "progress": progress_payload,
                         "eval_dir": str(eval_dir),

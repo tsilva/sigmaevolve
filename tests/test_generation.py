@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from sigmaevolve.generation import OpenRouterGenerationBackend
 from sigmaevolve.models import DatasetManifest, TrackRecord, TrialSummary, now_utc
 
@@ -48,8 +50,8 @@ def _context():
             trial_id="trial_1",
             score=0.5,
             metrics_json={"accuracy": 0.5},
-            source="print('old')\n",
-            provenance_json={"backend": "baseline"},
+            source="def initialize(ctx):\n    return {}\n",
+            provenance_json={"backend": "baseline", "candidate_kind": "strategy_v1"},
         )
     ]
 
@@ -103,22 +105,55 @@ def test_openrouter_generation_uses_model_pool_round_robin(monkeypatch):
     assert payloads[0]["model"] == "openai/gpt-4o-mini"
     assert payloads[1]["model"] == "anthropic/claude-3.5-sonnet"
     assert first_result.provenance_json["model"] == "openai/gpt-4o-mini"
+    assert first_result.provenance_json["candidate_kind"] == "strategy_v1"
     assert second_result.provenance_json["generation_config"]["temperature"] == 0.8
     assert first_result.provenance_json["request_messages"] == payloads[0]["messages"]
 
     system_prompt = payloads[0]["messages"][0]["content"]
     first_prompt = payloads[0]["messages"][1]["content"]
-    assert "Return only Python source, with no markdown fences or commentary." in system_prompt
+    assert "candidate module: strategy.py" in system_prompt
     assert "Treat this as an evolutionary mutation task, not a rewrite from scratch." in system_prompt
     assert "Follow this contract exactly:" in system_prompt
-    assert "- validation_split_path: Path to the validation .npz file with features only." in system_prompt
-    assert "Read the config JSON using the exact keys listed in config_keys" in system_prompt
-    assert "Produce a mutated descendant of the parent, not a fresh rewrite." in system_prompt
+    assert "- validation_features: Validation features array from the harness." in system_prompt
+    assert "Do not parse CLI args, read config files, write files, or manage progress/eval artifacts" in system_prompt
+    assert "Produce a mutated descendant of the parent strategy, not a fresh rewrite." in system_prompt
     assert not first_prompt.lstrip().startswith("{")
-    assert "Write a complete Python train.py for dataset mnist:v1." in first_prompt
+    assert "Write a complete Python strategy.py module for dataset mnist:v1." in first_prompt
     assert "- max_eval_gap_sec: 15" in first_prompt
     assert "Use this parent trial as the base candidate:" in first_prompt
     assert "No recent negative trials are available." in first_prompt
+
+
+def test_openrouter_generation_bumps_temperature_on_duplicate_retry(monkeypatch):
+    backend = OpenRouterGenerationBackend(api_key="test-key")
+    payloads = []
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps(
+                {
+                    "id": "resp_1",
+                    "choices": [{"message": {"content": "print('new candidate')"}}],
+                }
+            ).encode("utf-8")
+
+    def fake_urlopen(req, timeout=0):
+        payloads.append(json.loads(req.data.decode("utf-8")))
+        return FakeResponse()
+
+    monkeypatch.setattr("sigmaevolve.generation.request.urlopen", fake_urlopen)
+
+    result = backend.generate(_track_with_pool(), _manifest(), _context(), generation_index=0, duplicate_retry_count=2)
+
+    assert payloads[0]["temperature"] == pytest.approx(0.3)
+    assert result.provenance_json["duplicate_retry_count"] == 2
+    assert result.provenance_json["generation_config"]["temperature"] == pytest.approx(0.3)
 
 
 def test_openrouter_generation_prompt_includes_failure_feedback(monkeypatch):

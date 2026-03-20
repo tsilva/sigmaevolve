@@ -9,7 +9,7 @@ from textwrap import dedent
 from typing import Protocol
 from urllib import request
 
-from sigmaevolve.models import DatasetManifest, GenerationResult, TrackRecord, TrialSummary
+from sigmaevolve.models import CANDIDATE_KIND_STRATEGY_V1, DatasetManifest, GenerationResult, TrackRecord, TrialSummary
 
 
 class GenerationBackend(Protocol):
@@ -20,6 +20,7 @@ class GenerationBackend(Protocol):
         context_trials: list[TrialSummary],
         negative_trials: list[TrialSummary] | None = None,
         generation_index: int = 0,
+        duplicate_retry_count: int = 0,
     ) -> GenerationResult:
         ...
 
@@ -36,13 +37,16 @@ class FixedGenerationBackend:
         context_trials: list[TrialSummary],
         negative_trials: list[TrialSummary] | None = None,
         generation_index: int = 0,
+        duplicate_retry_count: int = 0,
     ) -> GenerationResult:
         return GenerationResult(
             source=self.source,
             provenance_json={
                 "backend": "fixed",
                 "model": self.model_name,
+                "candidate_kind": CANDIDATE_KIND_STRATEGY_V1,
                 "generation_index": generation_index,
+                "duplicate_retry_count": duplicate_retry_count,
                 "request_messages": [],
                 "context_trial_ids": [trial.trial_id for trial in context_trials],
             },
@@ -137,38 +141,38 @@ class OpenRouterGenerationBackend:
 
     def _build_system_prompt_text(self) -> str:
         static_task_contract = {
-            "entrypoint": "train.py --config /abs/path/run_config.json",
-            "config keys": {
-                "dataset_dir": "Directory containing the prepared dataset assets.",
-                "train_split_path": "Path to the training .npz file with features and labels arrays.",
-                "validation_split_path": "Path to the validation .npz file with features only.",
-                "budget_sec": "Hard wall-clock training budget in seconds.",
-                "max_eval_gap_sec": "Maximum allowed gap between completed validation passes.",
-                "random_seed": "Deterministic seed to use for numpy/torch setup.",
-                "predictions_output_path": "Compatibility fallback output path for predictions.npz.",
-                "progress_path": "Path for heartbeat/progress JSON updates.",
-                "eval_dir": "Directory for atomically written evaluation artifacts.",
-                "debug_output_path": "Path for optional debug JSON output.",
+            "candidate module": "strategy.py",
+            "required exports": {
+                "initialize(ctx)": "Return a dict state object used across training windows.",
+                "train_window(ctx, state)": "Perform one bounded unit of training and mutate state in place.",
+                "predict_validation(ctx, state)": "Return validation class ids or logits for every validation example.",
+            },
+            "strategy context fields": {
+                "train_features": "Training features array from the harness.",
+                "train_labels": "Training labels array from the harness.",
+                "validation_features": "Validation features array from the harness.",
                 "dataset_metadata": "Dataset metadata object from the harness.",
+                "random_seed": "Deterministic seed chosen by the harness.",
+                "device": "Device string chosen by the harness.",
+                "budget_sec": "Total wall-clock budget in seconds.",
+                "remaining_budget_sec": "Remaining wall-clock budget at the start of the callback.",
+                "max_eval_gap_sec": "Maximum allowed duration of one train_window call.",
+                "window_index": "Zero-based train window index.",
             },
             "train split format": "npz with arrays: features, labels",
             "validation split format": "npz with arrays: features",
-            "required outputs": {
-                "progress_path": "JSON heartbeat with current phase, elapsed_time_sec, and last_completed_eval_sec",
-                "eval_dir": "Directory of atomically written .npz eval artifacts with predictions, eval_index, elapsed_time_sec, and optional epoch",
-                "legacy_predictions_output_path": "Optional compatibility fallback only; prefer eval_dir artifacts",
-            },
-            "allowed packages": ["argparse", "json", "pathlib", "numpy", "torch"],
+            "allowed packages": ["numpy", "torch"],
             "writing rules": [
-                "Read the config JSON using the exact keys listed in config_keys; do not invent alternate key names.",
-                "Write eval artifacts atomically by saving to a temp path and renaming into eval_dir.",
+                "Return only Python source for strategy.py, with no markdown fences or commentary.",
+                "Do not parse CLI args, read config files, write files, or manage progress/eval artifacts; the harness owns all protocol and bookkeeping.",
                 "Features may be multi-dimensional tensors rather than pre-flattened vectors; if you use linear layers, flatten both train and validation batches consistently or start the model with nn.Flatten().",
-                "Do not spend long uninterrupted stretches training without finishing a validation pass.",
-                "When validation accuracy ties, lower elapsed wall time to that eval wins.",
+                "train_window must return promptly enough to stay within max_eval_gap_sec.",
+                "predict_validation must return one prediction per validation example as class ids or logits.",
+                "Augmentation is allowed inside train_window and may evolve without explicit prompting.",
             ],
             "mutation rules": [
                 "Preserve the parent's working harness integration unless a change is required.",
-                "Produce a mutated descendant of the parent, not a fresh rewrite.",
+                "Produce a mutated descendant of the parent strategy, not a fresh rewrite.",
                 "Make exactly one substantive improvement likely to improve validation accuracy within the time budget.",
                 "Avoid cosmetic refactors or rename-only changes.",
             ],
@@ -176,10 +180,9 @@ class OpenRouterGenerationBackend:
         lines = [
             dedent(
                 """
-                You are generating a self-contained Python train.py script for a classification harness.
-                Return only Python source, with no markdown fences or commentary.
+                You are generating a self-contained Python strategy.py module for a classification harness.
                 Treat this as an evolutionary mutation task, not a rewrite from scratch.
-                Optimize for best validation accuracy, but publish completed validation checkpoints regularly so the harness can score them before timeout.
+                Optimize for best validation accuracy while letting the harness control evaluation cadence, timing, and scoring.
                 Follow this contract exactly:
                 """
             ).strip()
@@ -197,9 +200,9 @@ class OpenRouterGenerationBackend:
     ) -> str:
         primary_parent = context_trials[0] if context_trials else None
         lines = [
-            f"Write a complete Python train.py for dataset {track.dataset_id}.",
+            f"Write a complete Python strategy.py module for dataset {track.dataset_id}.",
             "",
-            "Use the dataset metadata below when choosing the model and loss setup:",
+            "Use the dataset metadata below when choosing the model, augmentation, and loss setup:",
         ]
         if dataset_manifest.metadata:
             lines.extend(self._format_mapping(dict(dataset_manifest.metadata), indent=0))
@@ -329,12 +332,14 @@ class OpenRouterGenerationBackend:
         context_trials: list[TrialSummary],
         negative_trials: list[TrialSummary] | None = None,
         generation_index: int = 0,
+        duplicate_retry_count: int = 0,
     ) -> GenerationResult:
         if not self.api_key:
             raise RuntimeError("OPENROUTER_API_KEY is required for OpenRouter generation.")
         generation_policy = dict(track.policy_json["generation_backend"])
         generation_policy["_generation_index"] = generation_index
         selected_config = self._normalize_generation_config(generation_policy)
+        selected_config["temperature"] = float(selected_config.get("temperature", 0.2)) + (0.1 * duplicate_retry_count)
         payload = {
             "model": selected_config["model"],
             "messages": self._build_prompt(
@@ -367,8 +372,10 @@ class OpenRouterGenerationBackend:
             provenance_json={
                 "backend": "openrouter",
                 "model": selected_config["model"],
+                "candidate_kind": CANDIDATE_KIND_STRATEGY_V1,
                 "generation_config": selected_config,
                 "generation_index": generation_index,
+                "duplicate_retry_count": duplicate_retry_count,
                 "provider_response_id": body.get("id"),
                 "request_messages": request_messages,
                 "context_trial_ids": [trial.trial_id for trial in context_trials],

@@ -90,15 +90,13 @@ def system(repository, dataset_manager):
     launcher = RecordingLauncher()
     generator = FixedGenerationBackend(
         source=(
-            "import argparse, json\n"
-            "from pathlib import Path\n"
-            "import numpy as np\n"
-            "parser=argparse.ArgumentParser(); parser.add_argument('--config', required=True); "
-            "args=parser.parse_args(); "
-            "cfg=json.loads(Path(args.config).read_text()); "
-            "labels=np.load(cfg['validation_split_path'])['features']; "
-            "preds=(labels.sum(axis=1) > 0).astype(int); "
-            "np.savez(cfg['predictions_output_path'], predictions=preds)\n"
+            "def initialize(ctx):\n"
+            "    return {}\n\n"
+            "def train_window(ctx, state):\n"
+            "    state['window'] = state.get('window', 0) + 1\n\n"
+            "def predict_validation(ctx, state):\n"
+            "    labels = ctx.validation_features\n"
+            "    return (labels.sum(axis=1) > 0).astype(int)\n"
         )
     )
     runner_service = RunnerService(repository=repository, dataset_manager=dataset_manager)
