@@ -503,34 +503,40 @@ button {
 
 .trial-list {
   display: grid;
-  gap: 10px;
+  gap: 8px;
 }
 
 .trial-card {
   width: 100%;
   display: grid;
-  gap: 10px;
-  padding: 11px;
+  gap: 8px;
+  padding: 9px 10px;
   text-align: left;
   cursor: pointer;
   transition: transform 160ms ease, border-color 160ms ease, background 160ms ease;
 }
 
 .trial-id {
-  font-size: 0.76rem;
+  font-size: 0.72rem;
   font-weight: 500;
   overflow-wrap: anywhere;
 }
 
 .trial-headline {
-  margin-top: 3px;
-  font-size: 0.8rem;
-  line-height: 1.3;
+  margin-top: 2px;
+  font-size: 0.74rem;
+  line-height: 1.22;
 }
 
 .status-badge {
   text-transform: capitalize;
   flex-shrink: 0;
+}
+
+.trial-card .status-badge {
+  min-height: 24px;
+  padding: 0 8px;
+  font-size: 0.72rem;
 }
 
 .status-queued {
@@ -552,20 +558,20 @@ button {
 .trial-stat-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
+  gap: 6px;
 }
 
 .trial-stat-grid strong {
   display: block;
-  margin-top: 3px;
-  font-size: 0.86rem;
+  margin-top: 2px;
+  font-size: 0.8rem;
 }
 
 .trial-foot {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
-  font-size: 0.72rem;
+  gap: 6px;
+  font-size: 0.68rem;
   color: var(--muted);
 }
 
@@ -573,10 +579,20 @@ button {
   gap: 6px;
 }
 
+.trial-card .flag-row {
+  gap: 4px;
+}
+
 .flag-chip {
   min-height: 24px;
   padding: 0 8px;
   font-size: 0.68rem;
+}
+
+.trial-card .flag-chip {
+  min-height: 20px;
+  padding: 0 6px;
+  font-size: 0.62rem;
 }
 
 .flag-warning {

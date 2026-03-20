@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { useDeferredValue, useEffect, useEffectEvent, useState, useTransition } from "react";
 
 import { HighlightedCode } from "@/components/highlighted-code";
@@ -284,8 +284,13 @@ export function DashboardShell({
 }: DashboardShellProps) {
   const router = useRouter();
   const pathname = usePathname();
-  const searchParams = useSearchParams();
-  const routeTrialId = searchParams.get("trial");
+  const routeTrialId = (() => {
+    const prefix = `/tracks/${selectedTrackId}/trials/`;
+    if (!pathname.startsWith(prefix)) {
+      return null;
+    }
+    return decodeURIComponent(pathname.slice(prefix.length));
+  })();
 
   const [tracks, setTracks] = useState(initialTracks);
   const [detail, setDetail] = useState(initialDetail);
@@ -334,19 +339,11 @@ export function DashboardShell({
       : detail.trials.reduce((best, trial) => (trial.score > best.score ? trial : best), detail.trials[0]);
 
   const updateTrialUrl = useEffectEvent((nextTrialId: string | null) => {
-    const params = new URLSearchParams(searchParams.toString());
-    if (nextTrialId) {
-      params.set("trial", nextTrialId);
-    } else {
-      params.delete("trial");
-    }
+    const nextUrl = nextTrialId
+      ? `/tracks/${selectedTrackId}/trials/${encodeURIComponent(nextTrialId)}`
+      : `/tracks/${selectedTrackId}`;
 
-    const nextQuery = params.toString();
-    const nextUrl = nextQuery ? `${pathname}?${nextQuery}` : pathname;
-    const currentQuery = searchParams.toString();
-    const currentUrl = currentQuery ? `${pathname}?${currentQuery}` : pathname;
-
-    if (nextUrl !== currentUrl) {
+    if (nextUrl !== pathname) {
       router.replace(nextUrl, { scroll: false });
     }
   });

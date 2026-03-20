@@ -8,7 +8,6 @@ import type { TrackDetailResponse, TrackListItem, TrialListItem } from "@/lib/ty
 const navigationState = vi.hoisted(() => ({
   pathname: "/tracks/track_1",
   replace: vi.fn(),
-  search: "",
 }));
 
 vi.mock("next/link", () => ({
@@ -32,7 +31,6 @@ vi.mock("next/navigation", () => ({
   useRouter: () => ({
     replace: navigationState.replace,
   }),
-  useSearchParams: () => new URLSearchParams(navigationState.search),
 }));
 
 vi.mock("@/hooks/use-track-live-updates", () => ({
@@ -117,9 +115,13 @@ function createDetail(trials: TrialListItem[] = baseTrials): TrackDetailResponse
 function renderShell(options?: {
   detail?: TrackDetailResponse;
   initialSelectedTrialId?: string | null;
-  search?: string;
+  pathname?: string;
 }) {
-  navigationState.search = options?.search ?? "";
+  navigationState.pathname =
+    options?.pathname ??
+    (options?.initialSelectedTrialId
+      ? `/tracks/track_1/trials/${options.initialSelectedTrialId}`
+      : "/tracks/track_1");
   navigationState.replace.mockReset();
 
   return render(
@@ -136,7 +138,6 @@ describe("DashboardShell", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     navigationState.pathname = "/tracks/track_1";
-    navigationState.search = "";
     navigationState.replace.mockReset();
     globalThis.fetch = vi.fn();
   });
@@ -145,7 +146,7 @@ describe("DashboardShell", () => {
     renderShell();
 
     await waitFor(() => {
-      expect(navigationState.replace).toHaveBeenCalledWith("/tracks/track_1?trial=trial_2", { scroll: false });
+      expect(navigationState.replace).toHaveBeenCalledWith("/tracks/track_1/trials/trial_2", { scroll: false });
     });
 
     expect(screen.getByRole("heading", { name: "trial_2" })).toBeTruthy();
@@ -154,7 +155,6 @@ describe("DashboardShell", () => {
   it("respects a valid trial param on first render", () => {
     renderShell({
       initialSelectedTrialId: "trial_1",
-      search: "trial=trial_1",
     });
 
     expect(screen.getByRole("heading", { name: "trial_1" })).toBeTruthy();
@@ -164,11 +164,11 @@ describe("DashboardShell", () => {
   it("falls back to the newest visible trial when the trial param is invalid", async () => {
     renderShell({
       initialSelectedTrialId: "missing_trial",
-      search: "trial=missing_trial",
+      pathname: "/tracks/track_1/trials/missing_trial",
     });
 
     await waitFor(() => {
-      expect(navigationState.replace).toHaveBeenCalledWith("/tracks/track_1?trial=trial_2", { scroll: false });
+      expect(navigationState.replace).toHaveBeenCalledWith("/tracks/track_1/trials/trial_2", { scroll: false });
     });
 
     expect(screen.getByRole("heading", { name: "trial_2" })).toBeTruthy();
@@ -177,13 +177,12 @@ describe("DashboardShell", () => {
   it("updates the selected trial and URL when a user clicks another trial", async () => {
     renderShell({
       initialSelectedTrialId: "trial_2",
-      search: "trial=trial_2",
     });
 
     fireEvent.click(screen.getByRole("button", { name: "Select trial trial_1" }));
 
     await waitFor(() => {
-      expect(navigationState.replace).toHaveBeenCalledWith("/tracks/track_1?trial=trial_1", { scroll: false });
+      expect(navigationState.replace).toHaveBeenCalledWith("/tracks/track_1/trials/trial_1", { scroll: false });
     });
 
     expect(screen.getByRole("heading", { name: "trial_1" })).toBeTruthy();
@@ -207,13 +206,12 @@ describe("DashboardShell", () => {
 
     renderShell({
       initialSelectedTrialId: "trial_2",
-      search: "trial=trial_2",
     });
 
     fireEvent.click(screen.getByRole("button", { name: "queued" }));
 
     await waitFor(() => {
-      expect(navigationState.replace).toHaveBeenCalledWith("/tracks/track_1?trial=trial_queued", { scroll: false });
+      expect(navigationState.replace).toHaveBeenCalledWith("/tracks/track_1/trials/trial_queued", { scroll: false });
     });
 
     expect(screen.getByRole("heading", { name: "trial_queued" })).toBeTruthy();
@@ -222,7 +220,6 @@ describe("DashboardShell", () => {
   it("keeps the inspector mounted for the selected trial", async () => {
     renderShell({
       initialSelectedTrialId: "trial_2",
-      search: "trial=trial_2",
     });
 
     await waitFor(() => {
@@ -236,7 +233,6 @@ describe("DashboardShell", () => {
   it("collapses and re-expands the tracks sidebar", () => {
     const { container } = renderShell({
       initialSelectedTrialId: "trial_2",
-      search: "trial=trial_2",
     });
 
     fireEvent.click(screen.getByRole("button", { name: "Collapse tracks sidebar" }));
@@ -258,7 +254,6 @@ describe("DashboardShell", () => {
 
     renderShell({
       initialSelectedTrialId: "trial_2",
-      search: "trial=trial_2",
     });
 
     fireEvent.click(screen.getByRole("button", { name: "queued" }));

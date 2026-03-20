@@ -1,25 +1,15 @@
-import { redirect } from "next/navigation";
-
 import { DashboardShell } from "@/components/dashboard-shell";
 import { EmptyState } from "@/components/empty-state";
 import { getTrackDetailOrThrow, listTrackSummaries } from "@/lib/queries";
 
 export const dynamic = "force-dynamic";
 
-export default async function TrackPage({
+export default async function TrackTrialPage({
   params,
-  searchParams,
 }: {
-  params: Promise<{ trackId: string }>;
-  searchParams: Promise<{ trial?: string }>;
+  params: Promise<{ trackId: string; trialId: string }>;
 }) {
-  const { trackId } = await params;
-  const { trial } = await searchParams;
-
-  if (trial) {
-    redirect(`/tracks/${trackId}/trials/${encodeURIComponent(trial)}`);
-  }
-
+  const { trackId, trialId } = await params;
   const [tracks, detail] = await Promise.all([listTrackSummaries(), getTrackDetailOrThrow(trackId)]);
 
   if (tracks.length === 0) {
@@ -31,7 +21,7 @@ export default async function TrackPage({
       initialTracks={tracks}
       initialDetail={detail}
       selectedTrackId={trackId}
-      initialSelectedTrialId={trial ?? null}
+      initialSelectedTrialId={trialId}
     />
   );
 }
