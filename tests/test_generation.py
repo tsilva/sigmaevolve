@@ -89,4 +89,8 @@ def test_openrouter_generation_uses_model_pool_round_robin(monkeypatch):
     first_prompt = json.loads(payloads[0]["messages"][1]["content"])
     assert first_prompt["task_contract"]["max_eval_gap_sec"] == 15
     assert "progress_path" in first_prompt["task_contract"]["required_outputs"]
+    assert first_prompt["task_contract"]["config_keys"]["validation_split_path"].startswith("Path to the validation")
+    assert any(
+        "exact keys listed in config_keys" in rule for rule in first_prompt["task_contract"]["writing_rules"]
+    )
     assert first_prompt["negative_trials"] == []

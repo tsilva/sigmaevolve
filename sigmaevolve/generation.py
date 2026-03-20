@@ -113,6 +113,19 @@ class OpenRouterGenerationBackend:
             "dataset_metadata": dataset_manifest.metadata,
             "task_contract": {
                 "entrypoint": "train.py --config /abs/path/run_config.json",
+                "config_keys": {
+                    "dataset_dir": "Directory containing the prepared dataset assets.",
+                    "train_split_path": "Path to the training .npz file with features and labels arrays.",
+                    "validation_split_path": "Path to the validation .npz file with features only.",
+                    "budget_sec": "Hard wall-clock training budget in seconds.",
+                    "max_eval_gap_sec": "Maximum allowed gap between completed validation passes.",
+                    "random_seed": "Deterministic seed to use for numpy/torch setup.",
+                    "predictions_output_path": "Compatibility fallback output path for predictions.npz.",
+                    "progress_path": "Path for heartbeat/progress JSON updates.",
+                    "eval_dir": "Directory for atomically written evaluation artifacts.",
+                    "debug_output_path": "Path for optional debug JSON output.",
+                    "dataset_metadata": "Dataset metadata object from the harness.",
+                },
                 "train_split_format": "npz with arrays: features, labels",
                 "validation_split_format": "npz with arrays: features",
                 "required_outputs": {
@@ -124,6 +137,7 @@ class OpenRouterGenerationBackend:
                 "budget_sec": track.policy_json["budget_sec"],
                 "max_eval_gap_sec": track.policy_json.get("max_eval_gap_sec", 15),
                 "writing_rules": [
+                    "Read the config JSON using the exact keys listed in config_keys; do not invent alternate key names.",
                     "Write eval artifacts atomically by saving to a temp path and renaming into eval_dir.",
                     "Do not spend long uninterrupted stretches training without finishing a validation pass.",
                     "When validation accuracy ties, lower elapsed wall time to that eval wins.",
