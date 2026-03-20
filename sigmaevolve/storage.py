@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from datetime import timedelta
+import json
 from typing import Any, Iterable
 
 import sqlalchemy as sa
@@ -81,6 +82,14 @@ trials_table = sa.Table(
     sa.UniqueConstraint("track_id", "script_hash", name="uq_trials_track_script_hash"),
 )
 
+sa.Index("ix_trials_track_created_at_desc", trials_table.c.track_id, trials_table.c.created_at.desc())
+sa.Index(
+    "ix_trials_track_status_created_at_desc",
+    trials_table.c.track_id,
+    trials_table.c.status,
+    trials_table.c.created_at.desc(),
+)
+
 
 def _row_to_dataset(row: sa.Row[Any]) -> DatasetRecord:
     return DatasetRecord(
@@ -146,6 +155,15 @@ class SQLAlchemyRepository:
             with self.engine.begin() as conn:
                 yield conn
 
+    def _notify_dashboard(self, conn: Connection, track_id: str, reason: str) -> None:
+        if self.engine.dialect.name not in {"postgresql", "postgres"}:
+            return
+        payload = {"trackId": track_id, "reason": reason}
+        conn.execute(
+            sa.text("SELECT pg_notify(:channel, :payload)"),
+            {"channel": "sigmaevolve_dashboard", "payload": json.dumps(payload, sort_keys=True)},
+        )
+
     def register_dataset(self, dataset_id: str, manifest_path: str | None) -> DatasetRecord:
         created_at = now_utc()
         with self.transaction() as conn:
@@ -203,6 +221,7 @@ class SQLAlchemyRepository:
                 )
             )
             row = conn.execute(sa.select(tracks_table).where(tracks_table.c.track_id == track_id)).one()
+            self._notify_dashboard(conn, track_id=track_id, reason="track_changed")
         return _row_to_track(row)
 
     def get_track(self, track_id: str) -> TrackRecord | None:
@@ -254,6 +273,7 @@ class SQLAlchemyRepository:
                 )
             )
             row = conn.execute(sa.select(trials_table).where(trials_table.c.trial_id == trial_id)).one()
+            self._notify_dashboard(conn, track_id=track_id, reason="trial_changed")
         return _row_to_trial(row), True
 
     def get_trial(self, trial_id: str) -> TrialRecord | None:
@@ -363,6 +383,8 @@ class SQLAlchemyRepository:
                     sa.select(trials_table).where(trials_table.c.trial_id == row.trial_id)
                 ).one()
                 reserved.append(_row_to_trial(updated))
+            if reserved:
+                self._notify_dashboard(conn, track_id=track_id, reason="trial_changed")
         return reserved
 
     def claim_trial(self, trial_id: str, dispatch_token: str, runner_id: str) -> TrialRecord | None:
@@ -387,6 +409,7 @@ class SQLAlchemyRepository:
             if result.rowcount != 1:
                 return None
             row = conn.execute(sa.select(trials_table).where(trials_table.c.trial_id == trial_id)).one()
+            self._notify_dashboard(conn, track_id=row.track_id, reason="trial_changed")
         return _row_to_trial(row)
 
     def heartbeat_trial(self, trial_id: str, runner_id: str, meta: dict[str, Any] | None = None) -> None:
@@ -421,7 +444,10 @@ class SQLAlchemyRepository:
             where = [trials_table.c.trial_id == trial_id]
             if runner_id is not None:
                 where.append(trials_table.c.runner_id == runner_id)
-            conn.execute(
+            track_id = conn.execute(
+                sa.select(trials_table.c.track_id).where(trials_table.c.trial_id == trial_id)
+            ).scalar_one_or_none()
+            result = conn.execute(
                 sa.update(trials_table)
                 .where(sa.and_(*where))
                 .values(
@@ -436,6 +462,8 @@ class SQLAlchemyRepository:
                     error_json=error_info,
                 )
             )
+            if result.rowcount and track_id is not None:
+                self._notify_dashboard(conn, track_id=track_id, reason="trial_changed")
 
     def sweep_expired_dispatches(self, track_id: str, max_dispatch_retries: int) -> tuple[list[str], list[str]]:
         requeued: list[str] = []
@@ -479,6 +507,8 @@ class SQLAlchemyRepository:
                         )
                     )
                     stale.append(row.trial_id)
+            if requeued or stale:
+                self._notify_dashboard(conn, track_id=track_id, reason="trial_changed")
         return requeued, stale
 
     def sweep_stale_active_trials(self, track_id: str, stale_ttl_sec: int) -> list[str]:
@@ -514,10 +544,13 @@ class SQLAlchemyRepository:
                     )
                 )
                 stale.append(row.trial_id)
+            if stale:
+                self._notify_dashboard(conn, track_id=track_id, reason="trial_changed")
         return stale
 
     def rescore(self, track_id: str | None, scorer_config: dict[str, Any]) -> MigrationResult:
         updated = 0
+        touched_track_ids: set[str] = set()
         with self.transaction() as conn:
             stmt = sa.select(trials_table).where(trials_table.c.status == TRIAL_STATUS_FINISHED)
             if track_id is not None:
@@ -531,4 +564,7 @@ class SQLAlchemyRepository:
                     .values(score=new_score)
                 )
                 updated += 1
+                touched_track_ids.add(row.track_id)
+            for touched_track_id in sorted(touched_track_ids):
+                self._notify_dashboard(conn, track_id=touched_track_id, reason="trial_changed")
         return MigrationResult(updated_trials=updated, scorer_config=dict(scorer_config))
