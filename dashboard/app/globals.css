@@ -344,15 +344,19 @@ button {
   margin: 0;
   padding: 14px;
   overflow: auto;
-  background: #1d1b18;
-  color: #f8f3ea;
   font: 0.84rem/1.55 var(--font-mono), monospace;
   white-space: pre;
+  border: 0;
 }
 
 .code-block-wrap {
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.code-block code,
+.code-block code span {
+  font: inherit;
 }
 
 .trial-error {

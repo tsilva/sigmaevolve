@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { Fragment, useDeferredValue, useEffect, useEffectEvent, useState, useTransition } from "react";
 
+import { HighlightedCode } from "@/components/highlighted-code";
 import { useTrackLiveUpdates } from "@/hooks/use-track-live-updates";
 import type {
   PaginatedTrialsResponse,
@@ -111,6 +112,14 @@ function formatGenerationProperties(value: Record<string, unknown> | null): stri
     }
   }
   return JSON.stringify(payload, null, 2);
+}
+
+function detectPromptLanguage(content: string): "json" | "markdown" {
+  const trimmed = content.trim();
+  if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+    return "json";
+  }
+  return "markdown";
 }
 
 type DashboardShellProps = {
@@ -392,35 +401,37 @@ export function DashboardShell({
                             <div className="trial-detail-grid">
                               <section className="trial-detail-card">
                                 <h4>Crash reason</h4>
-                                <pre className="code-block">
-                                  <code>{extractCrashDetails(trial.errorJson) ?? "No crash stderr recorded."}</code>
-                                </pre>
+                                <HighlightedCode
+                                  code={extractCrashDetails(trial.errorJson) ?? "No crash stderr recorded."}
+                                  language="markdown"
+                                  wrap
+                                />
                               </section>
                               <section className="trial-detail-card">
                                 <h4>Error payload</h4>
-                                <pre className="code-block">
-                                  <code>{formatJsonBlock(trial.errorJson)}</code>
-                                </pre>
+                                <HighlightedCode code={formatJsonBlock(trial.errorJson)} language="json" wrap />
                               </section>
                               <section className="trial-detail-card">
                                 <h4>Generation metadata</h4>
-                                <pre className="code-block">
-                                  <code>{formatGenerationProperties(trial.provenanceJson)}</code>
-                                </pre>
+                                <HighlightedCode
+                                  code={formatGenerationProperties(trial.provenanceJson)}
+                                  language="json"
+                                  wrap
+                                />
                               </section>
                               {asPromptMessages(trial.provenanceJson).map((message, index) => (
                                 <section className="trial-detail-card" key={`${trial.trialId}-prompt-${index}`}>
                                   <h4>{`Prompt ${index + 1} · ${message.role}`}</h4>
-                                  <pre className="code-block code-block-wrap">
-                                    <code>{message.content}</code>
-                                  </pre>
+                                  <HighlightedCode
+                                    code={message.content}
+                                    language={detectPromptLanguage(message.content)}
+                                    wrap
+                                  />
                                 </section>
                               ))}
                               <section className="trial-detail-card trial-detail-card-wide">
                                 <h4>Trial source</h4>
-                                <pre className="code-block">
-                                  <code>{trial.source}</code>
-                                </pre>
+                                <HighlightedCode code={trial.source} language="python" />
                               </section>
                             </div>
                           </details>
