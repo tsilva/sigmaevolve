@@ -293,11 +293,27 @@ describe("DashboardShell", () => {
     expect(navigationState.replace).not.toHaveBeenCalled();
   });
 
-  it("renders a score history chart for all trials in the selected track", () => {
+  it("renders a score history chart for the trials currently displayed in the table", () => {
     const { container } = renderShell();
 
-    expect(screen.getByRole("img", { name: "Score history for all trials in the selected track" })).toBeTruthy();
+    expect(screen.getByRole("img", { name: "Score history for the trials currently displayed in the table" })).toBeTruthy();
     expect(screen.getByText("Score History")).toBeTruthy();
     expect(container.querySelectorAll("circle.score-point").length).toBe(baseTrials.length);
+  });
+
+  it("updates the score history chart when the visible table rows change", async () => {
+    const { container } = renderShell();
+
+    expect(container.querySelectorAll("circle.score-point").length).toBe(2);
+
+    fireEvent.change(screen.getByRole("searchbox"), {
+      target: { value: "trial_1" },
+    });
+
+    await waitFor(() => {
+      expect(container.querySelectorAll("circle.score-point").length).toBe(1);
+    });
+
+    expect(screen.getByText("1 scored / 1 displayed")).toBeTruthy();
   });
 });

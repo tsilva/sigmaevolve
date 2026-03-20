@@ -403,7 +403,6 @@ export function DashboardShell({
 
   const [tracks, setTracks] = useState(initialTracks);
   const [detail, setDetail] = useState(initialDetail);
-  const [allTrials, setAllTrials] = useState(initialDetail.trials);
   const [status, setStatus] = useState<TrialStatusFilter>("all");
   const [searchText, setSearchText] = useState("");
   const [isTracksCollapsed, setIsTracksCollapsed] = useState(false);
@@ -419,7 +418,6 @@ export function DashboardShell({
   useEffect(() => {
     setTracks(initialTracks);
     setDetail(initialDetail);
-    setAllTrials(initialDetail.trials);
     setStatus("all");
     setSearchText("");
     setIsTracksCollapsed(false);
@@ -448,7 +446,7 @@ export function DashboardShell({
   const progressPercent = getProgressPercent(detail.track);
   const coveragePercent = getCoveragePercent(detail.track);
   const attentionCount = getAttentionCount(detail.track);
-  const scoreChart = buildScoreChart(allTrials);
+  const scoreChart = buildScoreChart(visibleTrials);
   const bestTrial =
     detail.trials.length === 0
       ? null
@@ -474,27 +472,14 @@ export function DashboardShell({
     fetchJson<PaginatedTrialsResponse>(buildTrialsUrl(selectedTrackId, nextStatus, cursor, limit)),
   );
 
-  const loadAllTrials = useEffectEvent(async () => {
-    const trials: TrialListItem[] = [];
-    let cursor: string | null = null;
-    do {
-      const page = await loadTrials("all", cursor, 100);
-      trials.push(...page.trials);
-      cursor = page.nextCursor;
-    } while (cursor);
-    return trials;
-  });
-
   const refreshData = useEffectEvent(async () => {
     try {
-      const [nextTracks, nextTrials, nextAllTrials] = await Promise.all([
+      const [nextTracks, nextTrials] = await Promise.all([
         fetchJson<TrackListItem[]>("/api/tracks"),
         loadTrials(status),
-        loadAllTrials(),
       ]);
 
       setTracks(nextTracks);
-      setAllTrials(nextAllTrials);
       setDetail((current) => ({
         track: nextTracks.find((track) => track.trackId === selectedTrackId) ?? current.track,
         trials: nextTrials.trials,
@@ -505,40 +490,6 @@ export function DashboardShell({
       setError(cause instanceof Error ? cause.message : "Unable to refresh dashboard data.");
     }
   });
-
-  useEffect(() => {
-    if (detail.nextCursor === null && detail.track.totalTrials <= allTrials.length) {
-      return;
-    }
-
-    let cancelled = false;
-    startTransition(() => {
-      void (async () => {
-        try {
-          const trials: TrialListItem[] = [];
-          let cursor: string | null = null;
-          do {
-            const page = await fetchJson<PaginatedTrialsResponse>(buildTrialsUrl(selectedTrackId, "all", cursor, 100));
-            trials.push(...page.trials);
-            cursor = page.nextCursor;
-          } while (cursor);
-
-          if (!cancelled) {
-            setAllTrials(trials);
-            setError(null);
-          }
-        } catch (cause) {
-          if (!cancelled) {
-            setError(cause instanceof Error ? cause.message : "Unable to refresh score history.");
-          }
-        }
-      })();
-    });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [allTrials.length, detail.nextCursor, detail.track.totalTrials, selectedTrackId, startTransition]);
 
   useEffect(() => {
     if (visibleTrials.length === 0) {
@@ -828,7 +779,7 @@ export function DashboardShell({
               <div className="analysis-card-header">
                 <h3>Score History</h3>
                 <span>
-                  {scoreChart.scoredCount} scored / {allTrials.length} total
+                  {scoreChart.scoredCount} scored / {visibleTrials.length} displayed
                 </span>
               </div>
               <div className="score-chart-meta">
@@ -840,7 +791,7 @@ export function DashboardShell({
                   className="score-chart"
                   viewBox={`0 0 ${SCORE_CHART_WIDTH} ${SCORE_CHART_HEIGHT}`}
                   role="img"
-                  aria-label="Score history for all trials in the selected track"
+                  aria-label="Score history for the trials currently displayed in the table"
                 >
                   <line
                     className="score-axis"
