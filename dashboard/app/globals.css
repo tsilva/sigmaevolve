@@ -833,6 +833,57 @@ button {
   font: inherit;
 }
 
+.source-diff-shell {
+  display: grid;
+  gap: 10px;
+}
+
+.source-diff-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.source-diff-block {
+  padding: 0;
+  background: #161822;
+}
+
+.source-diff-row {
+  display: grid;
+  grid-template-columns: 20px 44px 44px minmax(0, 1fr);
+  gap: 10px;
+  padding: 0 12px;
+}
+
+.source-diff-context {
+  background: rgba(255, 255, 255, 0.01);
+}
+
+.source-diff-add {
+  background: rgba(26, 106, 64, 0.18);
+}
+
+.source-diff-remove {
+  background: rgba(179, 58, 45, 0.2);
+}
+
+.source-diff-skip {
+  color: rgba(229, 233, 242, 0.6);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.source-diff-gutter,
+.source-diff-line-number {
+  color: rgba(229, 233, 242, 0.6);
+  user-select: none;
+}
+
+.source-diff-content {
+  color: #edf0f7;
+  white-space: pre;
+}
+
 @media (max-width: 1240px) {
   .research-shell {
     grid-template-columns: minmax(200px, 230px) minmax(0, 1fr);

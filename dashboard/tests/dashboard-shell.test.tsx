@@ -203,6 +203,48 @@ describe("DashboardShell", () => {
     expect(screen.queryByText("How each run went")).toBeNull();
   });
 
+  it("shows a mixed-source diff for the selected trial when prompt snippets are recorded", () => {
+    const detail = createDetail([
+      createTrial({
+        trialId: "trial_diff",
+        source: "print('new candidate')\n",
+        provenanceJson: {
+          backend: "openrouter",
+          request_messages: [
+            {
+              role: "user",
+              content: [
+                "Use this parent trial as the base candidate:",
+                "```python",
+                "print('old parent')",
+                "```",
+                "",
+                "Avoid the failure modes seen in these recent negative trials:",
+                "```python",
+                "print('bad candidate')",
+                "```",
+              ].join("\n"),
+            },
+          ],
+        },
+      }),
+    ]);
+
+    renderShell({
+      detail,
+      initialSelectedTrialId: "trial_diff",
+      pathname: "/tracks/track_1/trials/trial_diff",
+    });
+
+    expect(screen.getByText("Mixed vs generated diff")).toBeTruthy();
+    expect(screen.getByText("2 prompt sources")).toBeTruthy();
+    expect(screen.getByText("+1 additions")).toBeTruthy();
+    expect(screen.getByText("-3 removals")).toBeTruthy();
+    expect(screen.getAllByText("print('new candidate')").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("print('old parent')").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("print('bad candidate')").length).toBeGreaterThan(0);
+  });
+
   it("keeps the explorer visible when a filter changes the visible trial set", async () => {
     const queuedTrials = [
       createTrial({

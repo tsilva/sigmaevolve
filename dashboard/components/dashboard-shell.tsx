@@ -5,6 +5,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { useDeferredValue, useEffect, useEffectEvent, useState, useTransition, type KeyboardEvent } from "react";
 
 import { HighlightedCode } from "@/components/highlighted-code";
+import { SourceDiff } from "@/components/source-diff";
 import { useTrackLiveUpdates } from "@/hooks/use-track-live-updates";
 import type {
   PaginatedTrialsResponse,
@@ -132,6 +133,39 @@ function asPromptMessages(value: Record<string, unknown> | null): PromptMessage[
 
     return [{ role, content }];
   });
+}
+
+function normalizeSourceSnippet(content: string): string {
+  const normalized = content.replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim();
+  return normalized ? `${normalized}\n` : "";
+}
+
+function extractMixedSourceSnapshot(messages: PromptMessage[]): { snippetCount: number; source: string } | null {
+  const snippets: string[] = [];
+
+  for (const message of messages) {
+    const matches = message.content.matchAll(/```(?:python|py)?\n([\s\S]*?)```/g);
+    for (const match of matches) {
+      const snippet = normalizeSourceSnippet(match[1] ?? "");
+      if (snippet) {
+        snippets.push(snippet);
+      }
+    }
+  }
+
+  if (snippets.length === 0) {
+    return null;
+  }
+
+  const source =
+    snippets.length === 1
+      ? snippets[0]
+      : snippets.join("\n");
+
+  return {
+    snippetCount: snippets.length,
+    source,
+  };
 }
 
 function formatGenerationProperties(value: Record<string, unknown> | null): string {
@@ -441,6 +475,7 @@ export function DashboardShell({
       ? null
       : detail.trials.filter((trial) => trial.score > selectedTrial.score).length + 1;
   const selectedPromptMessages = asPromptMessages(selectedTrial?.provenanceJson ?? null);
+  const selectedMixedSource = extractMixedSourceSnapshot(selectedPromptMessages);
   const selectedCrashDetails = extractCrashDetails(selectedTrial?.errorJson ?? null);
   const selectedCrashSummary = summarizeCrashDetails(selectedCrashDetails);
   const progressPercent = getProgressPercent(detail.track);
@@ -1127,6 +1162,22 @@ export function DashboardShell({
                       </div>
                     </article>
                   ) : null}
+
+                  <article className="analysis-card wide-card">
+                    <div className="analysis-card-header">
+                      <h3>Mixed vs generated diff</h3>
+                      <span>
+                        {selectedMixedSource
+                          ? `${selectedMixedSource.snippetCount} prompt source${selectedMixedSource.snippetCount === 1 ? "" : "s"}`
+                          : "No prompt source snippets"}
+                      </span>
+                    </div>
+                    {selectedMixedSource ? (
+                      <SourceDiff before={selectedMixedSource.source} after={selectedTrial.source || ""} />
+                    ) : (
+                      <p className="section-copy">No prompt-embedded source snippets were recorded for this trial.</p>
+                    )}
+                  </article>
 
                   {selectedTrial.hasError ? (
                     <article className="analysis-card wide-card">
