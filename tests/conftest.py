@@ -31,10 +31,15 @@ def make_policy(**overrides):
         "sampling_settings": {"strategy": "top_then_random", "top_k": 3, "seed": 0},
         "generation_backend": {
             "backend": "openrouter",
-            "model": "test/model",
-            "temperature": 0.1,
-            "max_tokens": 1500,
-            "retry_count": 1,
+            "selection": "round_robin",
+            "model_pool": [
+                {
+                    "model": "test/model",
+                    "temperature": 0.1,
+                    "max_tokens": 1500,
+                    "retry_count": 1,
+                }
+            ],
         },
     }
     policy.update(overrides)

@@ -1,4 +1,5 @@
 from sigmaevolve.datasets import ArrayDatasetProvider, DatasetManager, TorchvisionClassificationProvider
+from sigmaevolve.env import load_env_file
 from sigmaevolve.generation import FixedGenerationBackend, OpenRouterGenerationBackend
 from sigmaevolve.models import (
     DatasetManifest,
@@ -36,4 +37,5 @@ __all__ = [
     "TrialRecord",
     "TrialSummary",
     "build_system",
+    "load_env_file",
 ]

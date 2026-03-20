@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from sigmaevolve import build_system
+from sigmaevolve.env import load_env_file
 from sigmaevolve.orchestrator import InlineRunnerLauncher, RecordingLauncher
 from sigmaevolve.runner import RunnerService
 
@@ -18,6 +19,17 @@ def _json_arg(value: str | None) -> dict[str, Any]:
     if not isinstance(parsed, dict):
         raise argparse.ArgumentTypeError("JSON value must be an object.")
     return parsed
+
+
+def _load_policy(policy_json: str | None, policy_file: str | None) -> dict[str, Any]:
+    if policy_json and policy_file:
+        raise argparse.ArgumentTypeError("Use either --policy-json or --policy-file, not both.")
+    if policy_file:
+        parsed = json.loads(Path(policy_file).read_text())
+        if not isinstance(parsed, dict):
+            raise argparse.ArgumentTypeError("Policy file must contain a JSON object.")
+        return parsed
+    return _json_arg(policy_json)
 
 
 def _make_system(args) -> Any:
@@ -55,7 +67,7 @@ def cmd_prepare_dataset(args) -> int:
 
 def cmd_create_track(args) -> int:
     system = _make_system(args)
-    policy = _json_arg(args.policy_json)
+    policy = _load_policy(args.policy_json, args.policy_file)
     track = system.create_track(args.name, args.dataset_id, policy)
     _print_json(
         {
@@ -177,10 +189,16 @@ def build_parser() -> argparse.ArgumentParser:
     create_track = subparsers.add_parser("create-track", help="Create a track and seed the baseline trial.")
     create_track.add_argument("dataset_id")
     create_track.add_argument("--name", default=None)
-    create_track.add_argument(
+    policy_source = create_track.add_mutually_exclusive_group()
+    policy_source.add_argument(
         "--policy-json",
-        default="{}",
+        default=None,
         help="JSON object overriding track policy fields.",
+    )
+    policy_source.add_argument(
+        "--policy-file",
+        default=None,
+        help="Path to a JSON file overriding track policy fields.",
     )
     create_track.set_defaults(func=cmd_create_track)
 
@@ -218,6 +236,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    load_env_file()
     parser = build_parser()
     args = parser.parse_args(argv)
     try:

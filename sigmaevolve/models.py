@@ -38,6 +38,16 @@ def make_id(prefix: str) -> str:
     return f"{prefix}_{uuid4().hex}"
 
 
+def _deep_merge_dict(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _deep_merge_dict(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
 @dataclass(frozen=True)
 class DatasetRecord:
     dataset_id: str
@@ -107,10 +117,15 @@ class TrackPolicy:
     generation_backend: dict[str, Any] = field(
         default_factory=lambda: {
             "backend": "openrouter",
-            "model": "openai/gpt-4o-mini",
-            "temperature": 0.2,
-            "max_tokens": 2500,
-            "retry_count": 2,
+            "selection": "round_robin",
+            "model_pool": [
+                {
+                    "model": "openai/gpt-4o-mini",
+                    "temperature": 0.2,
+                    "max_tokens": 2500,
+                    "retry_count": 2,
+                }
+            ],
         }
     )
 
@@ -132,7 +147,7 @@ class TrackPolicy:
     def from_dict(cls, raw: dict[str, Any]) -> "TrackPolicy":
         base = cls()
         merged = base.to_dict()
-        merged.update(raw or {})
+        merged = _deep_merge_dict(merged, raw or {})
         return cls(
             budget_sec=int(merged["budget_sec"]),
             max_parallelism=int(merged["max_parallelism"]),

@@ -73,7 +73,12 @@ class Orchestrator:
             context_trials = self.repository.sample_trial_context(track_id, limit=5)
             if context_trials:
                 try:
-                    generated = self.generator.generate(track, dataset_manifest, context_trials)
+                    generated = self.generator.generate(
+                        track,
+                        dataset_manifest,
+                        context_trials,
+                        generation_index=self.repository.count_trials(track_id),
+                    )
                     trial, created = self.repository.create_queued_trial_if_absent(
                         track_id=track_id,
                         source=generated.source,

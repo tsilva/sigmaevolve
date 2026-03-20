@@ -1,0 +1,35 @@
+{
+  "budget_sec": 120,
+  "max_parallelism": 2,
+  "ready_queue_threshold": 2,
+  "dispatch_ttl_sec": 300,
+  "heartbeat_interval_sec": 15,
+  "stale_ttl_sec": 120,
+  "max_dispatch_retries": 2,
+  "scorer_settings": {
+    "primary_metric": "accuracy"
+  },
+  "sampling_settings": {
+    "strategy": "top_then_random",
+    "top_k": 3,
+    "seed": 0
+  },
+  "generation_backend": {
+    "backend": "openrouter",
+    "selection": "round_robin",
+    "model_pool": [
+      {
+        "model": "openai/gpt-4o-mini",
+        "temperature": 0.2,
+        "max_tokens": 1800,
+        "retry_count": 2
+      },
+      {
+        "model": "anthropic/claude-3.5-sonnet",
+        "temperature": 0.8,
+        "max_tokens": 2800,
+        "retry_count": 2
+      }
+    ]
+  }
+}
