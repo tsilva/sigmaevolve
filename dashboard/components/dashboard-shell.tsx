@@ -164,6 +164,30 @@ function detectPromptLanguage(content: string): "json" | "markdown" {
   return "markdown";
 }
 
+function compactIdentifier(value: string, leading = 10, trailing = 6): string {
+  if (value.length <= leading + trailing + 1) {
+    return value;
+  }
+  return `${value.slice(0, leading)}…${value.slice(-trailing)}`;
+}
+
+function summarizeCrashDetails(value: string | null): string {
+  if (!value) {
+    return "No crash detail recorded.";
+  }
+
+  const firstLine = value
+    .split("\n")
+    .map((line) => line.trim())
+    .find(Boolean);
+
+  if (!firstLine) {
+    return "No crash detail recorded.";
+  }
+
+  return firstLine.length > 160 ? `${firstLine.slice(0, 157)}...` : firstLine;
+}
+
 function getTrackLabel(track: TrackListItem): string {
   return track.name ?? track.trackId;
 }
@@ -298,6 +322,7 @@ export function DashboardShell({
       : detail.trials.filter((trial) => trial.score > selectedTrial.score).length + 1;
   const selectedPromptMessages = asPromptMessages(selectedTrial?.provenanceJson ?? null);
   const selectedCrashDetails = extractCrashDetails(selectedTrial?.errorJson ?? null);
+  const selectedCrashSummary = summarizeCrashDetails(selectedCrashDetails);
   const progressPercent = getProgressPercent(detail.track);
   const coveragePercent = getCoveragePercent(detail.track);
   const attentionCount = getAttentionCount(detail.track);
@@ -492,7 +517,9 @@ export function DashboardShell({
               </p>
             </div>
             <div className="hero-meta">
-              <span className="meta-chip">{detail.track.trackId}</span>
+              <span className="meta-chip meta-chip-mono" title={detail.track.trackId}>
+                {compactIdentifier(detail.track.trackId, 12, 8)}
+              </span>
               <span className="meta-chip">{detail.track.datasetId}</span>
               <span className="meta-chip">Created {formatDate(detail.track.createdAt)}</span>
               <span className="meta-chip">Live via {liveMode}</span>
@@ -504,7 +531,7 @@ export function DashboardShell({
               <span className="metric-label">Best Score</span>
               <strong className="metric-value">{formatNumber(detail.track.bestScore, 4)}</strong>
               <span className="metric-note">
-                {bestTrial ? `${bestTrial.trialId} leads the visible sample.` : "Waiting for scored trials."}
+                {bestTrial ? `${compactIdentifier(bestTrial.trialId)} leads the visible sample.` : "Waiting for scored trials."}
               </span>
             </article>
             <article className="metric-tile">
@@ -721,7 +748,9 @@ export function DashboardShell({
                 <div className="inspector-hero">
                   <div>
                     <div className="inspector-label">Selected trial</div>
-                    <h2 className="inspector-title">{selectedTrial.trialId}</h2>
+                    <h2 className="inspector-title" title={selectedTrial.trialId}>
+                      {compactIdentifier(selectedTrial.trialId, 14, 10)}
+                    </h2>
                     <p className="section-copy">{getTrialNarrative(selectedTrial)}</p>
                   </div>
                   <div className="inspector-meta">
@@ -730,6 +759,9 @@ export function DashboardShell({
                       {selectedTrial.status}
                     </span>
                     {selectedTrialRank ? <span className="meta-chip">Rank #{selectedTrialRank} by score</span> : null}
+                    <span className="meta-chip meta-chip-mono" title={selectedTrial.trialId}>
+                      {selectedTrial.trialId}
+                    </span>
                     <span className="meta-chip">{selectedTrial.model ?? "unknown model"}</span>
                     <span className="meta-chip">{selectedTrial.backend ?? "unknown backend"}</span>
                   </div>
@@ -807,7 +839,7 @@ export function DashboardShell({
                       </div>
                       <div className="context-row">
                         <span>Crash detail</span>
-                        <strong>{selectedCrashDetails ?? "No crash detail recorded."}</strong>
+                        <strong title={selectedCrashDetails ?? undefined}>{selectedCrashSummary}</strong>
                       </div>
                     </div>
                   </article>
