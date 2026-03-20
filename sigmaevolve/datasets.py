@@ -164,7 +164,22 @@ class DatasetManager:
         manifest_path = self.manifest_path_for(dataset_id)
         if not manifest_path.exists():
             raise FileNotFoundError(f"Dataset manifest not found for {dataset_id!r}: {manifest_path}")
-        return DatasetManifest.from_dict(json.loads(manifest_path.read_text()))
+        raw = json.loads(manifest_path.read_text())
+        manifest = DatasetManifest.from_dict(raw)
+        base_dir = manifest_path.parent
+        return DatasetManifest(
+            dataset_id=manifest.dataset_id,
+            root_dir=str(base_dir),
+            train_split_path=str(base_dir / Path(manifest.train_split_path).name),
+            validation_split_path=str(base_dir / Path(manifest.validation_split_path).name),
+            validation_labels_path=str(base_dir / Path(manifest.validation_labels_path).name),
+            test_split_path=str(base_dir / Path(manifest.test_split_path).name),
+            test_labels_path=str(base_dir / Path(manifest.test_labels_path).name),
+            split_sizes=manifest.split_sizes,
+            checksums=manifest.checksums,
+            fingerprint=manifest.fingerprint,
+            metadata=manifest.metadata,
+        )
 
     def verify(self, dataset_id: str) -> DatasetManifest:
         manifest = self.load_manifest(dataset_id)

@@ -76,14 +76,18 @@ def deploy_modal_app(
     environment_name: str | None = None,
 ) -> dict[str, Any]:
     modal = require_modal()
-    from sigmaevolve.modal_app import build_modal_app
+    if (
+        app_name != DEFAULT_MODAL_APP_NAME
+        or function_name != DEFAULT_MODAL_FUNCTION_NAME
+        or dataset_volume_name != DEFAULT_MODAL_DATASET_VOLUME
+        or dataset_mount_path != DEFAULT_MODAL_DATASET_MOUNT
+    ):
+        raise ValueError(
+            "Custom Modal app/function/volume names are not yet supported by the deployed app module. "
+            "Use the defaults for now."
+        )
+    from sigmaevolve.modal_app import app
 
-    app = build_modal_app(
-        app_name=app_name,
-        function_name=function_name,
-        dataset_volume_name=dataset_volume_name,
-        dataset_mount_path=dataset_mount_path,
-    )
     with modal.enable_output():
         app.deploy(name=app_name, environment_name=environment_name)
     return {
@@ -117,7 +121,6 @@ def sync_dataset_to_modal(
     with modal.enable_output():
         with volume.batch_upload(force=True) as batch:
             batch.put_directory(str(local_dir), remote_path=remote_dir)
-        volume.commit()
     return {
         "dataset_id": dataset_id,
         "local_dir": str(local_dir),
