@@ -5,6 +5,7 @@ import os
 import random
 import re
 from dataclasses import dataclass
+from textwrap import dedent
 from typing import Protocol
 from urllib import request
 
@@ -134,15 +135,8 @@ class OpenRouterGenerationBackend:
             lines.append(f"- stderr excerpt: {excerpt}")
         return lines
 
-    def _build_user_prompt_text(
-        self,
-        track: TrackRecord,
-        dataset_manifest: DatasetManifest,
-        context_trials: list[TrialSummary],
-        negative_trials: list[TrialSummary],
-        selected_config: dict[str, object],
-    ) -> str:
-        task_contract = {
+    def _build_system_prompt_text(self) -> str:
+        static_task_contract = {
             "entrypoint": "train.py --config /abs/path/run_config.json",
             "config keys": {
                 "dataset_dir": "Directory containing the prepared dataset assets.",
@@ -165,21 +159,45 @@ class OpenRouterGenerationBackend:
                 "legacy_predictions_output_path": "Optional compatibility fallback only; prefer eval_dir artifacts",
             },
             "allowed packages": ["argparse", "json", "pathlib", "numpy", "torch"],
-            "budget_sec": track.policy_json["budget_sec"],
-            "max_eval_gap_sec": track.policy_json.get("max_eval_gap_sec", 15),
-                "writing rules": [
-                    "Read the config JSON using the exact keys listed in config_keys; do not invent alternate key names.",
-                    "Write eval artifacts atomically by saving to a temp path and renaming into eval_dir.",
-                    "Features may be multi-dimensional tensors rather than pre-flattened vectors; if you use linear layers, flatten both train and validation batches consistently or start the model with nn.Flatten().",
-                    "Do not spend long uninterrupted stretches training without finishing a validation pass.",
-                    "When validation accuracy ties, lower elapsed wall time to that eval wins.",
-                ],
+            "writing rules": [
+                "Read the config JSON using the exact keys listed in config_keys; do not invent alternate key names.",
+                "Write eval artifacts atomically by saving to a temp path and renaming into eval_dir.",
+                "Features may be multi-dimensional tensors rather than pre-flattened vectors; if you use linear layers, flatten both train and validation batches consistently or start the model with nn.Flatten().",
+                "Do not spend long uninterrupted stretches training without finishing a validation pass.",
+                "When validation accuracy ties, lower elapsed wall time to that eval wins.",
+            ],
+            "mutation rules": [
+                "Preserve the parent's working harness integration unless a change is required.",
+                "Produce a mutated descendant of the parent, not a fresh rewrite.",
+                "Make exactly one substantive improvement likely to improve validation accuracy within the time budget.",
+                "Avoid cosmetic refactors or rename-only changes.",
+            ],
         }
+        lines = [
+            dedent(
+                """
+                You are generating a self-contained Python train.py script for a classification harness.
+                Return only Python source, with no markdown fences or commentary.
+                Treat this as an evolutionary mutation task, not a rewrite from scratch.
+                Optimize for best validation accuracy, but publish completed validation checkpoints regularly so the harness can score them before timeout.
+                Follow this contract exactly:
+                """
+            ).strip()
+        ]
+        lines.extend(self._format_mapping(static_task_contract, indent=0))
+        return "\n".join(lines)
+
+    def _build_user_prompt_text(
+        self,
+        track: TrackRecord,
+        dataset_manifest: DatasetManifest,
+        context_trials: list[TrialSummary],
+        negative_trials: list[TrialSummary],
+        selected_config: dict[str, object],
+    ) -> str:
         primary_parent = context_trials[0] if context_trials else None
         lines = [
             f"Write a complete Python train.py for dataset {track.dataset_id}.",
-            "",
-            "Treat this as an evolutionary mutation task, not a rewrite from scratch.",
             "",
             "Use the dataset metadata below when choosing the model and loss setup:",
         ]
@@ -190,10 +208,18 @@ class OpenRouterGenerationBackend:
         lines.extend(
             [
                 "",
-                "Follow this task contract exactly:",
+                "Use these track-specific runtime settings:",
             ]
         )
-        lines.extend(self._format_mapping(task_contract, indent=0))
+        lines.extend(
+            self._format_mapping(
+                {
+                    "budget_sec": track.policy_json["budget_sec"],
+                    "max_eval_gap_sec": track.policy_json.get("max_eval_gap_sec", 15),
+                },
+                indent=0,
+            )
+        )
         lines.extend(
             [
                 "",
@@ -228,12 +254,6 @@ class OpenRouterGenerationBackend:
             lines.extend(self._summarize_error(primary_parent.error_json))
             lines.extend(
                 [
-                    "",
-                    "Mutation instructions:",
-                    "- Preserve the parent's working harness integration unless a change is required.",
-                    "- Produce a mutated descendant of the parent, not a fresh rewrite.",
-                    "- Make exactly one substantive improvement likely to improve validation accuracy within the time budget.",
-                    "- Avoid cosmetic refactors or rename-only changes.",
                     "",
                     "Parent source:",
                     "```python",
@@ -282,13 +302,8 @@ class OpenRouterGenerationBackend:
         negative_trials: list[TrialSummary],
         selected_config: dict[str, object],
     ) -> list[dict[str, str]]:
-        system_prompt = (
-            "You are generating a self-contained Python train.py script for a classification harness. "
-            "Return only Python source, with no markdown fences or commentary. "
-            "Optimize for best validation accuracy, but you must publish completed validation checkpoints regularly so the harness can score them before timeout."
-        )
         return [
-            {"role": "system", "content": system_prompt},
+            {"role": "system", "content": self._build_system_prompt_text()},
             {
                 "role": "user",
                 "content": self._build_user_prompt_text(

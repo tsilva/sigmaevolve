@@ -106,17 +106,18 @@ def test_openrouter_generation_uses_model_pool_round_robin(monkeypatch):
     assert second_result.provenance_json["generation_config"]["temperature"] == 0.8
     assert first_result.provenance_json["request_messages"] == payloads[0]["messages"]
 
+    system_prompt = payloads[0]["messages"][0]["content"]
     first_prompt = payloads[0]["messages"][1]["content"]
+    assert "Return only Python source, with no markdown fences or commentary." in system_prompt
+    assert "Treat this as an evolutionary mutation task, not a rewrite from scratch." in system_prompt
+    assert "Follow this contract exactly:" in system_prompt
+    assert "- validation_split_path: Path to the validation .npz file with features only." in system_prompt
+    assert "Read the config JSON using the exact keys listed in config_keys" in system_prompt
+    assert "Produce a mutated descendant of the parent, not a fresh rewrite." in system_prompt
     assert not first_prompt.lstrip().startswith("{")
     assert "Write a complete Python train.py for dataset mnist:v1." in first_prompt
-    assert "Treat this as an evolutionary mutation task, not a rewrite from scratch." in first_prompt
-    assert "Follow this task contract exactly:" in first_prompt
     assert "- max_eval_gap_sec: 15" in first_prompt
-    assert "- progress_path: JSON heartbeat with current phase, elapsed_time_sec, and last_completed_eval_sec" in first_prompt
-    assert "- validation_split_path: Path to the validation .npz file with features only." in first_prompt
-    assert "Read the config JSON using the exact keys listed in config_keys" in first_prompt
     assert "Use this parent trial as the base candidate:" in first_prompt
-    assert "Produce a mutated descendant of the parent, not a fresh rewrite." in first_prompt
     assert "No recent negative trials are available." in first_prompt
 
 
@@ -147,9 +148,10 @@ def test_openrouter_generation_prompt_includes_failure_feedback(monkeypatch):
 
     backend.generate(_track_with_pool(), _manifest(), _context(), negative_trials=_negative_trials(), generation_index=0)
 
+    system_prompt = payloads[0]["messages"][0]["content"]
     prompt = payloads[0]["messages"][1]["content"]
-    assert "if you use linear layers, flatten both train and validation batches consistently" in prompt
-    assert "Make exactly one substantive improvement likely to improve validation accuracy within the time budget." in prompt
+    assert "if you use linear layers, flatten both train and validation batches consistently" in system_prompt
+    assert "Make exactly one substantive improvement likely to improve validation accuracy within the time budget." in system_prompt
     assert "Trial trial_failed:" in prompt
     assert "- returncode: 1" in prompt
     assert "mat1 and mat2 shapes cannot be multiplied" in prompt
