@@ -219,6 +219,23 @@ describe("DashboardShell", () => {
     expect(screen.getByRole("heading", { name: "trial_queued" })).toBeTruthy();
   });
 
+  it("closes and reopens the detail pane while redistributing layout", async () => {
+    const { container } = renderShell({
+      initialSelectedTrialId: "trial_2",
+      search: "trial=trial_2",
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Close detail panel" }));
+
+    expect(screen.queryByRole("heading", { name: "trial_2" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Open detail panel" })).toBeTruthy();
+    expect(container.querySelector("main")?.className).toContain("shell-layout-tracks-trials");
+
+    fireEvent.click(screen.getByRole("button", { name: "Open detail panel" }));
+
+    expect(screen.getByRole("heading", { name: "trial_2" })).toBeTruthy();
+  });
+
   it("clears the detail pane when a filter returns no trials", async () => {
     vi.mocked(globalThis.fetch).mockResolvedValueOnce({
       ok: true,

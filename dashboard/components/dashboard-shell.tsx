@@ -17,6 +17,13 @@ import type {
 const STATUS_OPTIONS: TrialStatusFilter[] = ["all", "queued", "dispatching", "active", "finished"];
 
 type ActivePane = "tracks" | "trials" | "detail";
+type PaneState = Record<ActivePane, boolean>;
+const PANE_ORDER: ActivePane[] = ["tracks", "trials", "detail"];
+const DEFAULT_OPEN_PANES: PaneState = {
+  tracks: true,
+  trials: true,
+  detail: true,
+};
 
 async function fetchJson<T>(input: string): Promise<T> {
   const response = await fetch(input, { cache: "no-store" });
@@ -148,11 +155,15 @@ export function DashboardShell({
   const [status, setStatus] = useState<TrialStatusFilter>("all");
   const [selectedTrialId, setSelectedTrialId] = useState<string | null>(initialSelectedTrialId);
   const [urlTrialId, setUrlTrialId] = useState<string | null>(initialSelectedTrialId);
+  const [openPanes, setOpenPanes] = useState<PaneState>(DEFAULT_OPEN_PANES);
   const [activePane, setActivePane] = useState<ActivePane>("trials");
   const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
   const deferredTrials = useDeferredValue(detail.trials);
   const selectedTrial = detail.trials.find((trial) => trial.trialId === selectedTrialId) ?? null;
+  const visiblePanes = PANE_ORDER.filter((pane) => openPanes[pane]);
+  const shellLayoutClass = `shell-layout-${visiblePanes.join("-")}`;
+  const canClosePane = visiblePanes.length > 1;
 
   useEffect(() => {
     setTracks(initialTracks);
@@ -160,6 +171,7 @@ export function DashboardShell({
     setStatus("all");
     setSelectedTrialId(initialSelectedTrialId);
     setUrlTrialId(initialSelectedTrialId);
+    setOpenPanes(DEFAULT_OPEN_PANES);
     setActivePane("trials");
     setError(null);
   }, [initialDetail, initialSelectedTrialId, initialTracks, selectedTrackId]);
@@ -298,20 +310,85 @@ export function DashboardShell({
   };
 
   const handleTrialSelect = (trialId: string) => {
+    setOpenPanes((current) => ({ ...current, detail: true }));
     setActivePane("detail");
     syncSelectedTrial(trialId);
   };
 
+  const openPane = (pane: ActivePane) => {
+    setOpenPanes((current) => ({ ...current, [pane]: true }));
+    setActivePane(pane);
+  };
+
+  const closePane = (pane: ActivePane) => {
+    if (!canClosePane) {
+      return;
+    }
+
+    setOpenPanes((current) => {
+      if (!current[pane]) {
+        return current;
+      }
+
+      const next = {
+        ...current,
+        [pane]: false,
+      };
+
+      const nextVisible = PANE_ORDER.filter((item) => next[item]);
+      if (!nextVisible.includes(activePane)) {
+        const closedIndex = PANE_ORDER.indexOf(pane);
+        const fallback =
+          PANE_ORDER.slice(closedIndex + 1).find((item) => next[item]) ??
+          PANE_ORDER.slice(0, closedIndex).reverse().find((item) => next[item]) ??
+          nextVisible[0];
+        if (fallback) {
+          setActivePane(fallback);
+        }
+      }
+
+      return next;
+    });
+  };
+
   return (
-    <main className={`shell shell-focus-${activePane}`}>
+    <main className={`shell ${shellLayoutClass}`}>
+      {visiblePanes.length < PANE_ORDER.length ? (
+        <div className="closed-pane-bar">
+          {PANE_ORDER.filter((pane) => !openPanes[pane]).map((pane) => (
+            <button
+              key={pane}
+              type="button"
+              className="closed-pane-toggle"
+              onClick={() => openPane(pane)}
+            >
+              {`Open ${pane} panel`}
+            </button>
+          ))}
+        </div>
+      ) : null}
+
+      {openPanes.tracks ? (
       <aside
         className={`workspace-pane tracks-pane ${activePane === "tracks" ? "mobile-visible" : ""}`}
         onFocusCapture={() => setActivePane("tracks")}
         onPointerDown={() => setActivePane("tracks")}
       >
         <div className="pane-header">
-          <div className="eyebrow">Tracks</div>
-          <h1 className="pane-title">Experiment tracks</h1>
+          <div className="pane-header-top">
+            <div>
+              <div className="eyebrow">Tracks</div>
+              <h1 className="pane-title">Experiment tracks</h1>
+            </div>
+            <button
+              type="button"
+              className="pane-close"
+              onClick={() => closePane("tracks")}
+              disabled={!canClosePane}
+            >
+              Close tracks panel
+            </button>
+          </div>
           <p className="subtle pane-copy">{tracks.length} active lanes available.</p>
         </div>
 
@@ -337,18 +414,32 @@ export function DashboardShell({
           ))}
         </div>
       </aside>
+      ) : null}
 
+      {openPanes.trials ? (
       <section
         className={`workspace-pane trials-pane ${activePane === "trials" ? "mobile-visible" : ""}`}
         onFocusCapture={() => setActivePane("trials")}
         onPointerDown={() => setActivePane("trials")}
       >
         <div className="pane-header pane-header-sticky">
-          <button type="button" className="pane-back" onClick={() => setActivePane("tracks")}>
-            Tracks
-          </button>
-          <div className="eyebrow">Trials</div>
-          <h2 className="pane-title">{detail.track.name ?? detail.track.trackId}</h2>
+          <div className="pane-header-top">
+            <div className="pane-header-stack">
+              <button type="button" className="pane-back" onClick={() => setActivePane("tracks")}>
+                Tracks
+              </button>
+              <div className="eyebrow">Trials</div>
+              <h2 className="pane-title">{detail.track.name ?? detail.track.trackId}</h2>
+            </div>
+            <button
+              type="button"
+              className="pane-close"
+              onClick={() => closePane("trials")}
+              disabled={!canClosePane}
+            >
+              Close trials panel
+            </button>
+          </div>
           <div className="detail-meta">
             <span>{detail.track.trackId}</span>
             <span>{detail.track.datasetId}</span>
@@ -473,17 +564,31 @@ export function DashboardShell({
           </button>
         ) : null}
       </section>
+      ) : null}
 
+      {openPanes.detail ? (
       <section
         className={`workspace-pane detail-pane ${activePane === "detail" ? "mobile-visible" : ""}`}
         onFocusCapture={() => setActivePane("detail")}
         onPointerDown={() => setActivePane("detail")}
       >
         <div className="pane-header pane-header-sticky">
-          <button type="button" className="pane-back" onClick={() => setActivePane("trials")}>
-            Trials
-          </button>
-          <div className="eyebrow">Selected Trial</div>
+          <div className="pane-header-top">
+            <div className="pane-header-stack">
+              <button type="button" className="pane-back" onClick={() => setActivePane("trials")}>
+                Trials
+              </button>
+              <div className="eyebrow">Selected Trial</div>
+            </div>
+            <button
+              type="button"
+              className="pane-close"
+              onClick={() => closePane("detail")}
+              disabled={!canClosePane}
+            >
+              Close detail panel
+            </button>
+          </div>
           {selectedTrial ? (
             <>
               <div className="detail-title-row">
@@ -570,6 +675,7 @@ export function DashboardShell({
           </section>
         )}
       </section>
+      ) : null}
     </main>
   );
 }
