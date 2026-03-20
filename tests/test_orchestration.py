@@ -129,12 +129,70 @@ def test_stale_active_trial_is_finalized(system):
     assert trial.outcome_reason == "stale"
 
 
-def test_reconcile_passes_recent_crashes_back_as_negative_context(repository, dataset_manager):
+def test_weighted_successful_sampling_favors_higher_scores(repository, dataset_manager):
+    dataset_manager.prepare("mnist:v1")
+    repository.register_dataset("mnist:v1", str(dataset_manager.manifest_path_for("mnist:v1")))
+    runner = RunnerService(repository=repository, dataset_manager=dataset_manager)
+    system = EvolutionSystem(
+        repository,
+        dataset_manager,
+        FixedGenerationBackend(source=build_baseline_linear_classifier()),
+        InlineRunnerLauncher(runner),
+        runner,
+    )
+    track = system.create_track("weighted", "mnist:v1", {"sampling_settings": {"seed": 7}})
+
+    trials = repository.list_trials(track.track_id)
+    baseline = trials[0]
+    mid, _ = repository.create_queued_trial_if_absent(track.track_id, "print('mid')\n", {"backend": "test", "model": "mid"})
+    low, _ = repository.create_queued_trial_if_absent(track.track_id, "print('low')\n", {"backend": "test", "model": "low"})
+    assert mid is not None and low is not None
+
+    repository.finalize_trial(
+        trial_id=baseline.trial_id,
+        runner_id=None,
+        outcome_reason="succeeded",
+        metrics={"accuracy": 0.9},
+        score=0.9,
+        error_info=None,
+    )
+    repository.finalize_trial(
+        trial_id=mid.trial_id,
+        runner_id=None,
+        outcome_reason="succeeded",
+        metrics={"accuracy": 0.3},
+        score=0.3,
+        error_info=None,
+    )
+    repository.finalize_trial(
+        trial_id=low.trial_id,
+        runner_id=None,
+        outcome_reason="succeeded",
+        metrics={"accuracy": 0.1},
+        score=0.1,
+        error_info=None,
+    )
+
+    counts = {baseline.trial_id: 0, mid.trial_id: 0, low.trial_id: 0}
+    for generation_index in range(300):
+        sampled = system.orchestrator._sample_successful_context_trials(
+            track.track_id,
+            {"seed": 7},
+            generation_index,
+        )
+        counts[sampled[0].trial_id] += 1
+
+    assert counts[baseline.trial_id] > counts[mid.trial_id] > counts[low.trial_id]
+
+
+def test_reconcile_never_passes_failed_trials_as_generation_context(repository, dataset_manager):
     class CapturingGenerator:
         def __init__(self):
+            self.context_trials = None
             self.negative_trials = None
 
         def generate(self, track, dataset_manifest, context_trials, negative_trials=None, generation_index=0):
+            self.context_trials = context_trials
             self.negative_trials = negative_trials or []
             return type(
                 "Generated",
@@ -179,9 +237,7 @@ def test_reconcile_passes_recent_crashes_back_as_negative_context(repository, da
 
     system.reconcile_track(track.track_id)
 
+    assert generator.context_trials is not None
+    assert [trial.trial_id for trial in generator.context_trials] == [baseline.trial_id]
     assert generator.negative_trials is not None
-    assert [trial.trial_id for trial in generator.negative_trials] == [failed.trial_id]
-    assert generator.negative_trials[0].error_json == {
-        "returncode": 1,
-        "stderr": "RuntimeError: mat1 and mat2 shapes cannot be multiplied",
-    }
+    assert generator.negative_trials == []

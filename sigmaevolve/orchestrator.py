@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import random
 from dataclasses import replace
 from typing import Protocol
 
-from sigmaevolve.models import OUTCOME_CRASHED, OUTCOME_EVAL_FAILED, OUTCOME_STALE, OUTCOME_TIMEOUT, ReconcileResult
+from sigmaevolve.models import ReconcileResult, TrialSummary
 
 
 class RunnerLauncher(Protocol):
@@ -46,6 +47,20 @@ class Orchestrator:
         self.generator = generator
         self.launcher = launcher
 
+    def _sample_successful_context_trials(self, track_id: str, sampling_settings: dict, generation_index: int) -> list[TrialSummary]:
+        candidates = self.repository.sample_trial_context(track_id, limit=self.repository.count_trials(track_id))
+        if not candidates:
+            return []
+        if len(candidates) == 1:
+            return [candidates[0]]
+
+        seed = int(sampling_settings.get("seed", 0))
+        rng = random.Random(seed + generation_index)
+        weights = [max(float(trial.score), 0.0) for trial in candidates]
+        if sum(weights) <= 0.0:
+            return [rng.choice(candidates)]
+        return [rng.choices(candidates, weights=weights, k=1)[0]]
+
     def reconcile_track(self, track_id: str) -> ReconcileResult:
         track = self.repository.get_track(track_id)
         if track is None:
@@ -70,20 +85,20 @@ class Orchestrator:
         queue_count = self.repository.count_trials(track_id, statuses={"queued"})
         if queue_count < int(policy["ready_queue_threshold"]):
             dataset_manifest = self.dataset_manager.verify(track.dataset_id)
-            context_trials = self.repository.sample_trial_context(track_id, limit=5)
+            generation_index = self.repository.count_trials(track_id)
+            context_trials = self._sample_successful_context_trials(
+                track_id,
+                policy.get("sampling_settings", {}),
+                generation_index,
+            )
             if context_trials:
-                negative_trials = self.repository.list_recent_trial_summaries(
-                    track_id,
-                    outcome_reasons={OUTCOME_TIMEOUT, OUTCOME_CRASHED, OUTCOME_EVAL_FAILED, OUTCOME_STALE},
-                    limit=5,
-                )
                 try:
                     generated = self.generator.generate(
                         track,
                         dataset_manifest,
                         context_trials,
-                        negative_trials=negative_trials,
-                        generation_index=self.repository.count_trials(track_id),
+                        negative_trials=[],
+                        generation_index=generation_index,
                     )
                     trial, created = self.repository.create_queued_trial_if_absent(
                         track_id=track_id,
