@@ -11,13 +11,16 @@ from sqlalchemy.engine import Connection, Engine
 from sigmaevolve.hashing import compute_script_hash, normalize_source
 from sigmaevolve.models import (
     ACTIVE_STATUSES,
+    ERROR_OUTCOMES,
     OUTCOME_DUPLICATE,
     OUTCOME_GENERATION_FAILED,
     OUTCOME_STALE,
     SUCCESS_OUTCOMES,
+    TERMINAL_STATUSES,
     TERMINAL_OUTCOMES,
     TRIAL_STATUS_ACTIVE,
     TRIAL_STATUS_DISPATCHING,
+    TRIAL_STATUS_ERROR,
     TRIAL_STATUS_FINISHED,
     TRIAL_STATUS_QUEUED,
     DatasetRecord,
@@ -217,11 +220,75 @@ def _build_generation_attempt_source(trial_id: str, outcome_reason: str) -> str:
     )
 
 
+def _status_for_outcome_reason(outcome_reason: str) -> str:
+    if outcome_reason in ERROR_OUTCOMES:
+        return TRIAL_STATUS_ERROR
+    return TRIAL_STATUS_FINISHED
+
+
+def _classify_error_type(outcome_reason: str, error_json: dict[str, Any] | None) -> str | None:
+    payload = dict(error_json or {})
+    explicit = payload.get("error_type")
+    if isinstance(explicit, str) and explicit.strip():
+        return explicit.strip()
+
+    reason = payload.get("reason")
+    if not isinstance(reason, str):
+        reason = None
+
+    if outcome_reason == OUTCOME_GENERATION_FAILED:
+        if reason in {"candidate_materialization_failed", "generation_assertion_failed"}:
+            return "generation_invalid_candidate"
+        if reason == "generator_exception":
+            return "generation_backend_exception"
+        if reason in {
+            "provider_http_error",
+            "provider_request_failed",
+            "provider_response_invalid_json",
+            "provider_response_missing_choices",
+            "provider_response_missing_content",
+        }:
+            return "generation_provider_failure"
+        return "generation_failed"
+
+    if outcome_reason == "crashed":
+        return "execution_crash"
+
+    if outcome_reason == "eval_failed":
+        if reason == "train_script_contract_violation":
+            return "execution_contract_violation"
+        if reason == "prediction_load_failed":
+            return "evaluation_artifact_error"
+        if reason == "predictions_missing":
+            return "evaluation_predictions_missing"
+        return "evaluation_failed"
+
+    if outcome_reason == OUTCOME_STALE:
+        if reason == "dispatch_deadline_expired":
+            return "dispatch_stale"
+        if reason == "heartbeat_stale":
+            return "runner_stale"
+        return "stale"
+
+    return None
+
+
+def _prepare_error_payload(outcome_reason: str, error_json: dict[str, Any] | None) -> dict[str, Any] | None:
+    payload = dict(error_json or {})
+    error_type = _classify_error_type(outcome_reason, payload)
+    if error_type:
+        payload["error_type"] = error_type
+    return payload or None
+
+
 class SQLAlchemyRepository:
     def __init__(self, database_url: str) -> None:
         database_url = normalize_database_url(database_url)
         connect_args = {"check_same_thread": False} if database_url.startswith("sqlite") else {}
-        self.engine: Engine = sa.create_engine(database_url, future=True, connect_args=connect_args)
+        engine_kwargs: dict[str, Any] = {"future": True, "connect_args": connect_args}
+        if not database_url.startswith("sqlite"):
+            engine_kwargs["pool_pre_ping"] = True
+        self.engine: Engine = sa.create_engine(database_url, **engine_kwargs)
         metadata.create_all(self.engine)
 
     @contextmanager
@@ -385,7 +452,7 @@ class SQLAlchemyRepository:
                     source=source,
                     script_hash=script_hash,
                     provenance_json=validated_provenance,
-                    status=TRIAL_STATUS_FINISHED,
+                    status=_status_for_outcome_reason(outcome_reason),
                     outcome_reason=outcome_reason,
                     dispatch_token=None,
                     dispatch_deadline_at=None,
@@ -395,7 +462,7 @@ class SQLAlchemyRepository:
                     finished_at=created_at,
                     metrics_json=None,
                     score=0.0,
-                    error_json=dict(error_json) if error_json else None,
+                    error_json=_prepare_error_payload(outcome_reason, error_json),
                     dispatch_attempts=0,
                     created_at=created_at,
                 )
@@ -478,7 +545,7 @@ class SQLAlchemyRepository:
         stmt = sa.select(trials_table).where(
             sa.and_(
                 trials_table.c.track_id == track_id,
-                trials_table.c.status == TRIAL_STATUS_FINISHED,
+                trials_table.c.status.in_(sorted(TERMINAL_STATUSES)),
             )
         )
         if outcome_reasons:
@@ -635,6 +702,7 @@ class SQLAlchemyRepository:
             where = [trials_table.c.trial_id == trial_id]
             if runner_id is not None:
                 where.append(trials_table.c.runner_id == runner_id)
+                where.append(trials_table.c.status == TRIAL_STATUS_ACTIVE)
             track_id = conn.execute(
                 sa.select(trials_table.c.track_id).where(trials_table.c.trial_id == trial_id)
             ).scalar_one_or_none()
@@ -642,7 +710,7 @@ class SQLAlchemyRepository:
                 sa.update(trials_table)
                 .where(sa.and_(*where))
                 .values(
-                    status=TRIAL_STATUS_FINISHED,
+                    status=_status_for_outcome_reason(outcome_reason),
                     outcome_reason=outcome_reason,
                     finished_at=now_utc(),
                     dispatch_token=None,
@@ -650,7 +718,7 @@ class SQLAlchemyRepository:
                     heartbeat_at=now_utc(),
                     metrics_json=metrics,
                     score=score,
-                    error_json=persisted_error_info,
+                    error_json=_prepare_error_payload(outcome_reason, persisted_error_info),
                 )
             )
             if result.rowcount and track_id is not None:
@@ -688,13 +756,16 @@ class SQLAlchemyRepository:
                         sa.update(trials_table)
                         .where(trials_table.c.trial_id == row.trial_id)
                         .values(
-                            status=TRIAL_STATUS_FINISHED,
+                            status=TRIAL_STATUS_ERROR,
                             outcome_reason=OUTCOME_STALE,
                             finished_at=now_utc(),
                             dispatch_token=None,
                             dispatch_deadline_at=None,
                             score=0.0,
-                            error_json={"reason": "dispatch_deadline_expired"},
+                            error_json=_prepare_error_payload(
+                                OUTCOME_STALE,
+                                {"reason": "dispatch_deadline_expired"},
+                            ),
                         )
                     )
                     stale.append(row.trial_id)
@@ -727,11 +798,14 @@ class SQLAlchemyRepository:
                     sa.update(trials_table)
                     .where(trials_table.c.trial_id == row.trial_id)
                     .values(
-                        status=TRIAL_STATUS_FINISHED,
+                        status=TRIAL_STATUS_ERROR,
                         outcome_reason=OUTCOME_STALE,
                         finished_at=now_utc(),
                         score=0.0,
-                        error_json={"reason": "heartbeat_stale"},
+                        error_json=_prepare_error_payload(
+                            OUTCOME_STALE,
+                            {"reason": "heartbeat_stale"},
+                        ),
                     )
                 )
                 stale.append(row.trial_id)
@@ -743,7 +817,7 @@ class SQLAlchemyRepository:
         updated = 0
         touched_track_ids: set[str] = set()
         with self.transaction() as conn:
-            stmt = sa.select(trials_table).where(trials_table.c.status == TRIAL_STATUS_FINISHED)
+            stmt = sa.select(trials_table).where(trials_table.c.status.in_(sorted(TERMINAL_STATUSES)))
             if track_id is not None:
                 stmt = stmt.where(trials_table.c.track_id == track_id)
             rows = conn.execute(stmt).fetchall()

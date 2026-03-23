@@ -37,7 +37,7 @@ function decodeCursor(value: string | null): TrialCursor | null {
 }
 
 export function parseStatusFilter(value: string | null): TrialStatusFilter {
-  if (value === "queued" || value === "dispatching" || value === "active" || value === "finished") {
+  if (value === "queued" || value === "dispatching" || value === "active" || value === "finished" || value === "error") {
     return value;
   }
   return "all";
@@ -72,6 +72,7 @@ export async function listTrackSummaries(): Promise<TrackListItem[]> {
         count(*) filter (where r.status = 'dispatching')::int as "dispatchingTrials",
         count(*) filter (where r.status = 'active')::int as "activeTrials",
         count(*) filter (where r.status = 'finished')::int as "finishedTrials",
+        count(*) filter (where r.status = 'error')::int as "errorTrials",
         count(*) filter (
           where r.status = 'finished'
             and r.metrics_json is not null
@@ -154,6 +155,7 @@ export async function listTrials(
         score,
         source,
         error_json as "errorJson",
+        error_json ->> 'error_type' as "errorType",
         provenance_json as "provenanceJson",
         nullif(metrics_json ->> 'accuracy', '')::double precision as accuracy,
         nullif(metrics_json ->> 'time_to_best_eval_sec', '')::double precision as "timeToBestEvalSec",
@@ -172,8 +174,7 @@ export async function listTrials(
           else extract(epoch from (coalesce(finished_at, now()) - started_at))
         end as "durationSec",
         (
-          status = 'finished'
-          and outcome_reason in ('crashed', 'eval_failed', 'stale', 'generation_failed')
+          status = 'error'
         ) as "hasError"
       from trials
       where ${whereClauses.join(" and ")}

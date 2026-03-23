@@ -11,6 +11,7 @@
   --dispatching: #8a66d9;
   --active: #11806a;
   --finished: #31589d;
+  --error: #b33a2d;
   --success: #1a6a40;
   --warning: #a06411;
   --danger: #b33a2d;
@@ -428,6 +429,10 @@ button {
   background: var(--finished);
 }
 
+.error {
+  background: var(--error);
+}
+
 .legend-grid,
 .priority-list,
 .timeline-list,
@@ -500,6 +505,10 @@ button {
 
 .status-indicator.finished {
   background: var(--finished);
+}
+
+.status-indicator.error {
+  background: var(--error);
 }
 
 .explorer-panel,
@@ -640,6 +649,12 @@ button {
   color: #274a83;
   background: rgba(49, 88, 157, 0.14);
   border-color: rgba(49, 88, 157, 0.24);
+}
+
+.status-error {
+  color: #8c261d;
+  background: rgba(179, 58, 45, 0.12);
+  border-color: rgba(179, 58, 45, 0.24);
 }
 
 .trial-cell-primary {

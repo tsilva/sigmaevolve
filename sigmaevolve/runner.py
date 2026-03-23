@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import subprocess
 import sys
 import tempfile
@@ -15,6 +16,9 @@ import numpy as np
 from sigmaevolve.models import OUTCOME_CRASHED, OUTCOME_EVAL_FAILED, OUTCOME_SUCCEEDED, OUTCOME_TIMEOUT
 from sigmaevolve.runtime_config import DEFAULT_TRIAL_HARD_TIMEOUT_SEC
 from sigmaevolve.scoring import compute_classification_metrics, compute_score
+
+
+logger = logging.getLogger(__name__)
 
 
 def _coerce_optional_scalar(value: Any, cast) -> Any | None:
@@ -116,7 +120,24 @@ class RunnerService:
 
         def loop() -> None:
             while not stop_event.wait(interval_sec):
-                self.repository.heartbeat_trial(trial_id, runner_id, {"status": "alive"})
+                try:
+                    self.repository.heartbeat_trial(trial_id, runner_id, {"status": "alive"})
+                except Exception:
+                    # Transient database disconnects should not permanently kill the
+                    # heartbeat loop for a still-running worker.
+                    logger.warning(
+                        "Heartbeat update failed for trial %s runner %s; retrying.",
+                        trial_id,
+                        runner_id,
+                        exc_info=True,
+                    )
+                    engine = getattr(self.repository, "engine", None)
+                    dispose = getattr(engine, "dispose", None)
+                    if callable(dispose):
+                        try:
+                            dispose()
+                        except Exception:
+                            logger.warning("Disposing repository engine after heartbeat failure also failed.", exc_info=True)
 
         thread = threading.Thread(target=loop, daemon=True)
         thread.start()

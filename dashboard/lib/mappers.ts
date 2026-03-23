@@ -13,6 +13,7 @@ type TrackRow = {
   dispatchingTrials: number | string | null;
   activeTrials: number | string | null;
   finishedTrials: number | string | null;
+  errorTrials: number | string | null;
   succeededTrials: number | string | null;
   bestScore: number | string | null;
   lastActivityAt: string | Date | null;
@@ -39,6 +40,7 @@ type TrialRow = {
   finishedAt: string | Date | null;
   durationSec: number | string | null;
   hasError: boolean | null;
+  errorType: string | null;
   source: string | null;
   errorJson: Record<string, unknown> | null;
   provenanceJson: Record<string, unknown> | null;
@@ -121,6 +123,7 @@ export function mapTrackListItem(row: TrackRow): TrackListItem {
     dispatchingTrials: asNumber(row.dispatchingTrials),
     activeTrials: asNumber(row.activeTrials),
     finishedTrials: asNumber(row.finishedTrials),
+    errorTrials: asNumber(row.errorTrials),
     succeededTrials: asNumber(row.succeededTrials),
     bestScore: asNullableNumber(row.bestScore),
     lastActivityAt: asIsoDate(row.lastActivityAt ?? row.createdAt) ?? new Date(0).toISOString(),
@@ -151,6 +154,7 @@ export function mapTrialListItem(row: TrialRow): TrialListItem {
     finishedAt: asIsoDate(row.finishedAt),
     durationSec: asNullableNumber(row.durationSec),
     hasError,
+    errorType: asNullableString(row.errorType),
     source: row.source ?? "",
     responseText: asNullableString(generation?.response_text as string | null | undefined),
     generatedSource: asNullableString(generation?.generated_source as string | null | undefined),

@@ -67,6 +67,7 @@ function createTrial(overrides: Partial<TrialListItem>): TrialListItem {
     finishedAt: "2026-03-20T15:02:00.000Z",
     durationSec: 60,
     hasError: false,
+    errorType: null,
     source: "print('hello')\n",
     responseText: null,
     generatedSource: null,
@@ -89,6 +90,7 @@ const tracks: TrackListItem[] = [
     dispatchingTrials: 0,
     activeTrials: 0,
     finishedTrials: 2,
+    errorTrials: 0,
     succeededTrials: 2,
     bestScore: 0.9342,
     lastActivityAt: "2026-03-20T15:10:00.000Z",
@@ -311,6 +313,9 @@ describe("DashboardShell", () => {
     expect(screen.getByText("system prompt text")).toBeTruthy();
     expect(screen.getByText("user prompt text")).toBeTruthy();
     expect(screen.getByText("No response received.")).toBeTruthy();
+    expect(screen.getByText("Generation attempt")).toBeTruthy();
+    expect(screen.queryByText("Generated program")).toBeNull();
+    expect(screen.queryByText("Mixed vs generated diff")).toBeNull();
     expect(screen.getByText("print('attempted candidate')")).toBeTruthy();
     expect(screen.getByText("candidate modified immutable text outside evolve blocks")).toBeTruthy();
     expect(screen.getByText(/stored row source is diagnostic-only/i)).toBeTruthy();

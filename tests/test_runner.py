@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+
 import pytest
 
 from sigmaevolve.models import CANDIDATE_KIND_STRATEGY_V1
@@ -136,6 +138,28 @@ def _run_trial(system, track_id, source):
     return system.repository.get_trial(reserved.trial_id)
 
 
+def test_heartbeat_thread_retries_after_transient_failure():
+    class FlakyRepository:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def heartbeat_trial(self, trial_id, runner_id, meta):
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("transient disconnect")
+
+    repository = FlakyRepository()
+    runner = RunnerService(repository=repository, dataset_manager=object())
+
+    stop_event, thread = runner._start_heartbeat("trial-1", "runner-1", interval_sec=0.05)
+    time.sleep(0.18)
+    stop_event.set()
+    thread.join(timeout=1.0)
+
+    assert repository.calls >= 2
+    assert thread.is_alive() is False
+
+
 def test_successful_run_produces_metrics_and_score(repository, dataset_manager):
     system = build_inline_system(repository, dataset_manager)
     system.prepare_dataset("mnist:v1")
@@ -209,6 +233,7 @@ def test_crash_finalizes_with_zero_score(repository, dataset_manager):
     track = system.create_track("crash", "mnist:v1", {})
     finalize_baseline(system, track.track_id)
     finished = _run_trial(system, track.track_id, CRASH_BLOCK)
+    assert finished.status == "error"
     assert finished.outcome_reason == "crashed"
     assert finished.score == 0.0
 
@@ -219,8 +244,10 @@ def test_missing_required_exports_finalizes_as_eval_failed(repository, dataset_m
     track = system.create_track("eval", "mnist:v1", {})
     finalize_baseline(system, track.track_id)
     finished = _run_trial(system, track.track_id, MISSING_EXPORT_BLOCK)
+    assert finished.status == "error"
     assert finished.outcome_reason == "eval_failed"
     assert finished.error_json["reason"] == "train_script_contract_violation"
+    assert finished.error_json["error_type"] == "execution_contract_violation"
     assert finished.score == 0.0
 
 

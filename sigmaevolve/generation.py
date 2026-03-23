@@ -310,6 +310,90 @@ class OpenRouterGenerationBackend:
             return match.group(1).strip() + "\n"
         return raw_text.strip() + "\n"
 
+    def _extract_message_content(self, message: object) -> str | None:
+        if not isinstance(message, dict):
+            return None
+        content = message.get("content")
+        if isinstance(content, str):
+            return content
+        if not isinstance(content, list):
+            return None
+        text_parts: list[str] = []
+        for entry in content:
+            if isinstance(entry, str) and entry:
+                text_parts.append(entry)
+                continue
+            if not isinstance(entry, dict):
+                continue
+            text = entry.get("text")
+            if isinstance(text, str) and text:
+                text_parts.append(text)
+        if not text_parts:
+            return None
+        return "\n".join(text_parts)
+
+    def _missing_content_error_info(
+        self,
+        body: dict[str, object],
+        raw_body: str,
+        choice: dict[str, object],
+        message: dict[str, object] | None,
+    ) -> dict[str, object]:
+        error_info: dict[str, object] = {
+            "reason": "provider_response_missing_content",
+            "response_body": raw_body,
+        }
+        finish_reason = choice.get("finish_reason")
+        if isinstance(finish_reason, str) and finish_reason:
+            error_info["finish_reason"] = finish_reason
+        native_finish_reason = choice.get("native_finish_reason")
+        if isinstance(native_finish_reason, str) and native_finish_reason:
+            error_info["native_finish_reason"] = native_finish_reason
+        provider = body.get("provider")
+        if isinstance(provider, str) and provider:
+            error_info["provider"] = provider
+        model = body.get("model")
+        if isinstance(model, str) and model:
+            error_info["provider_model"] = model
+
+        usage = body.get("usage")
+        if isinstance(usage, dict):
+            completion_tokens = usage.get("completion_tokens")
+            if completion_tokens is not None:
+                error_info["completion_tokens"] = completion_tokens
+            completion_details = usage.get("completion_tokens_details")
+            if isinstance(completion_details, dict):
+                reasoning_tokens = completion_details.get("reasoning_tokens")
+                if reasoning_tokens is not None:
+                    error_info["reasoning_tokens"] = reasoning_tokens
+
+        reasoning_present = False
+        if isinstance(message, dict):
+            reasoning = message.get("reasoning")
+            reasoning_present = isinstance(reasoning, str) and bool(reasoning.strip())
+        if reasoning_present:
+            error_info["reasoning_present"] = True
+
+        completion_tokens = error_info.get("completion_tokens")
+        reasoning_tokens = error_info.get("reasoning_tokens")
+        exhausted_reasoning_budget = (
+            finish_reason == "length"
+            and reasoning_present
+            and isinstance(completion_tokens, int)
+            and isinstance(reasoning_tokens, int)
+            and completion_tokens > 0
+            and reasoning_tokens >= completion_tokens
+        )
+        if exhausted_reasoning_budget:
+            error_info["error_type"] = "generation_reasoning_tokens_exhausted"
+            error_info["detail"] = "Provider exhausted the completion budget on reasoning without emitting assistant content."
+        elif finish_reason == "length":
+            error_info["error_type"] = "generation_output_truncated"
+            error_info["detail"] = "Provider reached the completion limit before emitting assistant content."
+        else:
+            error_info["error_type"] = "generation_provider_failure"
+        return error_info
+
     def generate(
         self,
         track: TrackRecord,
@@ -434,7 +518,7 @@ class OpenRouterGenerationBackend:
                 error_info={"reason": "provider_response_missing_choices", "response_body": raw_body},
             )
         message = choices[0].get("message") if isinstance(choices[0], dict) else None
-        content = message.get("content") if isinstance(message, dict) else None
+        content = self._extract_message_content(message)
         if not isinstance(content, str) or not content.strip():
             return GenerationResult(
                 source=None,
@@ -447,7 +531,12 @@ class OpenRouterGenerationBackend:
                     provider_response_id=body.get("id"),
                     response_text=content if isinstance(content, str) else None,
                 ),
-                error_info={"reason": "provider_response_missing_content", "response_body": raw_body},
+                error_info=self._missing_content_error_info(
+                    body,
+                    raw_body,
+                    choices[0] if isinstance(choices[0], dict) else {},
+                    message if isinstance(message, dict) else None,
+                ),
             )
         return GenerationResult(
             source=self._extract_source(content),

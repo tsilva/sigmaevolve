@@ -432,6 +432,53 @@ def test_openrouter_generation_captures_missing_message_content(monkeypatch):
     assert result.provenance_json["generation"]["response_text"] == "   "
 
 
+def test_openrouter_generation_classifies_reasoning_budget_exhaustion(monkeypatch):
+    backend = OpenRouterGenerationBackend(api_key="test-key")
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps(
+                {
+                    "id": "resp_1",
+                    "provider": "Fireworks",
+                    "model": "moonshotai/kimi-k2.5-0127",
+                    "choices": [
+                        {
+                            "finish_reason": "length",
+                            "native_finish_reason": "length",
+                            "message": {
+                                "content": None,
+                                "reasoning": "internal chain of thought",
+                            },
+                        }
+                    ],
+                    "usage": {
+                        "completion_tokens": 2500,
+                        "completion_tokens_details": {
+                            "reasoning_tokens": 2500,
+                        },
+                    },
+                }
+            ).encode("utf-8")
+
+    monkeypatch.setattr("sigmaevolve.generation.request.urlopen", lambda req, timeout=0: FakeResponse())
+
+    result = backend.generate(_track_with_pool(), _manifest(), _context(), generation_index=0)
+
+    assert result.source is None
+    assert result.error_info is not None
+    assert result.error_info["reason"] == "provider_response_missing_content"
+    assert result.error_info["error_type"] == "generation_reasoning_tokens_exhausted"
+    assert result.error_info["finish_reason"] == "length"
+    assert result.error_info["reasoning_present"] is True
+
+
 def test_openrouter_generation_captures_transport_errors(monkeypatch):
     backend = OpenRouterGenerationBackend(api_key="test-key")
 

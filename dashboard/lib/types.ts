@@ -1,4 +1,4 @@
-export type TrialStatus = "queued" | "dispatching" | "active" | "finished";
+export type TrialStatus = "queued" | "dispatching" | "active" | "finished" | "error";
 export type TrialStatusFilter = TrialStatus | "all";
 export type DashboardNotificationReason = "trial_changed" | "track_changed";
 
@@ -12,6 +12,7 @@ export type TrackListItem = {
   dispatchingTrials: number;
   activeTrials: number;
   finishedTrials: number;
+  errorTrials: number;
   succeededTrials: number;
   bestScore: number | null;
   lastActivityAt: string;
@@ -38,6 +39,7 @@ export type TrialListItem = {
   finishedAt: string | null;
   durationSec: number | null;
   hasError: boolean;
+  errorType: string | null;
   source: string;
   responseText: string | null;
   generatedSource: string | null;

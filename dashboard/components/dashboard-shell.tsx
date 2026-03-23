@@ -15,7 +15,7 @@ import type {
   TrialStatusFilter,
 } from "@/lib/types";
 
-const STATUS_OPTIONS: TrialStatusFilter[] = ["all", "queued", "dispatching", "active", "finished"];
+const STATUS_OPTIONS: TrialStatusFilter[] = ["all", "queued", "dispatching", "active", "finished", "error"];
 
 async function fetchJson<T>(input: string): Promise<T> {
   const response = await fetch(input, { cache: "no-store" });
@@ -365,11 +365,15 @@ function getTrackLabel(track: TrackListItem): string {
   return track.name ?? track.trackId;
 }
 
+function getCompletedCount(track: TrackListItem): number {
+  return track.finishedTrials + track.errorTrials;
+}
+
 function getProgressPercent(track: TrackListItem): number {
   if (track.totalTrials === 0) {
     return 0;
   }
-  return (track.finishedTrials / track.totalTrials) * 100;
+  return (getCompletedCount(track) / track.totalTrials) * 100;
 }
 
 function getCoveragePercent(track: TrackListItem): number {
@@ -380,10 +384,13 @@ function getCoveragePercent(track: TrackListItem): number {
 }
 
 function getAttentionCount(track: TrackListItem): number {
-  return Math.max(0, track.finishedTrials - track.succeededTrials);
+  return Math.max(0, track.errorTrials + (track.finishedTrials - track.succeededTrials));
 }
 
 function getTrialTone(trial: TrialListItem): "success" | "warning" | "danger" | "neutral" {
+  if (trial.status === "error") {
+    return "danger";
+  }
   if (trial.status !== "finished") {
     return "neutral";
   }
@@ -408,6 +415,15 @@ function getTrialNarrative(trial: TrialListItem): string {
   }
   if (trial.status === "active") {
     return trial.lastPhase ? `Running in ${trial.lastPhase}.` : "Currently executing.";
+  }
+  if (trial.status === "error") {
+    if (trial.outcomeReason === "generation_failed") {
+      return "Generation failed before queueing a runnable candidate.";
+    }
+    if (trial.errorType) {
+      return `Failed with ${trial.errorType}.`;
+    }
+    return "Ended in an error state.";
   }
   if (trial.outcomeReason === "generation_failed") {
     return "Generation failed before queueing a runnable candidate.";
@@ -511,7 +527,7 @@ function buildScoreChart(trials: TrialListItem[]): {
   });
 
   const scoredValues = orderedTrials
-    .filter((trial) => trial.status === "finished")
+    .filter((trial) => trial.status === "finished" || trial.status === "error")
     .map((trial) => trial.score)
     .filter((score) => Number.isFinite(score));
   const bestScore = scoredValues.length > 0 ? Math.max(...scoredValues) : null;
@@ -538,7 +554,7 @@ function buildScoreChart(trials: TrialListItem[]): {
   };
 
   const points = orderedTrials.map((trial, index) => {
-    const score = trial.status === "finished" ? trial.score : null;
+    const score = trial.status === "finished" || trial.status === "error" ? trial.score : null;
     return {
       backend: trial.backend,
       model: trial.model,
@@ -634,8 +650,15 @@ export function DashboardShell({
   const selectedResponseText = selectedTrial?.responseText ?? null;
   const selectedAssertionFailures = selectedTrial?.generationAssertionFailures ?? [];
   const selectedGenerationProperties = getGenerationProperties(selectedTrial?.provenanceJson ?? null);
+  const selectedIsGenerationFailure = selectedTrial?.outcomeReason === "generation_failed";
+  const selectedGeneratedProgram = selectedIsGenerationFailure
+    ? selectedGeneratedSource
+    : selectedGeneratedSource ?? selectedTrial?.source ?? null;
   const selectedShowsDiagnosticSource = Boolean(
     selectedTrial && selectedGeneratedSource && selectedGeneratedSource !== selectedTrial.source,
+  );
+  const selectedCanCompareMixedSource = Boolean(
+    !selectedIsGenerationFailure && selectedGeneratedProgram && selectedGeneratedProgram.length > 0,
   );
   const progressPercent = getProgressPercent(detail.track);
   const coveragePercent = getCoveragePercent(detail.track);
@@ -830,10 +853,11 @@ export function DashboardShell({
                     <span style={{ width: `${getProgressPercent(track)}%` }} />
                   </div>
                   <div className="track-card-meta">
-                    <span>{track.finishedTrials}/{track.totalTrials} finished</span>
+                    <span>{getCompletedCount(track)}/{track.totalTrials} completed</span>
                     <span>{track.activeTrials} active</span>
                   </div>
                   <div className="track-card-meta">
+                    <span>{track.errorTrials} errors</span>
                     <span>{track.succeededTrials} scored</span>
                     <span>{formatRelativeMinutes(track.lastActivityAt)}</span>
                   </div>
@@ -893,13 +917,20 @@ export function DashboardShell({
                       <span className="metric-label">Completion</span>
                       <strong className="metric-value">{formatPercent(progressPercent)}</strong>
                       <span className="metric-note">
-                        {detail.track.finishedTrials} of {detail.track.totalTrials} trials have finished.
+                        {getCompletedCount(detail.track)} of {detail.track.totalTrials} trials have reached a terminal state.
                       </span>
                     </article>
                     <article className="metric-tile">
                       <span className="metric-label">Coverage</span>
                       <strong className="metric-value">{formatPercent(coveragePercent)}</strong>
                       <span className="metric-note">{detail.track.succeededTrials} runs produced scored metrics.</span>
+                    </article>
+                    <article className="metric-tile">
+                      <span className="metric-label">Errors</span>
+                      <strong className="metric-value">{detail.track.errorTrials}</strong>
+                      <span className="metric-note">
+                        {detail.track.errorTrials > 0 ? "Terminal failures need inspection." : "No terminal failures recorded."}
+                      </span>
                     </article>
                     <article className="metric-tile">
                       <span className="metric-label">Attention</span>
@@ -936,6 +967,11 @@ export function DashboardShell({
                         className="finished"
                         style={{ width: `${detail.track.totalTrials === 0 ? 0 : (detail.track.finishedTrials / detail.track.totalTrials) * 100}%` }}
                         title={`Finished: ${detail.track.finishedTrials}`}
+                      />
+                      <span
+                        className="error"
+                        style={{ width: `${detail.track.totalTrials === 0 ? 0 : (detail.track.errorTrials / detail.track.totalTrials) * 100}%` }}
+                        title={`Error: ${detail.track.errorTrials}`}
                       />
                     </div>
                   </section>
@@ -1120,6 +1156,7 @@ export function DashboardShell({
                         <td>
                           <div className="trial-notes">
                             {trial.outcomeReason ? <span className="flag-chip">{trial.outcomeReason}</span> : null}
+                            {trial.errorType ? <span className="flag-chip flag-danger">{trial.errorType}</span> : null}
                             {trial.timedOut ? <span className="flag-chip flag-warning">timed out</span> : null}
                             {trial.hadUnscoredWorkAtTimeout ? <span className="flag-chip flag-warning">unevaluated work</span> : null}
                             {trial.hasError ? <span className="flag-chip flag-danger">error payload</span> : null}
@@ -1210,6 +1247,12 @@ export function DashboardShell({
                               ) : (
                                 "Not reported"
                               )}
+                            </strong>
+                          </div>
+                          <div className="context-row">
+                            <span>Error Type</span>
+                            <strong>
+                              {selectedTrial.errorType ? <span className="flag-chip flag-danger">{selectedTrial.errorType}</span> : "—"}
                             </strong>
                           </div>
                           <div className="context-row">
@@ -1330,21 +1373,23 @@ export function DashboardShell({
                     </article>
                   ) : null}
 
-                  <article className="analysis-card wide-card">
-                    <div className="analysis-card-header">
-                      <h3>Mixed vs generated diff</h3>
-                      <span>
-                        {selectedMixedSource
-                          ? `${selectedMixedSource.snippetCount} prompt source${selectedMixedSource.snippetCount === 1 ? "" : "s"}`
-                          : "No prompt source snippets"}
-                      </span>
-                    </div>
-                    {selectedMixedSource ? (
-                      <SourceDiff before={selectedMixedSource.source} after={selectedGeneratedSource ?? selectedTrial.source ?? ""} />
-                    ) : (
-                      <p className="section-copy">No prompt-embedded source snippets were recorded for this trial.</p>
-                    )}
-                  </article>
+                  {selectedCanCompareMixedSource ? (
+                    <article className="analysis-card wide-card">
+                      <div className="analysis-card-header">
+                        <h3>Mixed vs generated diff</h3>
+                        <span>
+                          {selectedMixedSource
+                            ? `${selectedMixedSource.snippetCount} prompt source${selectedMixedSource.snippetCount === 1 ? "" : "s"}`
+                            : "No prompt source snippets"}
+                        </span>
+                      </div>
+                      {selectedMixedSource ? (
+                        <SourceDiff before={selectedMixedSource.source} after={selectedGeneratedProgram ?? ""} />
+                      ) : (
+                        <p className="section-copy">No prompt-embedded source snippets were recorded for this trial.</p>
+                      )}
+                    </article>
+                  ) : null}
 
                   <article className="analysis-card wide-card">
                     <div className="analysis-card-header">
@@ -1381,7 +1426,7 @@ export function DashboardShell({
 
                   <article className="analysis-card wide-card">
                     <div className="analysis-card-header">
-                      <h3>Generated program</h3>
+                      <h3>{selectedIsGenerationFailure ? "Generation attempt" : "Generated program"}</h3>
                     </div>
                     {selectedShowsDiagnosticSource ? (
                       <p className="section-copy">
@@ -1390,7 +1435,10 @@ export function DashboardShell({
                       </p>
                     ) : null}
                     <HighlightedCode
-                      code={selectedGeneratedSource ?? selectedTrial.source ?? "No generated program recorded."}
+                      code={
+                        selectedGeneratedProgram ??
+                        (selectedIsGenerationFailure ? "No generation attempt recorded." : "No generated program recorded.")
+                      }
                       language="python"
                       wrap
                     />

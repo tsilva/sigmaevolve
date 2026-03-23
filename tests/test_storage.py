@@ -73,6 +73,54 @@ def test_track_and_trial_mutations_publish_dashboard_notifications(repository):
     assert notifications[-1] == (track.track_id, "trial_changed")
 
 
+def test_failed_trials_persist_error_status_and_error_type(repository):
+    repository.register_dataset("mnist:v1", "/tmp/manifest.json")
+    track = repository.create_track(name="errors", dataset_id="mnist:v1", policy_json={})
+
+    trial, created = repository.create_queued_trial_if_absent(
+        track_id=track.track_id,
+        source="print('candidate')\n",
+        provenance_json=make_llm_provenance(model="worker"),
+    )
+    assert created is True
+    assert trial is not None
+
+    repository.finalize_trial(
+        trial_id=trial.trial_id,
+        runner_id=None,
+        outcome_reason="crashed",
+        metrics=None,
+        score=0.0,
+        error_info={"reason": "boom"},
+    )
+
+    updated = repository.get_trial(trial.trial_id)
+    assert updated is not None
+    assert updated.status == "error"
+    assert updated.error_json == {"reason": "boom", "error_type": "execution_crash"}
+
+
+def test_generation_attempt_trial_uses_specific_error_type_when_present(repository):
+    repository.register_dataset("mnist:v1", "/tmp/manifest.json")
+    track = repository.create_track(name="generation-errors", dataset_id="mnist:v1", policy_json={})
+
+    trial = repository.create_generation_attempt_trial(
+        track_id=track.track_id,
+        provenance_json=make_llm_provenance(model="worker"),
+        outcome_reason="generation_failed",
+        error_json={
+            "reason": "provider_response_missing_content",
+            "error_type": "generation_reasoning_tokens_exhausted",
+        },
+    )
+
+    assert trial.status == "error"
+    assert trial.error_json == {
+        "reason": "provider_response_missing_content",
+        "error_type": "generation_reasoning_tokens_exhausted",
+    }
+
+
 def test_record_trial_launcher_metadata_merges_into_provenance_and_notifies(repository):
     repository.register_dataset("mnist:v1", "/tmp/manifest.json")
 
@@ -169,3 +217,41 @@ def test_create_queued_trial_rejects_non_llm_candidate_provenance(repository):
             source="print('candidate')\n",
             provenance_json={"backend": "manual-curated", "model": "cnn-residual-ish"},
         )
+
+
+def test_runner_finalize_does_not_overwrite_stale_terminal_state(repository):
+    repository.register_dataset("mnist:v1", "/tmp/manifest.json")
+    track = repository.create_track(name="stale-guard", dataset_id="mnist:v1", policy_json={})
+    trial, created = repository.create_queued_trial_if_absent(
+        track_id=track.track_id,
+        source="print('candidate')\n",
+        provenance_json=make_llm_provenance(model="worker"),
+    )
+    assert created is True
+    assert trial is not None
+
+    reserved = repository.reserve_trials(track.track_id, max_parallelism=1, dispatch_ttl_sec=60, limit=1)
+    claimed = repository.claim_trial(reserved[0].trial_id, reserved[0].dispatch_token, "runner-1")
+    assert claimed is not None
+
+    with repository.transaction() as conn:
+        conn.execute(
+            trials_table.update()
+            .where(trials_table.c.trial_id == claimed.trial_id)
+            .values(status="finished", outcome_reason="stale", error_json={"reason": "heartbeat_stale"})
+        )
+
+    repository.finalize_trial(
+        trial_id=claimed.trial_id,
+        runner_id="runner-1",
+        outcome_reason="succeeded",
+        metrics={"accuracy": 1.0},
+        score=1.0,
+        error_info=None,
+    )
+    updated = repository.get_trial(claimed.trial_id)
+
+    assert updated is not None
+    assert updated.status == "finished"
+    assert updated.outcome_reason == "stale"
+    assert updated.error_json == {"reason": "heartbeat_stale"}

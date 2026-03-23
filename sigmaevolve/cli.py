@@ -583,7 +583,7 @@ def build_parser() -> argparse.ArgumentParser:
     list_trials.add_argument(
         "--status",
         action="append",
-        choices=["queued", "dispatching", "active", "finished"],
+        choices=["queued", "dispatching", "active", "finished", "error"],
         help="Filter by one or more statuses.",
     )
     list_trials.set_defaults(func=cmd_list_trials)
