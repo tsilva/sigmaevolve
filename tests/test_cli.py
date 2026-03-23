@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import json
 import os
+import contextlib
+from io import StringIO
 from types import SimpleNamespace
+
+import numpy as np
+import pytest
 
 from sigmaevolve.cli import main
 from sigmaevolve.models import DEFAULT_GENERATION_MODEL
@@ -15,7 +20,47 @@ def _write_track_file(tmp_path, payload: dict, filename: str = "track.json") -> 
     return str(track_file)
 
 
-def test_cli_create_track_and_list_trials(tmp_path, monkeypatch):
+def _make_provider():
+    from sigmaevolve.datasets import ArrayDatasetProvider
+
+    return ArrayDatasetProvider(
+        train_features=np.ones((4, 2), dtype=np.float32),
+        train_labels=np.array([0, 1, 0, 1], dtype=np.int64),
+        validation_features=np.ones((2, 2), dtype=np.float32),
+        validation_labels=np.array([0, 1], dtype=np.int64),
+        test_features=np.ones((2, 2), dtype=np.float32),
+        test_labels=np.array([0, 1], dtype=np.int64),
+        metadata={"num_classes": 2},
+    )
+
+
+def _run_cli(argv: list[str]) -> tuple[int, str, str]:
+    out = StringIO()
+    err = StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        code = main(argv)
+    return code, out.getvalue(), err.getvalue()
+
+
+@pytest.fixture
+def patched_cli_system(monkeypatch):
+    from sigmaevolve import cli as cli_module
+    from sigmaevolve.system import build_system
+
+    provider = _make_provider()
+
+    def fake_make_system(args):
+        return build_system(
+            database_url=args.database_url,
+            dataset_root=args.dataset_root,
+            providers={"mnist:v1": provider, "fashion_mnist:v1": provider},
+        )
+
+    monkeypatch.setattr(cli_module, "_make_system", fake_make_system)
+
+
+def test_cli_create_track_and_list_trials(tmp_path, patched_cli_system):
+    del patched_cli_system
     db_url = f"sqlite:///{tmp_path / 'cli.sqlite'}"
     dataset_root = tmp_path / "datasets"
     track_file = _write_track_file(
@@ -26,117 +71,34 @@ def test_cli_create_track_and_list_trials(tmp_path, monkeypatch):
         },
     )
 
-    from sigmaevolve.datasets import ArrayDatasetProvider
-    import numpy as np
-
-    provider = ArrayDatasetProvider(
-        train_features=np.ones((4, 2), dtype=np.float32),
-        train_labels=np.array([0, 1, 0, 1], dtype=np.int64),
-        validation_features=np.ones((2, 2), dtype=np.float32),
-        validation_labels=np.array([0, 1], dtype=np.int64),
-        test_features=np.ones((2, 2), dtype=np.float32),
-        test_labels=np.array([0, 1], dtype=np.int64),
-        metadata={"num_classes": 2},
-    )
-
-    # Reuse the CLI entrypoint but patch system construction to avoid torchvision downloads.
-    from sigmaevolve import cli as cli_module
-    from sigmaevolve.system import build_system
-
-    def fake_make_system(args):
-        return build_system(
-            database_url=args.database_url,
-            dataset_root=args.dataset_root,
-            providers={"mnist:v1": provider, "fashion_mnist:v1": provider},
-        )
-
-    monkeypatch.setattr(cli_module, "_make_system", fake_make_system)
-
-    from io import StringIO
-    import contextlib
-
-    create_out = StringIO()
-    with contextlib.redirect_stdout(create_out):
-        assert (
-            main(
-                [
-                    "--database-url",
-                    db_url,
-                    "--dataset-root",
-                    str(dataset_root),
-                    "create-track",
-                    track_file,
-                ]
-            )
-            == 0
-        )
-    track_id = json.loads(create_out.getvalue())["track_id"]
-
-    list_out = StringIO()
-    with contextlib.redirect_stdout(list_out):
-        assert main(["--database-url", db_url, "--dataset-root", str(dataset_root), "list-trials", track_id]) == 0
-    trials = json.loads(list_out.getvalue())
+    code, stdout, _ = _run_cli(["--database-url", db_url, "--dataset-root", str(dataset_root), "create-track", track_file])
+    assert code == 0
+    track_id = json.loads(stdout)["track_id"]
+    code, stdout, _ = _run_cli(["--database-url", db_url, "--dataset-root", str(dataset_root), "list-trials", track_id])
+    assert code == 0
+    trials = json.loads(stdout)
     assert len(trials) == 1
     assert trials[0]["status"] == "queued"
     assert trials[0]["time_to_best_eval_sec"] is None
 
 
-def test_cli_create_track_uses_default_generation_model(tmp_path, monkeypatch):
+def test_cli_create_track_uses_default_generation_model(tmp_path, patched_cli_system):
+    del patched_cli_system
     db_url = f"sqlite:///{tmp_path / 'cli-default-policy.sqlite'}"
     dataset_root = tmp_path / "datasets"
     track_file = _write_track_file(tmp_path, {"dataset_id": "mnist:v1"})
 
-    from sigmaevolve.datasets import ArrayDatasetProvider
-    import numpy as np
-
-    provider = ArrayDatasetProvider(
-        train_features=np.ones((4, 2), dtype=np.float32),
-        train_labels=np.array([0, 1, 0, 1], dtype=np.int64),
-        validation_features=np.ones((2, 2), dtype=np.float32),
-        validation_labels=np.array([0, 1], dtype=np.int64),
-        test_features=np.ones((2, 2), dtype=np.float32),
-        test_labels=np.array([0, 1], dtype=np.int64),
-        metadata={"num_classes": 2},
-    )
-
-    from sigmaevolve import cli as cli_module
-    from sigmaevolve.system import build_system
-
-    def fake_make_system(args):
-        return build_system(
-            database_url=args.database_url,
-            dataset_root=args.dataset_root,
-            providers={"mnist:v1": provider, "fashion_mnist:v1": provider},
-        )
-
-    monkeypatch.setattr(cli_module, "_make_system", fake_make_system)
-
-    from io import StringIO
-    import contextlib
-
-    create_out = StringIO()
-    with contextlib.redirect_stdout(create_out):
-        assert (
-            main(
-                [
-                    "--database-url",
-                    db_url,
-                    "--dataset-root",
-                    str(dataset_root),
-                    "create-track",
-                    track_file,
-                ]
-            )
-            == 0
-        )
-    track = json.loads(create_out.getvalue())
+    code, stdout, _ = _run_cli(["--database-url", db_url, "--dataset-root", str(dataset_root), "create-track", track_file])
+    assert code == 0
+    track = json.loads(stdout)
     assert "max_parallelism" not in track["policy_json"]
     assert "ready_queue_threshold" not in track["policy_json"]
     pool = track["policy_json"]["generation_backend"]["model_pool"]
     assert pool[0]["model"] == DEFAULT_GENERATION_MODEL
 
 
-def test_cli_create_track_from_track_file(tmp_path, monkeypatch):
+def test_cli_create_track_from_track_file(tmp_path, patched_cli_system):
+    del patched_cli_system
     db_url = f"sqlite:///{tmp_path / 'cli-policy.sqlite'}"
     dataset_root = tmp_path / "datasets"
     track_file = _write_track_file(
@@ -155,49 +117,9 @@ def test_cli_create_track_from_track_file(tmp_path, monkeypatch):
         },
     )
 
-    from sigmaevolve.datasets import ArrayDatasetProvider
-    import numpy as np
-    from sigmaevolve import cli as cli_module
-    from sigmaevolve.system import build_system
-
-    provider = ArrayDatasetProvider(
-        train_features=np.ones((4, 2), dtype=np.float32),
-        train_labels=np.array([0, 1, 0, 1], dtype=np.int64),
-        validation_features=np.ones((2, 2), dtype=np.float32),
-        validation_labels=np.array([0, 1], dtype=np.int64),
-        test_features=np.ones((2, 2), dtype=np.float32),
-        test_labels=np.array([0, 1], dtype=np.int64),
-        metadata={"num_classes": 2},
-    )
-
-    def fake_make_system(args):
-        return build_system(
-            database_url=args.database_url,
-            dataset_root=args.dataset_root,
-            providers={"mnist:v1": provider, "fashion_mnist:v1": provider},
-        )
-
-    monkeypatch.setattr(cli_module, "_make_system", fake_make_system)
-
-    from io import StringIO
-    import contextlib
-
-    create_out = StringIO()
-    with contextlib.redirect_stdout(create_out):
-        assert (
-            main(
-                [
-                    "--database-url",
-                    db_url,
-                    "--dataset-root",
-                    str(dataset_root),
-                    "create-track",
-                    track_file,
-                ]
-            )
-            == 0
-        )
-    track = json.loads(create_out.getvalue())
+    code, stdout, _ = _run_cli(["--database-url", db_url, "--dataset-root", str(dataset_root), "create-track", track_file])
+    assert code == 0
+    track = json.loads(stdout)
     pool = track["policy_json"]["generation_backend"]["model_pool"]
     assert len(pool) == 2
     assert pool[1]["model"] == "anthropic/claude-sonnet-4.6"
@@ -260,83 +182,27 @@ def test_cli_modal_commands_call_support_helpers(tmp_path, monkeypatch):
     assert synced["dataset_id"] == "mnist:v1"
 
 
-def test_cli_launch_count_reports_progress_to_stderr(tmp_path, monkeypatch):
+def test_cli_launch_count_reports_progress_to_stderr(tmp_path, patched_cli_system):
+    del patched_cli_system
     db_url = f"sqlite:///{tmp_path / 'cli-launch-progress.sqlite'}"
     dataset_root = tmp_path / "datasets"
     track_file = _write_track_file(tmp_path, {"dataset_id": "mnist:v1"}, "launch-track.json")
 
-    from sigmaevolve.datasets import ArrayDatasetProvider
-    import numpy as np
-    from sigmaevolve import cli as cli_module
-    from sigmaevolve.system import build_system
-
-    provider = ArrayDatasetProvider(
-        train_features=np.ones((4, 2), dtype=np.float32),
-        train_labels=np.array([0, 1, 0, 1], dtype=np.int64),
-        validation_features=np.ones((2, 2), dtype=np.float32),
-        validation_labels=np.array([0, 1], dtype=np.int64),
-        test_features=np.ones((2, 2), dtype=np.float32),
-        test_labels=np.array([0, 1], dtype=np.int64),
-        metadata={"num_classes": 2},
-    )
-
-    def fake_make_system(args):
-        return build_system(
-            database_url=args.database_url,
-            dataset_root=args.dataset_root,
-            providers={"mnist:v1": provider, "fashion_mnist:v1": provider},
-        )
-
-    monkeypatch.setattr(cli_module, "_make_system", fake_make_system)
-
-    from io import StringIO
-    import contextlib
-
-    create_out = StringIO()
-    with contextlib.redirect_stdout(create_out):
-        assert (
-            main(
-                [
-                    "--database-url",
-                    db_url,
-                    "--dataset-root",
-                    str(dataset_root),
-                    "create-track",
-                    track_file,
-                ]
-            )
-            == 0
-        )
-    track_id = json.loads(create_out.getvalue())["track_id"]
-
-    reconcile_out = StringIO()
-    reconcile_err = StringIO()
-    with contextlib.redirect_stdout(reconcile_out), contextlib.redirect_stderr(reconcile_err):
-        assert (
-            main(
-                [
-                    "--database-url",
-                    db_url,
-                    "--dataset-root",
-                    str(dataset_root),
-                    "launch",
-                    track_id,
-                    "1",
-                ]
-            )
-            == 0
-        )
-
-    payload = json.loads(reconcile_out.getvalue())
+    track_id = json.loads(
+        _run_cli(["--database-url", db_url, "--dataset-root", str(dataset_root), "create-track", track_file])[1]
+    )["track_id"]
+    code, stdout, stderr = _run_cli(["--database-url", db_url, "--dataset-root", str(dataset_root), "launch", track_id, "1"])
+    assert code == 0
+    payload = json.loads(stdout)
     assert "launched_trial_ids" in payload
     assert payload["mode"] == "count"
-    stderr = reconcile_err.getvalue()
     assert "Running launch pass" in stderr
     assert "Launching reserved trials" in stderr
     assert "Launch pass finished" in stderr
 
 
-def test_cli_launch_maintain_running_stops_after_max_cycles(tmp_path, monkeypatch):
+def test_cli_launch_maintain_running_stops_after_max_cycles(tmp_path, patched_cli_system):
+    del patched_cli_system
     db_url = f"sqlite:///{tmp_path / 'cli-launch-maintain.sqlite'}"
     dataset_root = tmp_path / "datasets"
     track_file = _write_track_file(
@@ -348,73 +214,27 @@ def test_cli_launch_maintain_running_stops_after_max_cycles(tmp_path, monkeypatc
         "maintain-track.json",
     )
 
-    from sigmaevolve.datasets import ArrayDatasetProvider
-    import numpy as np
-    from sigmaevolve import cli as cli_module
-    from sigmaevolve.system import build_system
-
-    provider = ArrayDatasetProvider(
-        train_features=np.ones((4, 2), dtype=np.float32),
-        train_labels=np.array([0, 1, 0, 1], dtype=np.int64),
-        validation_features=np.ones((2, 2), dtype=np.float32),
-        validation_labels=np.array([0, 1], dtype=np.int64),
-        test_features=np.ones((2, 2), dtype=np.float32),
-        test_labels=np.array([0, 1], dtype=np.int64),
-        metadata={"num_classes": 2},
+    track_id = json.loads(
+        _run_cli(["--database-url", db_url, "--dataset-root", str(dataset_root), "create-track", track_file])[1]
+    )["track_id"]
+    code, stdout, _ = _run_cli(
+        [
+            "--database-url",
+            db_url,
+            "--dataset-root",
+            str(dataset_root),
+            "--launcher",
+            "recording",
+            "launch",
+            track_id,
+            "1",
+            "--daemon",
+            "--max-cycles",
+            "1",
+        ]
     )
-
-    def fake_make_system(args):
-        return build_system(
-            database_url=args.database_url,
-            dataset_root=args.dataset_root,
-            providers={"mnist:v1": provider, "fashion_mnist:v1": provider},
-        )
-
-    monkeypatch.setattr(cli_module, "_make_system", fake_make_system)
-
-    from io import StringIO
-    import contextlib
-
-    create_out = StringIO()
-    with contextlib.redirect_stdout(create_out):
-        assert (
-            main(
-                [
-                    "--database-url",
-                    db_url,
-                    "--dataset-root",
-                    str(dataset_root),
-                    "create-track",
-                    track_file,
-                ]
-            )
-            == 0
-        )
-    track_id = json.loads(create_out.getvalue())["track_id"]
-
-    launch_out = StringIO()
-    with contextlib.redirect_stdout(launch_out):
-        assert (
-            main(
-                [
-                    "--database-url",
-                    db_url,
-                    "--dataset-root",
-                    str(dataset_root),
-                    "--launcher",
-                    "recording",
-                    "launch",
-                    track_id,
-                    "1",
-                    "--daemon",
-                    "--max-cycles",
-                    "1",
-                ]
-            )
-            == 0
-        )
-
-    payload = json.loads(launch_out.getvalue())
+    assert code == 0
+    payload = json.loads(stdout)
     assert payload["mode"] == "daemon"
     assert payload["cycles_completed"] == 1
     assert payload["target_running"] == 1

@@ -126,36 +126,38 @@ def forward(self, x):
     )
 
 
+class _FakeResponse:
+    def __init__(self, payload: object):
+        self._payload = payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def read(self):
+        if isinstance(self._payload, bytes):
+            return self._payload
+        if isinstance(self._payload, str):
+            return self._payload.encode("utf-8")
+        return json.dumps(self._payload).encode("utf-8")
+
+
+def _fake_generation_content(forward_body: str = "return torch.zeros((x.shape[0], 10), dtype=torch.float32)"):
+    return {
+        "id": "resp_1",
+        "choices": [{"message": {"content": _mutated_script(forward_body)}}],
+    }
+
+
 def test_openrouter_generation_uses_model_pool_round_robin(monkeypatch):
     backend = OpenRouterGenerationBackend(api_key="test-key")
     payloads = []
 
-    class FakeResponse:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-        def read(self):
-            return json.dumps(
-                {
-                    "id": "resp_1",
-                    "choices": [
-                        {
-                            "message": {
-                                "content": _mutated_script(
-                                    "return torch.zeros((x.shape[0], 10), dtype=torch.float32) + 0.1"
-                                )
-                            }
-                        }
-                    ],
-                }
-            ).encode("utf-8")
-
     def fake_urlopen(req, timeout=0):
         payloads.append(json.loads(req.data.decode("utf-8")))
-        return FakeResponse()
+        return _FakeResponse(_fake_generation_content("return torch.zeros((x.shape[0], 10), dtype=torch.float32) + 0.1"))
 
     monkeypatch.setattr("sigmaevolve.generation.request.urlopen", fake_urlopen)
 
@@ -195,30 +197,9 @@ def test_openrouter_generation_bumps_temperature_on_duplicate_retry(monkeypatch)
     backend = OpenRouterGenerationBackend(api_key="test-key")
     payloads = []
 
-    class FakeResponse:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-        def read(self):
-            return json.dumps(
-                {
-                    "id": "resp_1",
-                    "choices": [
-                        {
-                            "message": {
-                                "content": _mutated_script("return torch.zeros((x.shape[0], 10), dtype=torch.float32)")
-                            }
-                        }
-                    ],
-                }
-            ).encode("utf-8")
-
     def fake_urlopen(req, timeout=0):
         payloads.append(json.loads(req.data.decode("utf-8")))
-        return FakeResponse()
+        return _FakeResponse(_fake_generation_content())
 
     monkeypatch.setattr("sigmaevolve.generation.request.urlopen", fake_urlopen)
 
@@ -233,30 +214,9 @@ def test_openrouter_generation_uses_weighted_random_probabilities(monkeypatch):
     backend = OpenRouterGenerationBackend(api_key="test-key")
     payloads = []
 
-    class FakeResponse:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-        def read(self):
-            return json.dumps(
-                {
-                    "id": "resp_1",
-                    "choices": [
-                        {
-                            "message": {
-                                "content": _mutated_script("return torch.zeros((x.shape[0], 10), dtype=torch.float32)")
-                            }
-                        }
-                    ],
-                }
-            ).encode("utf-8")
-
     def fake_urlopen(req, timeout=0):
         payloads.append(json.loads(req.data.decode("utf-8")))
-        return FakeResponse()
+        return _FakeResponse(_fake_generation_content())
 
     monkeypatch.setattr("sigmaevolve.generation.request.urlopen", fake_urlopen)
 
@@ -272,30 +232,9 @@ def test_openrouter_generation_prompt_includes_failure_feedback(monkeypatch):
     backend = OpenRouterGenerationBackend(api_key="test-key")
     payloads = []
 
-    class FakeResponse:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-        def read(self):
-            return json.dumps(
-                {
-                    "id": "resp_1",
-                    "choices": [
-                        {
-                            "message": {
-                                "content": _mutated_script("return torch.zeros((x.shape[0], 10), dtype=torch.float32)")
-                            }
-                        }
-                    ],
-                }
-            ).encode("utf-8")
-
     def fake_urlopen(req, timeout=0):
         payloads.append(json.loads(req.data.decode("utf-8")))
-        return FakeResponse()
+        return _FakeResponse(_fake_generation_content())
 
     monkeypatch.setattr("sigmaevolve.generation.request.urlopen", fake_urlopen)
 
@@ -363,73 +302,29 @@ def test_openrouter_generation_captures_http_errors(monkeypatch):
     assert result.error_info["response_body"] == '{"error":"overloaded"}'
 
 
-def test_openrouter_generation_captures_invalid_json_responses(monkeypatch):
+@pytest.mark.parametrize(
+    ("response_payload", "expected_reason", "expected_field", "expected_value"),
+    [
+        (b"{not-json", "provider_response_invalid_json", "response_body", "{not-json"),
+        ({"id": "resp_1", "choices": []}, "provider_response_missing_choices", "response_body", '{"id": "resp_1", "choices": []}'),
+        ({"id": "resp_1", "choices": [{"message": {"content": "   "}}]}, "provider_response_missing_content", "response_text", "   "),
+    ],
+)
+def test_openrouter_generation_response_errors(monkeypatch, response_payload, expected_reason, expected_field, expected_value):
     backend = OpenRouterGenerationBackend(api_key="test-key")
-
-    class FakeResponse:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-        def read(self):
-            return b"{not-json"
-
-    monkeypatch.setattr("sigmaevolve.generation.request.urlopen", lambda req, timeout=0: FakeResponse())
+    monkeypatch.setattr("sigmaevolve.generation.request.urlopen", lambda req, timeout=0: _FakeResponse(response_payload))
 
     result = backend.generate(_track_with_pool(), _manifest(), _context(), generation_index=0)
 
     assert result.source is None
     assert result.error_info is not None
-    assert result.error_info["reason"] == "provider_response_invalid_json"
-    assert result.error_info["response_body"] == "{not-json"
-
-
-def test_openrouter_generation_captures_missing_choices(monkeypatch):
-    backend = OpenRouterGenerationBackend(api_key="test-key")
-
-    class FakeResponse:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-        def read(self):
-            return json.dumps({"id": "resp_1", "choices": []}).encode("utf-8")
-
-    monkeypatch.setattr("sigmaevolve.generation.request.urlopen", lambda req, timeout=0: FakeResponse())
-
-    result = backend.generate(_track_with_pool(), _manifest(), _context(), generation_index=0)
-
-    assert result.source is None
-    assert result.error_info is not None
-    assert result.error_info["reason"] == "provider_response_missing_choices"
-    assert result.provenance_json["provider_response_id"] == "resp_1"
-
-
-def test_openrouter_generation_captures_missing_message_content(monkeypatch):
-    backend = OpenRouterGenerationBackend(api_key="test-key")
-
-    class FakeResponse:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-        def read(self):
-            return json.dumps({"id": "resp_1", "choices": [{"message": {"content": "   "}}]}).encode("utf-8")
-
-    monkeypatch.setattr("sigmaevolve.generation.request.urlopen", lambda req, timeout=0: FakeResponse())
-
-    result = backend.generate(_track_with_pool(), _manifest(), _context(), generation_index=0)
-
-    assert result.source is None
-    assert result.error_info is not None
-    assert result.error_info["reason"] == "provider_response_missing_content"
-    assert result.provenance_json["generation"]["response_text"] == "   "
+    assert result.error_info["reason"] == expected_reason
+    if expected_field == "response_text":
+        assert result.provenance_json["generation"]["response_text"] == expected_value
+    else:
+        assert result.error_info[expected_field] == expected_value
+    if expected_reason == "provider_response_missing_choices":
+        assert result.provenance_json["provider_response_id"] == "resp_1"
 
 
 def test_openrouter_generation_classifies_reasoning_budget_exhaustion(monkeypatch):
