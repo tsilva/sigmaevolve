@@ -64,16 +64,42 @@ def read_split(path: str) -> tuple[np.ndarray, np.ndarray] | np.ndarray:
     return features
 
 
+def infer_input_shape(features: np.ndarray) -> tuple[int, ...]:
+    shape = tuple(int(dim) for dim in features.shape[1:])
+    if not shape:
+        raise TrainScriptContractError("training features must include at least one non-batch dimension")
+    return shape
+
+
+def to_feature_tensor(features: np.ndarray, *, input_shape: tuple[int, ...]) -> torch.Tensor:
+    tensor = torch.from_numpy(features.astype(np.float32))
+    if len(input_shape) == 2:
+        tensor = tensor.unsqueeze(1)
+    return tensor.contiguous()
+
+
+def normalize_feature_tensors(train_x: torch.Tensor, validation_x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    if train_x.ndim <= 1:
+        raise TrainScriptContractError("feature tensors must be at least 2D including the batch axis")
+    if train_x.ndim == 2:
+        reduce_dims = (0,)
+    else:
+        reduce_dims = (0,) + tuple(range(2, train_x.ndim))
+    mean = train_x.mean(dim=reduce_dims, keepdim=True)
+    std = train_x.std(dim=reduce_dims, keepdim=True, unbiased=False).clamp_min(1e-6)
+    return (train_x - mean) / std, (validation_x - mean) / std
+
+
 def normalize_predictions(raw_predictions: object, *, num_examples: int, num_classes: int | None) -> np.ndarray:
     if isinstance(raw_predictions, torch.Tensor):
         array = raw_predictions.detach().cpu().numpy()
     else:
         array = np.asarray(raw_predictions)
     if array.ndim == 0:
-        raise TrainScriptContractError("predict_validation must return one prediction per validation example.")
+        raise TrainScriptContractError("model evaluation must return one prediction per validation example.")
     if array.shape[0] != num_examples:
         raise TrainScriptContractError(
-            f"predict_validation returned {array.shape[0]} predictions for {num_examples} validation examples."
+            f"model evaluation returned {array.shape[0]} predictions for {num_examples} validation examples."
         )
     if array.ndim == 1:
         if np.issubdtype(array.dtype, np.floating):
@@ -83,7 +109,7 @@ def normalize_predictions(raw_predictions: object, *, num_examples: int, num_cla
                     return (array >= 0.5).astype(np.int64)
                 return (array >= 0.0).astype(np.int64)
             raise TrainScriptContractError(
-                "predict_validation returned a 1D float array for a non-binary task; return class ids or logits."
+                "model evaluation returned a 1D float array for a non-binary task; return class ids or logits."
             )
         return array.astype(np.int64)
     reshaped = array.reshape(num_examples, -1)
@@ -92,70 +118,66 @@ def normalize_predictions(raw_predictions: object, *, num_examples: int, num_cla
     return reshaped.argmax(axis=1).astype(np.int64)
 
 
+def coerce_model_logits(raw_output: object, *, batch_size: int, num_classes: int) -> torch.Tensor:
+    logits = raw_output if isinstance(raw_output, torch.Tensor) else torch.as_tensor(raw_output, dtype=torch.float32)
+    if logits.ndim == 1:
+        if batch_size == 1 and logits.shape[0] == num_classes:
+            return logits.reshape(1, num_classes)
+        if num_classes == 2 and logits.shape[0] == batch_size:
+            return torch.stack((-logits, logits), dim=1)
+    if logits.ndim == 2 and logits.shape[0] == batch_size:
+        return logits
+    raise TrainScriptContractError(
+        f"model forward must return logits shaped [batch, num_classes], received {tuple(logits.shape)}"
+    )
+
+
 # EVOLVE-BLOCK-START
-def build_state(*, train_features, train_labels, validation_features, dataset_metadata, random_seed, device):
-    train_x = train_features.reshape(train_features.shape[0], -1)
-    val_x = validation_features.reshape(validation_features.shape[0], -1)
-    train_y = train_labels.astype(np.int64)
-    num_classes = int(dataset_metadata.get("num_classes") or (np.max(train_y) + 1))
-    torch.manual_seed(int(random_seed))
-    model = torch.nn.Linear(int(train_x.shape[1]), num_classes)
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.05)
-    criterion = torch.nn.CrossEntropyLoss()
-    return {
-        "model": model,
-        "optimizer": optimizer,
-        "criterion": criterion,
-        "train_x": torch.from_numpy(train_x),
-        "train_y": torch.from_numpy(train_y),
-        "val_x": torch.from_numpy(val_x),
-        "steps_per_epoch": 5,
-    }
+class EvolvedModel(torch.nn.Module):
+    def __init__(self, input_shape, num_classes):
+        super().__init__()
+        if len(input_shape) <= 1:
+            flat_dim = int(np.prod(input_shape))
+            self.network = torch.nn.Sequential(
+                torch.nn.Linear(flat_dim, 256),
+                torch.nn.GELU(),
+                torch.nn.Linear(256, 128),
+                torch.nn.GELU(),
+                torch.nn.Linear(128, num_classes),
+            )
+        else:
+            channels = 1 if len(input_shape) == 2 else int(input_shape[0])
+            self.network = torch.nn.Sequential(
+                torch.nn.Conv2d(channels, 24, kernel_size=5, padding=2),
+                torch.nn.GELU(),
+                torch.nn.MaxPool2d(2),
+                torch.nn.Conv2d(24, 48, kernel_size=3, padding=1),
+                torch.nn.GELU(),
+                torch.nn.MaxPool2d(2),
+                torch.nn.AdaptiveAvgPool2d((4, 4)),
+                torch.nn.Flatten(),
+                torch.nn.Linear(48 * 4 * 4, 64),
+                torch.nn.GELU(),
+                torch.nn.Dropout(p=0.1),
+                torch.nn.Linear(64, num_classes),
+            )
+
+    def forward(self, x):
+        return self.network(x)
 
 
-def train_epoch(state, *, epoch_index, num_epochs):
-    model = state["model"]
-    optimizer = state["optimizer"]
-    criterion = state["criterion"]
-    train_x = state["train_x"]
-    train_y = state["train_y"]
-    for _ in range(int(state["steps_per_epoch"])):
-        optimizer.zero_grad()
-        logits = model(train_x)
-        loss = criterion(logits, train_y)
-        loss.backward()
-        optimizer.step()
-
-
-def predict_validation(state, validation_features):
-    model = state["model"]
-    val_x = state["val_x"]
-    model.eval()
-    with torch.no_grad():
-        return model(val_x)
+def build_model(*, input_shape, num_classes):
+    return EvolvedModel(input_shape=input_shape, num_classes=num_classes)
 
 
 # EVOLVE-BLOCK-END
 
 
-def load_evolvable_functions():
-    build_state_fn = globals().get("build_state")
-    train_epoch_fn = globals().get("train_epoch")
-    predict_validation_fn = globals().get("predict_validation")
-    missing = [
-        name
-        for name, value in (
-            ("build_state", build_state_fn),
-            ("train_epoch", train_epoch_fn),
-            ("predict_validation", predict_validation_fn),
-        )
-        if not callable(value)
-    ]
-    if missing:
-        raise TrainScriptContractError(
-            f"train.py is missing required evolve-block callables: {', '.join(missing)}"
-        )
-    return build_state_fn, train_epoch_fn, predict_validation_fn
+def load_model_builder():
+    build_model_fn = globals().get("build_model")
+    if not callable(build_model_fn):
+        raise TrainScriptContractError("train.py is missing required evolve-block callable: build_model")
+    return build_model_fn
 
 
 def write_progress(
@@ -177,6 +199,32 @@ def write_progress(
             "epoch_index": epoch_index,
         },
     )
+
+
+def maybe_call_epoch_hook(model: torch.nn.Module, *, epoch_index: int, num_epochs: int) -> None:
+    hook = getattr(model, "on_epoch_start", None)
+    if callable(hook):
+        hook(epoch_index=epoch_index, num_epochs=num_epochs)
+
+
+def run_validation(
+    model: torch.nn.Module,
+    validation_x: torch.Tensor,
+    *,
+    batch_size: int,
+    num_classes: int,
+) -> torch.Tensor:
+    outputs: list[torch.Tensor] = []
+    validation_loader = torch.utils.data.DataLoader(
+        torch.utils.data.TensorDataset(validation_x),
+        batch_size=batch_size,
+        shuffle=False,
+    )
+    model.eval()
+    with torch.no_grad():
+        for (batch_x,) in validation_loader:
+            outputs.append(coerce_model_logits(model(batch_x), batch_size=int(batch_x.shape[0]), num_classes=num_classes))
+    return torch.cat(outputs, dim=0)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -205,18 +253,36 @@ def main(argv: list[str] | None = None) -> int:
     debug_payload: dict[str, object] = {"timed_out": False, "eval_count": 0}
 
     try:
-        device = seed_everything(random_seed)
-        build_state_fn, train_epoch_fn, predict_validation_fn = load_evolvable_functions()
-        state = build_state_fn(
-            train_features=train_features,
-            train_labels=train_labels,
-            validation_features=validation_features,
-            dataset_metadata=dataset_metadata,
-            random_seed=random_seed,
-            device=device,
+        _ = seed_everything(random_seed)
+        input_shape = infer_input_shape(train_features)
+        num_classes = int(dataset_metadata.get("num_classes") or (np.max(train_labels) + 1))
+        train_x = to_feature_tensor(train_features, input_shape=input_shape)
+        validation_x = to_feature_tensor(validation_features, input_shape=input_shape)
+        train_x, validation_x = normalize_feature_tensors(train_x, validation_x)
+        train_y = torch.from_numpy(train_labels.astype(np.int64))
+        build_model_fn = load_model_builder()
+        model = build_model_fn(input_shape=input_shape, num_classes=num_classes)
+        if not isinstance(model, torch.nn.Module):
+            raise TrainScriptContractError("build_model must return a torch.nn.Module instance.")
+        trainable_parameters = [parameter for parameter in model.parameters() if parameter.requires_grad]
+        batch_size = max(1, min(512, int(train_x.shape[0])))
+        train_loader = torch.utils.data.DataLoader(
+            torch.utils.data.TensorDataset(train_x, train_y),
+            batch_size=batch_size,
+            shuffle=True,
         )
-        if not isinstance(state, dict):
-            raise TrainScriptContractError("build_state must return a dict state object.")
+        optimizer = None
+        scheduler = None
+        if trainable_parameters:
+            optimizer = torch.optim.AdamW(trainable_parameters, lr=0.002, weight_decay=1e-4)
+            total_steps = max(1, int(num_epochs) * max(1, len(train_loader)))
+            scheduler = torch.optim.lr_scheduler.OneCycleLR(
+                optimizer,
+                max_lr=0.002,
+                total_steps=total_steps,
+                pct_start=0.2,
+            )
+        label_smoothing = 0.02 if num_classes > 2 else 0.0
 
         write_progress(
             progress_path,
@@ -228,6 +294,7 @@ def main(argv: list[str] | None = None) -> int:
         )
 
         for epoch_index in range(num_epochs):
+            maybe_call_epoch_hook(model, epoch_index=epoch_index, num_epochs=num_epochs)
             write_progress(
                 progress_path,
                 phase="train",
@@ -236,7 +303,17 @@ def main(argv: list[str] | None = None) -> int:
                 eval_index=eval_index,
                 epoch_index=epoch_index,
             )
-            train_epoch_fn(state, epoch_index=epoch_index, num_epochs=num_epochs)
+            model.train()
+            for batch_x, batch_y in train_loader:
+                logits = coerce_model_logits(model(batch_x), batch_size=int(batch_x.shape[0]), num_classes=num_classes)
+                if optimizer is not None:
+                    optimizer.zero_grad(set_to_none=True)
+                    loss = torch.nn.functional.cross_entropy(logits, batch_y, label_smoothing=label_smoothing)
+                    loss.backward()
+                    torch.nn.utils.clip_grad_norm_(trainable_parameters, max_norm=1.0)
+                    optimizer.step()
+                    if scheduler is not None:
+                        scheduler.step()
             write_progress(
                 progress_path,
                 phase="eval",
@@ -245,11 +322,16 @@ def main(argv: list[str] | None = None) -> int:
                 eval_index=eval_index,
                 epoch_index=epoch_index,
             )
-            raw_predictions = predict_validation_fn(state, validation_features)
+            raw_predictions = run_validation(
+                model,
+                validation_x,
+                batch_size=batch_size,
+                num_classes=num_classes,
+            )
             predictions = normalize_predictions(
                 raw_predictions,
                 num_examples=int(validation_features.shape[0]),
-                num_classes=int(dataset_metadata["num_classes"]) if "num_classes" in dataset_metadata else None,
+                num_classes=num_classes,
             )
             eval_index += 1
             elapsed_after_eval = time.monotonic() - start_time

@@ -51,7 +51,7 @@ class EvolutionSystem:
             source=baseline_source,
             provenance_json={
                 "backend": "baseline",
-                "model": "linear-classifier",
+                "model": "compact-fixed-trainer",
                 "candidate_kind": CANDIDATE_KIND_STRATEGY_V1,
                 "parent_trial_ids": [],
             },

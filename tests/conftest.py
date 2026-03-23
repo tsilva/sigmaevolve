@@ -10,14 +10,13 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from sigmaevolve.baseline import build_baseline_train_script
 from sigmaevolve.datasets import ArrayDatasetProvider, DatasetManager
-from sigmaevolve.evolve_blocks import replace_evolve_block_payloads
 from sigmaevolve.generation import FixedGenerationBackend
 from sigmaevolve.orchestrator import RecordingLauncher
 from sigmaevolve.runner import RunnerService
 from sigmaevolve.storage import SQLAlchemyRepository
 from sigmaevolve.system import EvolutionSystem
+from sigmaevolve.train_script_blocks import build_candidate_train_script, build_model_block
 
 
 def make_policy(**overrides):
@@ -67,13 +66,6 @@ def make_provider(seed: int) -> ArrayDatasetProvider:
     )
 
 
-def build_candidate_train_script(block_payload: str) -> str:
-    return replace_evolve_block_payloads(
-        build_baseline_train_script(),
-        [block_payload.strip("\n") + "\n"],
-    )
-
-
 @pytest.fixture
 def providers():
     return {
@@ -98,18 +90,14 @@ def system(repository, dataset_manager):
     launcher = RecordingLauncher()
     generator = FixedGenerationBackend(
         source=build_candidate_train_script(
-            """
-def build_state(*, train_features, train_labels, validation_features, dataset_metadata, random_seed, device):
-    return {"epoch_index": 0}
-
-
-def train_epoch(state, *, epoch_index, num_epochs):
-    state["epoch_index"] = epoch_index
-
-
-def predict_validation(state, validation_features):
-    return (validation_features.sum(axis=1) > 0).astype(int)
+            build_model_block(
+                """
+def forward(self, x):
+    flat = x.reshape(x.shape[0], -1)
+    scores = flat.sum(dim=1)
+    return torch.stack((-scores, scores), dim=1)
 """
+            )
         )
     )
     runner_service = RunnerService(repository=repository, dataset_manager=dataset_manager)

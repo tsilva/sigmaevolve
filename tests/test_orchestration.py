@@ -5,20 +5,13 @@ import time
 
 import pytest
 
-from sigmaevolve.baseline import build_baseline_linear_classifier, build_baseline_train_script
-from sigmaevolve.evolve_blocks import replace_evolve_block_payloads
+from sigmaevolve.baseline import build_baseline_linear_classifier
 from sigmaevolve.generation import FixedGenerationBackend
 from sigmaevolve.models import CANDIDATE_KIND_STRATEGY_V1
 from sigmaevolve.orchestrator import InlineRunnerLauncher, RecordingLauncher
 from sigmaevolve.runner import RunnerService
 from sigmaevolve.system import EvolutionSystem
-
-
-def build_candidate_train_script(block_payload: str) -> str:
-    return replace_evolve_block_payloads(
-        build_baseline_train_script(),
-        [block_payload.strip("\n") + "\n"],
-    )
+from sigmaevolve.train_script_blocks import build_candidate_train_script, build_model_block
 
 
 def test_create_track_seeds_one_baseline_candidate(system):
@@ -36,18 +29,12 @@ def test_same_source_is_deduped_within_track_and_allowed_across_tracks(system):
     first = system.create_track("a", "mnist:v1", {})
     second = system.create_track("b", "mnist:v1", {})
     duplicate_source = build_candidate_train_script(
-        """
-def build_state(*, train_features, train_labels, validation_features, dataset_metadata, random_seed, device):
-    return {}
-
-
-def train_epoch(state, *, epoch_index, num_epochs):
-    return None
-
-
-def predict_validation(state, validation_features):
-    return [0] * validation_features.shape[0]
+        build_model_block(
+            """
+def forward(self, x):
+    return torch.zeros((x.shape[0], 2), dtype=torch.float32)
 """
+        )
     )
     provenance = {"backend": "test", "candidate_kind": CANDIDATE_KIND_STRATEGY_V1}
 
@@ -238,18 +225,14 @@ def test_reconcile_persists_successful_retry_generation_params(repository, datas
     runner = RunnerService(repository=repository, dataset_manager=dataset_manager)
     duplicate_source = build_baseline_linear_classifier()
     unique_source = build_candidate_train_script(
-        """
-def build_state(*, train_features, train_labels, validation_features, dataset_metadata, random_seed, device):
-    return {"unique": True}
-
-
-def train_epoch(state, *, epoch_index, num_epochs):
-    state["epoch_index"] = epoch_index
-
-
-def predict_validation(state, validation_features):
-    return (validation_features.sum(axis=1) > 0).astype(int)
+        build_model_block(
+            """
+def forward(self, x):
+    flat = x.reshape(x.shape[0], -1)
+    scores = flat.sum(dim=1)
+    return torch.stack((-scores, scores), dim=1)
 """
+        )
     )
     generator = DuplicateThenUniqueGenerator(duplicate_source=duplicate_source, unique_source=unique_source)
     system = EvolutionSystem(
@@ -324,36 +307,24 @@ def test_weighted_successful_sampling_favors_higher_scores(repository, dataset_m
     mid, _ = repository.create_queued_trial_if_absent(
         track.track_id,
         build_candidate_train_script(
-            """
-def build_state(*, train_features, train_labels, validation_features, dataset_metadata, random_seed, device):
-    return {"bias": 1}
-
-
-def train_epoch(state, *, epoch_index, num_epochs):
-    return None
-
-
-def predict_validation(state, validation_features):
-    return [1] * validation_features.shape[0]
+            build_model_block(
+                """
+def forward(self, x):
+    return torch.tensor([[0.0, 1.0]], dtype=torch.float32).repeat(x.shape[0], 1)
 """
+            )
         ),
         {"backend": "test", "model": "mid", "candidate_kind": CANDIDATE_KIND_STRATEGY_V1},
     )
     low, _ = repository.create_queued_trial_if_absent(
         track.track_id,
         build_candidate_train_script(
-            """
-def build_state(*, train_features, train_labels, validation_features, dataset_metadata, random_seed, device):
-    return {"bias": 0}
-
-
-def train_epoch(state, *, epoch_index, num_epochs):
-    return None
-
-
-def predict_validation(state, validation_features):
-    return [0] * validation_features.shape[0]
+            build_model_block(
+                """
+def forward(self, x):
+    return torch.tensor([[1.0, 0.0]], dtype=torch.float32).repeat(x.shape[0], 1)
 """
+            )
         ),
         {"backend": "test", "model": "low", "candidate_kind": CANDIDATE_KIND_STRATEGY_V1},
     )
@@ -418,18 +389,14 @@ def test_reconcile_never_passes_failed_trials_as_generation_context(repository, 
                 (),
                 {
                     "source": build_candidate_train_script(
-                        """
-def build_state(*, train_features, train_labels, validation_features, dataset_metadata, random_seed, device):
-    return {"capture": True}
-
-
-def train_epoch(state, *, epoch_index, num_epochs):
-    return None
-
-
-def predict_validation(state, validation_features):
-    return (validation_features.sum(axis=1) > 0).astype(int)
+                        build_model_block(
+                            """
+def forward(self, x):
+    flat = x.reshape(x.shape[0], -1)
+    scores = flat.sum(dim=1)
+    return torch.stack((-scores, scores), dim=1)
 """
+                        )
                     ),
                     "provenance_json": {
                         "backend": "fixed",
@@ -459,18 +426,16 @@ def predict_validation(state, validation_features):
     failed, _ = repository.create_queued_trial_if_absent(
         track.track_id,
         build_candidate_train_script(
-            """
-def build_state(*, train_features, train_labels, validation_features, dataset_metadata, random_seed, device):
+            build_model_block(
+                """
+def __init__(self):
+    super().__init__()
     raise RuntimeError("broken")
 
-
-def train_epoch(state, *, epoch_index, num_epochs):
-    return None
-
-
-def predict_validation(state, validation_features):
-    return [0] * validation_features.shape[0]
+def forward(self, x):
+    return torch.zeros((x.shape[0], 2), dtype=torch.float32)
 """
+            )
         ),
         {"backend": "openrouter", "model": "test/model", "candidate_kind": CANDIDATE_KIND_STRATEGY_V1},
     )
@@ -512,14 +477,7 @@ def test_reconcile_does_not_mutate_legacy_successes(repository, dataset_manager)
                 (),
                 {
                     "source": build_candidate_train_script(
-                        """
-def build_state(*, train_features, train_labels, validation_features, dataset_metadata, random_seed, device):
-    return {}
-
-
-def train_epoch(state, *, epoch_index, num_epochs):
-    return None
-"""
+                        "import torch\n"
                     ),
                     "provenance_json": {
                         "backend": "fixed",

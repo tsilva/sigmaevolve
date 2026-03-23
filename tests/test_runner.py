@@ -2,123 +2,88 @@ from __future__ import annotations
 
 import pytest
 
-from sigmaevolve.baseline import build_baseline_train_script
-from sigmaevolve.evolve_blocks import replace_evolve_block_payloads
 from sigmaevolve.models import CANDIDATE_KIND_STRATEGY_V1
 from sigmaevolve.orchestrator import InlineRunnerLauncher
 from sigmaevolve.runner import RunnerService
 from sigmaevolve.system import EvolutionSystem
+from sigmaevolve.train_script_blocks import build_candidate_train_script, build_model_block
 
 
-def build_candidate_train_script(block_payload: str) -> str:
-    return replace_evolve_block_payloads(
-        build_baseline_train_script(),
-        [block_payload.strip("\n") + "\n"],
-    )
-
-
-SUCCESS_BLOCK = """
-import numpy as np
-
-
-def build_state(*, train_features, train_labels, validation_features, dataset_metadata, random_seed, device):
-    return {}
-
-
-def train_epoch(state, *, epoch_index, num_epochs):
-    state["window"] = state.get("window", 0) + 1
-
-
-def predict_validation(state, validation_features):
-    val = validation_features
-    logits = np.stack([-(val.sum(axis=1)), val.sum(axis=1)], axis=1)
-    return logits
+SUCCESS_BLOCK = build_model_block(
+    """
+def forward(self, x):
+    flat = x.reshape(x.shape[0], -1)
+    scores = flat.sum(dim=1)
+    return torch.stack((-scores, scores), dim=1)
 """
+)
 
-TIMEOUT_BLOCK = """
-import time
-
-
-def build_state(*, train_features, train_labels, validation_features, dataset_metadata, random_seed, device):
-    return {}
-
-
-def train_epoch(state, *, epoch_index, num_epochs):
+TIMEOUT_BLOCK = build_model_block(
+    """
+def forward(self, x):
     time.sleep(2.0)
+    return torch.zeros((x.shape[0], 2), dtype=torch.float32)
+""",
+    imports="import time\nimport torch",
+)
 
+SALVAGED_TIMEOUT_BLOCK = build_model_block(
+    """
+def __init__(self):
+    super().__init__()
+    self.epoch_index = 0
 
-def predict_validation(state, validation_features):
-    return [0] * validation_features.shape[0]
-"""
+def on_epoch_start(self, *, epoch_index, num_epochs):
+    self.epoch_index = epoch_index
 
-SALVAGED_TIMEOUT_BLOCK = """
-import numpy as np
-import time
-
-
-def build_state(*, train_features, train_labels, validation_features, dataset_metadata, random_seed, device):
-    return {"window": 0}
-
-
-def train_epoch(state, *, epoch_index, num_epochs):
-    state["window"] += 1
-    if state["window"] >= 3:
+def forward(self, x):
+    flat = x.reshape(x.shape[0], -1)
+    scores = flat.sum(dim=1)
+    if self.training and self.epoch_index >= 2:
         time.sleep(2.0)
+    if self.epoch_index == 0:
+        return torch.zeros((x.shape[0], 2), dtype=torch.float32)
+    return torch.stack((-scores, scores), dim=1)
+""",
+    imports="import time\nimport torch",
+)
 
+TIEBREAKER_BLOCK = build_model_block(
+    """
+def __init__(self):
+    super().__init__()
+    self.epoch_index = 0
 
-def predict_validation(state, validation_features):
-    val = validation_features
-    correct = (val.sum(axis=1) > 0).astype(np.int64)
-    if state["window"] == 1:
-        return np.zeros_like(correct)
-    return correct
-"""
+def on_epoch_start(self, *, epoch_index, num_epochs):
+    self.epoch_index = epoch_index
 
-TIEBREAKER_BLOCK = """
-import numpy as np
-import time
+def forward(self, x):
+    if self.training:
+        if self.epoch_index == 0:
+            time.sleep(0.05)
+        elif self.epoch_index == 1:
+            time.sleep(0.1)
+        else:
+            time.sleep(2.0)
+    flat = x.reshape(x.shape[0], -1)
+    scores = flat.sum(dim=1)
+    return torch.stack((-scores, scores), dim=1)
+""",
+    imports="import time\nimport torch",
+)
 
-
-def build_state(*, train_features, train_labels, validation_features, dataset_metadata, random_seed, device):
-    return {"window": 0}
-
-
-def train_epoch(state, *, epoch_index, num_epochs):
-    state["window"] += 1
-    if state["window"] == 1:
-        time.sleep(0.05)
-    elif state["window"] == 2:
-        time.sleep(0.1)
-    else:
-        time.sleep(2.0)
-
-
-def predict_validation(state, validation_features):
-    val = validation_features
-    return (val.sum(axis=1) > 0).astype(np.int64)
-"""
-
-CRASH_BLOCK = """
-def build_state(*, train_features, train_labels, validation_features, dataset_metadata, random_seed, device):
+CRASH_BLOCK = build_model_block(
+    """
+def __init__(self):
+    super().__init__()
     raise RuntimeError("boom")
 
-
-def train_epoch(state, *, epoch_index, num_epochs):
-    return None
-
-
-def predict_validation(state, validation_features):
-    return []
+def forward(self, x):
+    return torch.zeros((x.shape[0], 2), dtype=torch.float32)
 """
+)
 
-MISSING_EXPORT_BLOCK = """
-def build_state(*, train_features, train_labels, validation_features, dataset_metadata, random_seed, device):
-    return {}
-
-
-def train_epoch(state, *, epoch_index, num_epochs):
-    return None
-"""
+MISSING_EXPORT_BLOCK = "import torch\n"
 
 
 def build_inline_system(repository, dataset_manager, hard_timeout_sec=5.0):

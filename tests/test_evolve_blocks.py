@@ -5,6 +5,7 @@ from sigmaevolve.evolve_blocks import (
     extract_evolve_block_payloads,
     replace_evolve_block_payloads,
 )
+from sigmaevolve.train_script_blocks import build_model_block
 
 
 def test_replace_evolve_block_payloads_rewrites_only_block_contents():
@@ -12,12 +13,12 @@ def test_replace_evolve_block_payloads_rewrites_only_block_contents():
     updated = replace_evolve_block_payloads(
         source,
         [
-            "def build_state(*, train_features, train_labels, validation_features, dataset_metadata, random_seed, device):\n"
-            "    return {}\n\n"
-            "def train_epoch(state, *, epoch_index, num_epochs):\n"
-            "    return None\n\n"
-            "def predict_validation(state, validation_features):\n"
-            "    return [0] * validation_features.shape[0]\n"
+            build_model_block(
+                """
+def forward(self, x):
+    return torch.zeros((x.shape[0], 2), dtype=torch.float32)
+""",
+            )
         ],
     )
 
