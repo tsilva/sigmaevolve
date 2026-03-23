@@ -815,60 +815,28 @@ export function DashboardShell({
             <article className="analysis-card">
               <div className="analysis-card-header">
                 <h3>Progress breakdown</h3>
-                <span>{formatPercent(progressPercent)} complete</span>
               </div>
               <div className="progress-strip" aria-label="Track progress">
-                <span className="queued" style={{ width: `${detail.track.totalTrials === 0 ? 0 : (detail.track.queuedTrials / detail.track.totalTrials) * 100}%` }} />
-                <span className="dispatching" style={{ width: `${detail.track.totalTrials === 0 ? 0 : (detail.track.dispatchingTrials / detail.track.totalTrials) * 100}%` }} />
-                <span className="active" style={{ width: `${detail.track.totalTrials === 0 ? 0 : (detail.track.activeTrials / detail.track.totalTrials) * 100}%` }} />
-                <span className="finished" style={{ width: `${detail.track.totalTrials === 0 ? 0 : (detail.track.finishedTrials / detail.track.totalTrials) * 100}%` }} />
-              </div>
-              <div className="legend-grid">
-                <div className="legend-row">
-                  <span className="status-indicator queued" />
-                  <span>Queued</span>
-                  <strong>{detail.track.queuedTrials}</strong>
-                </div>
-                <div className="legend-row">
-                  <span className="status-indicator dispatching" />
-                  <span>Dispatching</span>
-                  <strong>{detail.track.dispatchingTrials}</strong>
-                </div>
-                <div className="legend-row">
-                  <span className="status-indicator active" />
-                  <span>Active</span>
-                  <strong>{detail.track.activeTrials}</strong>
-                </div>
-                <div className="legend-row">
-                  <span className="status-indicator finished" />
-                  <span>Finished</span>
-                  <strong>{detail.track.finishedTrials}</strong>
-                </div>
-              </div>
-            </article>
-
-            <article className="analysis-card">
-              <div className="analysis-card-header">
-                <h3>Debug priorities</h3>
-                <span>{visibleTrials.length} visible trials</span>
-              </div>
-              <div className="priority-list">
-                <div className="priority-item">
-                  <span className="priority-label">Error payloads</span>
-                  <strong>{detail.trials.filter((trial) => trial.hasError).length}</strong>
-                </div>
-                <div className="priority-item">
-                  <span className="priority-label">Timed out runs</span>
-                  <strong>{detail.trials.filter((trial) => trial.timedOut).length}</strong>
-                </div>
-                <div className="priority-item">
-                  <span className="priority-label">Unevaluated exits</span>
-                  <strong>{detail.trials.filter((trial) => trial.hadUnscoredWorkAtTimeout).length}</strong>
-                </div>
-                <div className="priority-item">
-                  <span className="priority-label">Last activity</span>
-                  <strong>{formatDate(detail.track.lastActivityAt)}</strong>
-                </div>
+                <span
+                  className="queued"
+                  style={{ width: `${detail.track.totalTrials === 0 ? 0 : (detail.track.queuedTrials / detail.track.totalTrials) * 100}%` }}
+                  title={`Queued: ${detail.track.queuedTrials}`}
+                />
+                <span
+                  className="dispatching"
+                  style={{ width: `${detail.track.totalTrials === 0 ? 0 : (detail.track.dispatchingTrials / detail.track.totalTrials) * 100}%` }}
+                  title={`Dispatching: ${detail.track.dispatchingTrials}`}
+                />
+                <span
+                  className="active"
+                  style={{ width: `${detail.track.totalTrials === 0 ? 0 : (detail.track.activeTrials / detail.track.totalTrials) * 100}%` }}
+                  title={`Active: ${detail.track.activeTrials}`}
+                />
+                <span
+                  className="finished"
+                  style={{ width: `${detail.track.totalTrials === 0 ? 0 : (detail.track.finishedTrials / detail.track.totalTrials) * 100}%` }}
+                  title={`Finished: ${detail.track.finishedTrials}`}
+                />
               </div>
             </article>
 
@@ -1093,108 +1061,152 @@ export function DashboardShell({
 
             {selectedTrial ? (
               <>
-                <div className="inspector-hero">
-                  <div>
-                    <div className="inspector-label">Selected trial</div>
-                    <h2 className="inspector-title" title={selectedTrial.trialId}>
-                      {compactIdentifier(selectedTrial.trialId, 14, 10)}
-                    </h2>
-                    <p className="section-copy">{getTrialNarrative(selectedTrial)}</p>
+                <article className="analysis-card wide-card trial-summary-card">
+                  <div className="trial-summary-header">
+                    <div>
+                      <div className="inspector-label">Selected trial</div>
+                      <h2 className="trial-summary-title" title={selectedTrial.trialId}>
+                        {compactIdentifier(selectedTrial.trialId, 14, 10)}
+                      </h2>
+                      <p className="trial-summary-copy">{getTrialNarrative(selectedTrial)}</p>
+                    </div>
                   </div>
-                  <div className="inspector-meta">
-                    <span className={`status-badge status-${selectedTrial.status}`}>
-                      <span className={`status-indicator ${selectedTrial.status}`} />
-                      {selectedTrial.status}
-                    </span>
-                    {selectedTrialRank ? <span className="meta-chip">Rank #{selectedTrialRank} by score</span> : null}
-                    <span className="meta-chip meta-chip-mono" title={selectedTrial.trialId}>
-                      {selectedTrial.trialId}
-                    </span>
-                    <span className="meta-chip">{selectedTrial.model ?? "unknown model"}</span>
-                    <span className="meta-chip">{selectedTrial.backend ?? "unknown backend"}</span>
-                    {renderModalRunLink(selectedTrial)}
+
+                  <div className="trial-summary-grid">
+                    <div className="trial-summary-column">
+                      <div className="trial-summary-section-label">Summary</div>
+                      <div className="trial-summary-chip-row">
+                        <span className={`status-badge status-${selectedTrial.status}`}>
+                          <span className={`status-indicator ${selectedTrial.status}`} />
+                          {selectedTrial.status}
+                        </span>
+                        {selectedTrialRank ? <span className="meta-chip">Rank #{selectedTrialRank} by score</span> : null}
+                        {renderModalRunLink(selectedTrial)}
+                      </div>
+                      <div className="context-stack">
+                        <div className="context-row">
+                          <span>Trial ID</span>
+                          <strong title={selectedTrial.trialId}>{selectedTrial.trialId}</strong>
+                        </div>
+                        <div className="context-row">
+                          <span>Model</span>
+                          <strong>{selectedTrial.model ?? "unknown model"}</strong>
+                        </div>
+                        <div className="context-row">
+                          <span>Backend</span>
+                          <strong>{selectedTrial.backend ?? "unknown backend"}</strong>
+                        </div>
+                      </div>
+                      <div className="flag-row trial-summary-flags">
+                        {selectedTrial.outcomeReason ? <span className="flag-chip">{selectedTrial.outcomeReason}</span> : null}
+                        {selectedTrial.timedOut ? <span className="flag-chip flag-warning">timed out</span> : null}
+                        {selectedTrial.hadUnscoredWorkAtTimeout ? (
+                          <span className="flag-chip flag-warning">left work unscored</span>
+                        ) : null}
+                        {selectedTrial.hasError ? <span className="flag-chip flag-danger">error payload captured</span> : null}
+                      </div>
+                    </div>
+
+                    <div className="trial-summary-column">
+                      <div className="trial-summary-section-label">Metrics</div>
+                      <div className="context-stack">
+                        <div className="context-row">
+                          <span>Score</span>
+                          <strong>{formatNumber(selectedTrial.score, 4)}</strong>
+                        </div>
+                        <div className="context-row">
+                          <span>Accuracy</span>
+                          <strong>{formatNumber(selectedTrial.accuracy, 4)}</strong>
+                        </div>
+                        <div className="context-row">
+                          <span>Time To Best Eval</span>
+                          <strong>{formatDuration(selectedTrial.timeToBestEvalSec)}</strong>
+                        </div>
+                        <div className="context-row">
+                          <span>Duration</span>
+                          <strong>{formatDuration(selectedTrial.durationSec)}</strong>
+                        </div>
+                        <div className="context-row">
+                          <span>Dispatch Attempts</span>
+                          <strong>{selectedTrial.dispatchAttempts}</strong>
+                        </div>
+                        <div className="context-row">
+                          <span>Idle Since Eval</span>
+                          <strong>{formatDuration(selectedTrial.timeSinceLastEvalSec)}</strong>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="trial-summary-column trial-summary-timeline">
+                      <div className="trial-summary-section-label">Run timeline</div>
+                      <div className="timeline-list">
+                        <div className="timeline-row">
+                          <span>Queued</span>
+                          <strong>{formatDate(selectedTrial.createdAt)}</strong>
+                        </div>
+                        <div className="timeline-row">
+                          <span>Started</span>
+                          <strong>{formatDate(selectedTrial.startedAt)}</strong>
+                        </div>
+                        <div className="timeline-row">
+                          <span>Finished</span>
+                          <strong>{formatDate(selectedTrial.finishedAt)}</strong>
+                        </div>
+                        <div className="timeline-row">
+                          <span>Last known phase</span>
+                          <strong>{selectedTrial.lastPhase ?? "—"}</strong>
+                        </div>
+                        <div className="timeline-row">
+                          <span>Outcome reason</span>
+                          <strong>{selectedTrial.outcomeReason ?? "Not reported"}</strong>
+                        </div>
+                        <div className="timeline-row">
+                          <span>Crash detail</span>
+                          <strong title={selectedCrashDetails ?? undefined}>{selectedCrashSummary}</strong>
+                        </div>
+                        <div className="timeline-row">
+                          <span>Generation assertions</span>
+                          <strong>
+                            {selectedTrial.generationAssertionsPassed === null
+                              ? "Not recorded"
+                              : selectedTrial.generationAssertionsPassed
+                                ? "Passed"
+                                : "Failed"}
+                          </strong>
+                        </div>
+                        <div className="timeline-row">
+                          <span>Passed</span>
+                          <strong>
+                            {selectedTrial.generationAssertionsPassed === null
+                              ? "Not recorded"
+                              : selectedTrial.generationAssertionsPassed
+                                ? "Yes"
+                                : "No"}
+                          </strong>
+                        </div>
+                        <div className="timeline-row">
+                          <span>Assertion failures</span>
+                          <strong className="timeline-detail">{formatAssertionFailures(selectedAssertionFailures)}</strong>
+                        </div>
+                        <div className="timeline-row">
+                          <span>Backend</span>
+                          <strong>{selectedTrial.backend ?? "Unknown"}</strong>
+                        </div>
+                        <div className="timeline-row">
+                          <span>Model</span>
+                          <strong>{selectedTrial.model ?? "Unknown"}</strong>
+                        </div>
+                      </div>
+                      <HighlightedCode
+                        code={formatGenerationProperties(selectedTrial.provenanceJson)}
+                        language="json"
+                        wrap
+                      />
+                    </div>
                   </div>
-                </div>
-
-                <div className="inspector-metrics">
-                  <article className="metric-tile compact">
-                    <span className="metric-label">Score</span>
-                    <strong className="metric-value">{formatNumber(selectedTrial.score, 4)}</strong>
-                  </article>
-                  <article className="metric-tile compact">
-                    <span className="metric-label">Accuracy</span>
-                    <strong className="metric-value">{formatNumber(selectedTrial.accuracy, 4)}</strong>
-                  </article>
-                  <article className="metric-tile compact">
-                    <span className="metric-label">Time To Best Eval</span>
-                    <strong className="metric-value">{formatDuration(selectedTrial.timeToBestEvalSec)}</strong>
-                  </article>
-                  <article className="metric-tile compact">
-                    <span className="metric-label">Duration</span>
-                    <strong className="metric-value">{formatDuration(selectedTrial.durationSec)}</strong>
-                  </article>
-                  <article className="metric-tile compact">
-                    <span className="metric-label">Dispatch Attempts</span>
-                    <strong className="metric-value">{selectedTrial.dispatchAttempts}</strong>
-                  </article>
-                  <article className="metric-tile compact">
-                    <span className="metric-label">Idle Since Eval</span>
-                    <strong className="metric-value">{formatDuration(selectedTrial.timeSinceLastEvalSec)}</strong>
-                  </article>
-                </div>
-
-                <div className="flag-row inspector-flags">
-                  {selectedTrial.outcomeReason ? <span className="flag-chip">{selectedTrial.outcomeReason}</span> : null}
-                  {selectedTrial.timedOut ? <span className="flag-chip flag-warning">timed out</span> : null}
-                  {selectedTrial.hadUnscoredWorkAtTimeout ? (
-                    <span className="flag-chip flag-warning">left work unscored</span>
-                  ) : null}
-                  {selectedTrial.hasError ? <span className="flag-chip flag-danger">error payload captured</span> : null}
-                </div>
+                </article>
 
                 <div className="inspector-grid">
-                  <article className="analysis-card">
-                    <div className="analysis-card-header">
-                      <h3>Run timeline</h3>
-                    </div>
-                    <div className="timeline-list">
-                      <div className="timeline-row">
-                        <span>Queued</span>
-                        <strong>{formatDate(selectedTrial.createdAt)}</strong>
-                      </div>
-                      <div className="timeline-row">
-                        <span>Started</span>
-                        <strong>{formatDate(selectedTrial.startedAt)}</strong>
-                      </div>
-                      <div className="timeline-row">
-                        <span>Finished</span>
-                        <strong>{formatDate(selectedTrial.finishedAt)}</strong>
-                      </div>
-                      <div className="timeline-row">
-                        <span>Last known phase</span>
-                        <strong>{selectedTrial.lastPhase ?? "—"}</strong>
-                      </div>
-                      <div className="timeline-row">
-                        <span>Outcome reason</span>
-                        <strong>{selectedTrial.outcomeReason ?? "Not reported"}</strong>
-                      </div>
-                      <div className="timeline-row">
-                        <span>Crash detail</span>
-                        <strong title={selectedCrashDetails ?? undefined}>{selectedCrashSummary}</strong>
-                      </div>
-                      <div className="timeline-row">
-                        <span>Generation assertions</span>
-                        <strong>
-                          {selectedTrial.generationAssertionsPassed === null
-                            ? "Not recorded"
-                            : selectedTrial.generationAssertionsPassed
-                              ? "Passed"
-                              : "Failed"}
-                        </strong>
-                      </div>
-                    </div>
-                  </article>
-
                   <article className="analysis-card wide-card">
                     <div className="analysis-card-header">
                       <h3>Mixed vs generated diff</h3>
@@ -1209,23 +1221,6 @@ export function DashboardShell({
                     ) : (
                       <p className="section-copy">No prompt-embedded source snippets were recorded for this trial.</p>
                     )}
-                  </article>
-
-                  <article className="analysis-card">
-                    <div className="analysis-card-header">
-                      <h3>Provenance</h3>
-                    </div>
-                    <div className="context-stack">
-                      <div className="context-row">
-                        <span>Backend</span>
-                        <strong>{selectedTrial.backend ?? "Unknown"}</strong>
-                      </div>
-                      <div className="context-row">
-                        <span>Model</span>
-                        <strong>{selectedTrial.model ?? "Unknown"}</strong>
-                      </div>
-                    </div>
-                    <HighlightedCode code={formatGenerationProperties(selectedTrial.provenanceJson)} language="json" wrap />
                   </article>
 
                   <article className="analysis-card wide-card">
@@ -1276,25 +1271,6 @@ export function DashboardShell({
                       language="python"
                       wrap
                     />
-                  </article>
-
-                  <article className="analysis-card wide-card">
-                    <div className="analysis-card-header">
-                      <h3>Generation assertions</h3>
-                    </div>
-                    <div className="context-stack">
-                      <div className="context-row">
-                        <span>Passed</span>
-                        <strong>
-                          {selectedTrial.generationAssertionsPassed === null
-                            ? "Not recorded"
-                            : selectedTrial.generationAssertionsPassed
-                              ? "Yes"
-                              : "No"}
-                        </strong>
-                      </div>
-                    </div>
-                    <HighlightedCode code={formatAssertionFailures(selectedAssertionFailures)} language="markdown" wrap />
                   </article>
 
                   {selectedTrial.hasError ? (

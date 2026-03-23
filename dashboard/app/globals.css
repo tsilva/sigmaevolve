@@ -438,6 +438,10 @@ button {
   overflow-wrap: anywhere;
 }
 
+.timeline-detail {
+  white-space: pre-wrap;
+}
+
 .status-indicator {
   width: 8px;
   height: 8px;
@@ -655,6 +659,68 @@ button {
   font-size: 0.68rem;
   text-transform: uppercase;
   letter-spacing: 0.1em;
+}
+
+.trial-summary-card {
+  gap: 12px;
+}
+
+.trial-summary-header {
+  display: grid;
+  gap: 6px;
+}
+
+.trial-summary-title {
+  margin: 2px 0 0;
+  font-size: clamp(1.05rem, 2vw, 1.45rem);
+  line-height: 1.1;
+}
+
+.trial-summary-copy {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.8rem;
+  line-height: 1.35;
+}
+
+.trial-summary-grid {
+  display: grid;
+  grid-template-columns: minmax(240px, 0.95fr) minmax(220px, 0.85fr) minmax(320px, 1.2fr);
+  gap: 10px;
+  align-items: start;
+}
+
+.trial-summary-column {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.trial-summary-section-label {
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+
+.trial-summary-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.trial-summary-flags {
+  margin-top: 2px;
+}
+
+.trial-summary-card .context-stack,
+.trial-summary-card .timeline-list {
+  gap: 6px;
+}
+
+.trial-summary-card .context-row,
+.trial-summary-card .timeline-row {
+  background: rgba(255, 255, 255, 0.78);
 }
 
 .inspector-flags {
@@ -900,6 +966,14 @@ button {
   .overview-grid {
     grid-template-columns: 1fr;
   }
+
+  .trial-summary-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .trial-summary-timeline {
+    grid-column: 1 / -1;
+  }
 }
 
 @media (max-width: 900px) {
@@ -917,6 +991,14 @@ button {
   .hero-metrics,
   .inspector-metrics {
     grid-template-columns: 1fr;
+  }
+
+  .trial-summary-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .trial-summary-timeline {
+    grid-column: auto;
   }
 
   .priority-item,
