@@ -298,11 +298,20 @@ class Orchestrator:
         self,
         track_id: str,
         reporter: Callable[[str, dict[str, Any]], None] | None = None,
+        *,
+        ready_queue_threshold: int = 1,
+        max_parallelism: int = 1,
     ) -> ReconcileResult:
         track = self.repository.get_track(track_id)
         if track is None:
             raise KeyError(f"Track not found: {track_id}")
         policy = track.policy_json
+        ready_queue_threshold = int(ready_queue_threshold)
+        max_parallelism = int(max_parallelism)
+        if ready_queue_threshold < 0:
+            raise ValueError("ready_queue_threshold must be >= 0")
+        if max_parallelism < 0:
+            raise ValueError("max_parallelism must be >= 0")
         result = ReconcileResult()
         self._emit(
             reporter,
@@ -332,9 +341,9 @@ class Orchestrator:
         )
 
         queue_count = self.repository.count_trials(track_id, statuses={"queued"})
-        if queue_count < int(policy["ready_queue_threshold"]):
+        if queue_count < ready_queue_threshold:
             dataset_manifest = self.dataset_manager.verify(track.dataset_id)
-            requested_generations = int(policy["ready_queue_threshold"]) - queue_count
+            requested_generations = ready_queue_threshold - queue_count
             generation_index_base = self.repository.count_trials(track_id)
             sampling_settings = policy.get("sampling_settings", {})
             max_failures = requested_generations * self.GENERATION_FAILURE_LIMIT_MULTIPLIER
@@ -345,7 +354,7 @@ class Orchestrator:
                 reporter,
                 "queue_fill_started",
                 queued_count=queue_count,
-                target_queue_count=int(policy["ready_queue_threshold"]),
+                target_queue_count=ready_queue_threshold,
                 requested_generations=requested_generations,
                 max_failures=max_failures,
             )
@@ -603,20 +612,20 @@ class Orchestrator:
                 reporter,
                 "queue_fill_skipped",
                 queued_count=queue_count,
-                target_queue_count=int(policy["ready_queue_threshold"]),
+                target_queue_count=ready_queue_threshold,
             )
 
         reserved = self.repository.reserve_trials(
             track_id=track_id,
-            max_parallelism=int(policy["max_parallelism"]),
+            max_parallelism=max_parallelism,
             dispatch_ttl_sec=int(policy["dispatch_ttl_sec"]),
-            limit=int(policy["max_parallelism"]),
+            limit=max_parallelism,
         )
         self._emit(
             reporter,
             "launch_batch_started",
             reserved_count=len(reserved),
-            max_parallelism=int(policy["max_parallelism"]),
+            max_parallelism=max_parallelism,
         )
         for trial in reserved:
             try:

@@ -5,11 +5,13 @@ import json
 import os
 import sys
 import time
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, TextIO
 
 from sigmaevolve import build_system
 from sigmaevolve.env import load_env_file
+from sigmaevolve.models import ACTIVE_STATUSES
 from sigmaevolve.modal_support import (
     DEFAULT_MODAL_APP_NAME,
     DEFAULT_MODAL_DATASET_MOUNT,
@@ -43,6 +45,27 @@ def _load_policy(policy_json: str | None, policy_file: str | None) -> dict[str, 
     return _json_arg(policy_json)
 
 
+def _non_negative_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("Value must be >= 0.")
+    return parsed
+
+
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("Value must be > 0.")
+    return parsed
+
+
+def _positive_float(value: str) -> float:
+    parsed = float(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("Value must be > 0.")
+    return parsed
+
+
 def _default_database_url() -> str:
     return os.getenv("SIGMAEVOLVE_DATABASE_URL") or os.getenv("DATABASE_URL") or ""
 
@@ -59,7 +82,7 @@ def _make_system(args) -> Any:
         runner = RunnerService(system.repository, system.dataset_manager)
         launcher = InlineRunnerLauncher(runner)
     elif args.launcher == "modal":
-        if args.command == "reconcile" and args.database_url.startswith("sqlite"):
+        if args.command == "launch" and args.database_url.startswith("sqlite"):
             raise RuntimeError("Modal launcher requires a network-accessible database URL; sqlite is not supported.")
         launcher = create_modal_launcher(
             app_name=args.modal_app_name,
@@ -107,7 +130,7 @@ class _CliReconcileReporter:
 
     def __call__(self, event: str, payload: dict[str, Any]) -> None:
         if event == "reconcile_started":
-            self._log(f"Reconciling {payload['track_id']} with launcher={payload['launcher']}.")
+            self._log(f"Running launch pass for {payload['track_id']} with launcher={payload['launcher']}.")
             return
         if event == "sweep_completed":
             self._log(
@@ -212,7 +235,7 @@ class _CliReconcileReporter:
             return
         if event == "reconcile_finished":
             self._log(
-                "Reconcile finished: "
+                "Launch pass finished: "
                 f"generated={payload['generated_count']} "
                 f"launched={payload['launched_count']} "
                 f"duplicates={payload['duplicate_count']} "
@@ -220,6 +243,64 @@ class _CliReconcileReporter:
                 f"errors={payload['error_count']}."
             )
             return
+
+
+@dataclass
+class _LaunchSummary:
+    mode: str
+    cycles_completed: int
+    generated_count: int = 0
+    launched_count: int = 0
+    duplicate_count: int = 0
+    stale_count: int = 0
+    requeued_count: int = 0
+    error_count: int = 0
+    stopped_reason: str | None = None
+
+
+def _result_payload(result) -> dict[str, Any]:
+    return {
+        "generated_trial_ids": result.generated_trial_ids,
+        "launched_trial_ids": result.launched_trial_ids,
+        "duplicate_hashes": result.duplicate_hashes,
+        "requeued_trial_ids": result.requeued_trial_ids,
+        "stale_trial_ids": result.stale_trial_ids,
+        "errors": result.errors,
+    }
+
+
+def _ensure_dataset_prepared(system, dataset_id: str) -> None:
+    dataset = system.repository.get_dataset(dataset_id)
+    manifest_missing = dataset is None or dataset.manifest_path is None or not Path(dataset.manifest_path).exists()
+    if manifest_missing:
+        system.prepare_dataset(dataset_id)
+
+
+def _launch_pass_settings(system, track_id: str, *, count: int | None, maintain_running: int | None) -> tuple[int, int]:
+    if (count is None) == (maintain_running is None):
+        raise ValueError("Specify exactly one of count or maintain_running.")
+    queue_count = system.repository.count_trials(track_id, statuses={"queued"})
+    active_count = system.repository.count_trials(track_id, statuses=ACTIVE_STATUSES)
+    if count is not None:
+        return max(queue_count, count), active_count + count
+    assert maintain_running is not None
+    needed_slots = max(0, maintain_running - active_count)
+    return max(queue_count, needed_slots), maintain_running
+
+
+def _run_launch_pass(system, track_id: str, reporter: _CliReconcileReporter, *, count: int | None, maintain_running: int | None):
+    ready_queue_threshold, max_parallelism = _launch_pass_settings(
+        system,
+        track_id,
+        count=count,
+        maintain_running=maintain_running,
+    )
+    return system.reconcile_track(
+        track_id,
+        reporter=reporter,
+        ready_queue_threshold=ready_queue_threshold,
+        max_parallelism=max_parallelism,
+    )
 
 
 def _trial_diagnostics(metrics_json: dict[str, Any] | None) -> dict[str, Any]:
@@ -251,6 +332,7 @@ def cmd_prepare_dataset(args) -> int:
 
 def cmd_create_track(args) -> int:
     system = _make_system(args)
+    _ensure_dataset_prepared(system, args.dataset_id)
     policy = _load_policy(args.policy_json, args.policy_file)
     track = system.create_track(args.name, args.dataset_id, policy)
     _print_json(
@@ -265,20 +347,44 @@ def cmd_create_track(args) -> int:
     return 0
 
 
-def cmd_reconcile(args) -> int:
+def cmd_launch(args) -> int:
     system = _make_system(args)
     reporter = _CliReconcileReporter(sys.stderr)
-    result = system.reconcile_track(args.track_id, reporter=reporter)
-    _print_json(
-        {
-            "generated_trial_ids": result.generated_trial_ids,
-            "launched_trial_ids": result.launched_trial_ids,
-            "duplicate_hashes": result.duplicate_hashes,
-            "requeued_trial_ids": result.requeued_trial_ids,
-            "stale_trial_ids": result.stale_trial_ids,
-            "errors": result.errors,
-        }
-    )
+    if args.count is not None:
+        result = _run_launch_pass(system, args.track_id, reporter, count=args.count, maintain_running=None)
+        payload = _result_payload(result)
+        payload["mode"] = "count"
+        payload["requested_launch_count"] = args.count
+        _print_json(payload)
+        return 0
+
+    summary = _LaunchSummary(mode="maintain_running", cycles_completed=0)
+    try:
+        while True:
+            result = _run_launch_pass(
+                system,
+                args.track_id,
+                reporter,
+                count=None,
+                maintain_running=args.maintain_running,
+            )
+            summary.cycles_completed += 1
+            summary.generated_count += len(result.generated_trial_ids)
+            summary.launched_count += len(result.launched_trial_ids)
+            summary.duplicate_count += len(result.duplicate_trial_ids)
+            summary.stale_count += len(result.stale_trial_ids)
+            summary.requeued_count += len(result.requeued_trial_ids)
+            summary.error_count += len(result.errors)
+            if args.max_cycles is not None and summary.cycles_completed >= args.max_cycles:
+                summary.stopped_reason = "max_cycles_reached"
+                break
+            time.sleep(args.poll_interval_sec)
+    except KeyboardInterrupt:
+        summary.stopped_reason = "keyboard_interrupt"
+
+    payload = asdict(summary)
+    payload["target_running"] = args.maintain_running
+    _print_json(payload)
     return 0
 
 
@@ -418,7 +524,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    prepare_dataset = subparsers.add_parser("prepare-dataset", help="Prepare and register a dataset.")
+    prepare_dataset = subparsers.add_parser("prepare-dataset", help=argparse.SUPPRESS)
     prepare_dataset.add_argument("dataset_id")
     prepare_dataset.set_defaults(func=cmd_prepare_dataset)
 
@@ -438,9 +544,32 @@ def build_parser() -> argparse.ArgumentParser:
     )
     create_track.set_defaults(func=cmd_create_track)
 
-    reconcile = subparsers.add_parser("reconcile", help="Run one reconciliation pass for a track.")
-    reconcile.add_argument("track_id")
-    reconcile.set_defaults(func=cmd_reconcile)
+    launch = subparsers.add_parser("launch", help="Generate and launch trials for a track.")
+    launch.add_argument("track_id")
+    launch_mode = launch.add_mutually_exclusive_group(required=True)
+    launch_mode.add_argument(
+        "--count",
+        type=_positive_int,
+        help="Launch this many additional trials in a single pass.",
+    )
+    launch_mode.add_argument(
+        "--maintain-running",
+        type=_positive_int,
+        help="Continuously keep this many trials running until interrupted.",
+    )
+    launch.add_argument(
+        "--poll-interval-sec",
+        type=_positive_float,
+        default=5.0,
+        help="Seconds to wait between maintain-running launch passes. Default: 5.0",
+    )
+    launch.add_argument(
+        "--max-cycles",
+        type=_positive_int,
+        default=None,
+        help="Optional number of maintain-running launch passes before exiting.",
+    )
+    launch.set_defaults(func=cmd_launch)
 
     list_trials = subparsers.add_parser("list-trials", help="List trials for a track.")
     list_trials.add_argument("track_id")

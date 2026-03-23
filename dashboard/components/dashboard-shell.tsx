@@ -1321,6 +1321,15 @@ export function DashboardShell({
                 </article>
 
                 <div className="inspector-grid">
+                  {selectedTrial.hasError ? (
+                    <article className="analysis-card wide-card">
+                      <div className="analysis-card-header">
+                        <h3>Error payload</h3>
+                      </div>
+                      <HighlightedCode code={formatJsonBlock(selectedTrial.errorJson)} language="json" wrap />
+                    </article>
+                  ) : null}
+
                   <article className="analysis-card wide-card">
                     <div className="analysis-card-header">
                       <h3>Mixed vs generated diff</h3>
@@ -1386,16 +1395,6 @@ export function DashboardShell({
                       wrap
                     />
                   </article>
-
-                  {selectedTrial.hasError ? (
-                    <article className="analysis-card wide-card">
-                      <div className="analysis-card-header">
-                        <h3>Error payload</h3>
-                      </div>
-                      <HighlightedCode code={formatJsonBlock(selectedTrial.errorJson)} language="json" wrap />
-                    </article>
-                  ) : null}
-
                 </div>
               </>
             ) : (

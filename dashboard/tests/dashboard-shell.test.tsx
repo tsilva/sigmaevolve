@@ -316,6 +316,28 @@ describe("DashboardShell", () => {
     expect(screen.getByText(/stored row source is diagnostic-only/i)).toBeTruthy();
   });
 
+  it("shows the error payload card at the front of the inspector card stack", () => {
+    const { container } = renderShell({
+      detail: createDetail([
+        createTrial({
+          trialId: "trial_error",
+          hasError: true,
+          errorJson: {
+            kind: "generation_failed",
+            message: "candidate parse failed",
+          },
+        }),
+      ]),
+      initialSelectedTrialId: "trial_error",
+    });
+
+    const inspectorGrid = container.querySelector(".inspector-grid");
+    const cardHeadings = Array.from(inspectorGrid?.querySelectorAll("h3") ?? []).map((heading) => heading.textContent);
+
+    expect(cardHeadings[0]).toBe("Error payload");
+    expect(cardHeadings).toContain("Mixed vs generated diff");
+  });
+
   it("merges the assertion status and empty failure state into one row", () => {
     renderShell({
       detail: createDetail([

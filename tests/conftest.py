@@ -22,8 +22,6 @@ from sigmaevolve.train_script_blocks import build_candidate_train_script, build_
 def make_policy(**overrides):
     policy = {
         "epochs": 3,
-        "max_parallelism": 1,
-        "ready_queue_threshold": 1,
         "dispatch_ttl_sec": 1,
         "heartbeat_interval_sec": 1,
         "stale_ttl_sec": 1,

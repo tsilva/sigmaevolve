@@ -147,8 +147,6 @@ class DatasetManifest:
 @dataclass(frozen=True)
 class TrackPolicy:
     epochs: int = 5
-    max_parallelism: int = 1
-    ready_queue_threshold: int = 1
     dispatch_ttl_sec: int = 300
     heartbeat_interval_sec: int = 15
     stale_ttl_sec: int = 120
@@ -169,8 +167,6 @@ class TrackPolicy:
     def to_dict(self) -> dict[str, Any]:
         return {
             "epochs": self.epochs,
-            "max_parallelism": self.max_parallelism,
-            "ready_queue_threshold": self.ready_queue_threshold,
             "dispatch_ttl_sec": self.dispatch_ttl_sec,
             "heartbeat_interval_sec": self.heartbeat_interval_sec,
             "stale_ttl_sec": self.stale_ttl_sec,
@@ -187,8 +183,6 @@ class TrackPolicy:
         merged = _deep_merge_dict(merged, raw or {})
         return cls(
             epochs=int(merged["epochs"]),
-            max_parallelism=int(merged["max_parallelism"]),
-            ready_queue_threshold=int(merged["ready_queue_threshold"]),
             dispatch_ttl_sec=int(merged["dispatch_ttl_sec"]),
             heartbeat_interval_sec=int(merged["heartbeat_interval_sec"]),
             stale_ttl_sec=int(merged["stale_ttl_sec"]),

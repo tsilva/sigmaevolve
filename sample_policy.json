@@ -1,7 +1,5 @@
 {
   "epochs": 5,
-  "max_parallelism": 2,
-  "ready_queue_threshold": 2,
   "dispatch_ttl_sec": 300,
   "heartbeat_interval_sec": 15,
   "stale_ttl_sec": 120,
