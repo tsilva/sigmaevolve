@@ -281,6 +281,18 @@ def _prepare_error_payload(outcome_reason: str, error_json: dict[str, Any] | Non
     return payload or None
 
 
+def _row_to_trial_summary(row: sa.Row[Any]) -> TrialSummary:
+    return TrialSummary(
+        trial_id=row.trial_id,
+        score=float(row.score or 0.0),
+        metrics_json=dict(row.metrics_json) if row.metrics_json else None,
+        source=row.source,
+        provenance_json=dict(row.provenance_json or {}),
+        outcome_reason=row.outcome_reason,
+        error_json=dict(row.error_json) if row.error_json else None,
+    )
+
+
 class SQLAlchemyRepository:
     def __init__(self, database_url: str) -> None:
         database_url = normalize_database_url(database_url)
@@ -315,6 +327,27 @@ class SQLAlchemyRepository:
             sa.text("SELECT pg_notify(:channel, :payload)"),
             {"channel": "sigmaevolve_dashboard", "payload": json.dumps(payload, sort_keys=True)},
         )
+
+    def _update_trial_state(
+        self,
+        conn: Connection,
+        *,
+        trial_id: str,
+        values: dict[str, Any],
+        where: list[Any] | None = None,
+        notify: bool = True,
+    ) -> int:
+        conditions = [trials_table.c.trial_id == trial_id]
+        if where:
+            conditions.extend(where)
+        result = conn.execute(sa.update(trials_table).where(sa.and_(*conditions)).values(**values))
+        if notify and result.rowcount:
+            track_id = conn.execute(
+                sa.select(trials_table.c.track_id).where(trials_table.c.trial_id == trial_id)
+            ).scalar_one_or_none()
+            if track_id is not None:
+                self._notify_dashboard(conn, track_id=track_id, reason="trial_changed")
+        return int(result.rowcount)
 
     def register_dataset(self, dataset_id: str, manifest_path: str | None) -> DatasetRecord:
         created_at = now_utc()
@@ -520,15 +553,7 @@ class SQLAlchemyRepository:
         with self.engine.connect() as conn:
             rows = conn.execute(stmt).fetchall()
         summaries = [
-            TrialSummary(
-                trial_id=row.trial_id,
-                score=float(row.score or 0.0),
-                metrics_json=dict(row.metrics_json) if row.metrics_json else None,
-                source=row.source,
-                provenance_json=dict(row.provenance_json or {}),
-                outcome_reason=row.outcome_reason,
-                error_json=dict(row.error_json) if row.error_json else None,
-            )
+            _row_to_trial_summary(row)
             for row in rows
             if candidate_kind is None or dict(row.provenance_json or {}).get("candidate_kind") == candidate_kind
         ]
@@ -557,18 +582,7 @@ class SQLAlchemyRepository:
         stmt = stmt.order_by(trials_table.c.finished_at.desc(), trials_table.c.created_at.desc()).limit(limit)
         with self.engine.connect() as conn:
             rows = conn.execute(stmt).fetchall()
-        return [
-            TrialSummary(
-                trial_id=row.trial_id,
-                score=float(row.score or 0.0),
-                metrics_json=dict(row.metrics_json) if row.metrics_json else None,
-                source=row.source,
-                provenance_json=dict(row.provenance_json or {}),
-                outcome_reason=row.outcome_reason,
-                error_json=dict(row.error_json) if row.error_json else None,
-            )
-            for row in rows
-        ]
+        return [_row_to_trial_summary(row) for row in rows]
 
     def count_trials(self, track_id: str, statuses: set[str] | None = None) -> int:
         stmt = sa.select(sa.func.count()).select_from(trials_table).where(trials_table.c.track_id == track_id)
@@ -645,26 +659,23 @@ class SQLAlchemyRepository:
     def claim_trial(self, trial_id: str, dispatch_token: str, runner_id: str) -> TrialRecord | None:
         with self.transaction() as conn:
             now = now_utc()
-            result = conn.execute(
-                sa.update(trials_table)
-                .where(
-                    sa.and_(
-                        trials_table.c.trial_id == trial_id,
-                        trials_table.c.status == TRIAL_STATUS_DISPATCHING,
-                        trials_table.c.dispatch_token == dispatch_token,
-                    )
-                )
-                .values(
-                    status=TRIAL_STATUS_ACTIVE,
-                    runner_id=runner_id,
-                    started_at=now,
-                    heartbeat_at=now,
-                )
+            updated = self._update_trial_state(
+                conn,
+                trial_id=trial_id,
+                where=[
+                    trials_table.c.status == TRIAL_STATUS_DISPATCHING,
+                    trials_table.c.dispatch_token == dispatch_token,
+                ],
+                values={
+                    "status": TRIAL_STATUS_ACTIVE,
+                    "runner_id": runner_id,
+                    "started_at": now,
+                    "heartbeat_at": now,
+                },
             )
-            if result.rowcount != 1:
+            if updated != 1:
                 return None
             row = conn.execute(sa.select(trials_table).where(trials_table.c.trial_id == trial_id)).one()
-            self._notify_dashboard(conn, track_id=row.track_id, reason="trial_changed")
         return _row_to_trial(row)
 
     def heartbeat_trial(self, trial_id: str, runner_id: str, meta: dict[str, Any] | None = None) -> None:
@@ -703,26 +714,25 @@ class SQLAlchemyRepository:
             if runner_id is not None:
                 where.append(trials_table.c.runner_id == runner_id)
                 where.append(trials_table.c.status == TRIAL_STATUS_ACTIVE)
-            track_id = conn.execute(
-                sa.select(trials_table.c.track_id).where(trials_table.c.trial_id == trial_id)
-            ).scalar_one_or_none()
-            result = conn.execute(
-                sa.update(trials_table)
-                .where(sa.and_(*where))
-                .values(
-                    status=_status_for_outcome_reason(outcome_reason),
-                    outcome_reason=outcome_reason,
-                    finished_at=now_utc(),
-                    dispatch_token=None,
-                    dispatch_deadline_at=None,
-                    heartbeat_at=now_utc(),
-                    metrics_json=metrics,
-                    score=score,
-                    error_json=_prepare_error_payload(outcome_reason, persisted_error_info),
-                )
+            now = now_utc()
+            updated = self._update_trial_state(
+                conn,
+                trial_id=trial_id,
+                where=where[1:],
+                values={
+                    "status": _status_for_outcome_reason(outcome_reason),
+                    "outcome_reason": outcome_reason,
+                    "finished_at": now,
+                    "dispatch_token": None,
+                    "dispatch_deadline_at": None,
+                    "heartbeat_at": now,
+                    "metrics_json": metrics,
+                    "score": score,
+                    "error_json": _prepare_error_payload(outcome_reason, persisted_error_info),
+                },
             )
-            if result.rowcount and track_id is not None:
-                self._notify_dashboard(conn, track_id=track_id, reason="trial_changed")
+            if not updated:
+                return
 
     def sweep_expired_dispatches(self, track_id: str, max_dispatch_retries: int) -> tuple[list[str], list[str]]:
         requeued: list[str] = []

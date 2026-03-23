@@ -17,6 +17,29 @@ from sigmaevolve.train_script_blocks import build_candidate_train_script, build_
 from tests.support import make_llm_provenance
 
 
+def _prepare_repo_dataset(repository, dataset_manager, dataset_id: str = "mnist:v1") -> None:
+    dataset_manager.prepare(dataset_id)
+    repository.register_dataset(dataset_id, str(dataset_manager.manifest_path_for(dataset_id)))
+
+
+def _build_system(repository, dataset_manager, generator, launcher):
+    runner = RunnerService(repository=repository, dataset_manager=dataset_manager)
+    return EvolutionSystem(repository, dataset_manager, generator, launcher, runner), runner
+
+
+def _finalize_baseline_success(repository, track_id: str, score: float = 0.5):
+    baseline = repository.list_trials(track_id)[0]
+    repository.finalize_trial(
+        trial_id=baseline.trial_id,
+        runner_id=None,
+        outcome_reason="succeeded",
+        metrics={"accuracy": score},
+        score=score,
+        error_info=None,
+    )
+    return baseline
+
+
 def test_create_track_seeds_one_baseline_candidate(system):
     system.prepare_dataset("mnist:v1")
     track = system.create_track("baseline", "mnist:v1", {})
@@ -60,11 +83,9 @@ def forward(self, x):
                 ),
             )
 
-    dataset_manager.prepare("mnist:v1")
-    repository.register_dataset("mnist:v1", str(dataset_manager.manifest_path_for("mnist:v1")))
+    _prepare_repo_dataset(repository, dataset_manager)
     generator = CapturingGenerator()
-    runner = RunnerService(repository=repository, dataset_manager=dataset_manager)
-    system = EvolutionSystem(repository, dataset_manager, generator, RecordingLauncher(), runner)
+    system, _ = _build_system(repository, dataset_manager, generator, RecordingLauncher())
     track = system.create_track("cold-start", "mnist:v1", {})
 
     baseline = repository.list_trials(track.track_id)[0]
@@ -149,16 +170,15 @@ def test_two_runners_cannot_both_claim_same_dispatch(system):
 
 
 def test_reconcile_generates_duplicates_without_dispatching_more_work(repository, dataset_manager):
-    dataset_manager.prepare("mnist:v1")
-    repository.register_dataset("mnist:v1", str(dataset_manager.manifest_path_for("mnist:v1")))
-    runner = RunnerService(repository=repository, dataset_manager=dataset_manager)
-    system = EvolutionSystem(
+    _prepare_repo_dataset(repository, dataset_manager)
+    system, runner = _build_system(
         repository,
         dataset_manager,
         FixedGenerationBackend(source=build_baseline_linear_classifier()),
-        InlineRunnerLauncher(runner),
-        runner,
+        None,
     )
+    system.launcher = InlineRunnerLauncher(runner)
+    system.orchestrator.launcher = system.launcher
     track = system.create_track("dup", "mnist:v1", {"dispatch_ttl_sec": 1, "epochs": 2})
     baseline = system.repository.list_trials(track.track_id)[0]
     system.repository.finalize_trial(
@@ -207,17 +227,11 @@ def test_reconcile_retries_duplicate_generation_with_incremented_retry_count(rep
                 },
             )()
 
-    dataset_manager.prepare("mnist:v1")
-    repository.register_dataset("mnist:v1", str(dataset_manager.manifest_path_for("mnist:v1")))
-    runner = RunnerService(repository=repository, dataset_manager=dataset_manager)
+    _prepare_repo_dataset(repository, dataset_manager)
     generator = RetryingDuplicateGenerator(build_baseline_linear_classifier())
-    system = EvolutionSystem(
-        repository,
-        dataset_manager,
-        generator,
-        InlineRunnerLauncher(runner),
-        runner,
-    )
+    system, runner = _build_system(repository, dataset_manager, generator, None)
+    system.launcher = InlineRunnerLauncher(runner)
+    system.orchestrator.launcher = system.launcher
     track = system.create_track(
         "dup-retries", "mnist:v1", {"dispatch_ttl_sec": 1, "epochs": 2}
     )
@@ -276,9 +290,7 @@ def test_reconcile_persists_successful_retry_generation_params(repository, datas
                 },
             )()
 
-    dataset_manager.prepare("mnist:v1")
-    repository.register_dataset("mnist:v1", str(dataset_manager.manifest_path_for("mnist:v1")))
-    runner = RunnerService(repository=repository, dataset_manager=dataset_manager)
+    _prepare_repo_dataset(repository, dataset_manager)
     duplicate_source = build_baseline_linear_classifier()
     unique_source = build_candidate_train_script(
         build_model_block(
@@ -291,13 +303,7 @@ def forward(self, x):
         )
     )
     generator = DuplicateThenUniqueGenerator(duplicate_source=duplicate_source, unique_source=unique_source)
-    system = EvolutionSystem(
-        repository,
-        dataset_manager,
-        generator,
-        RecordingLauncher(),
-        runner,
-    )
+    system, _ = _build_system(repository, dataset_manager, generator, RecordingLauncher())
     track = system.create_track(
         "dup-success", "mnist:v1", {"dispatch_ttl_sec": 1, "epochs": 2}
     )
@@ -348,16 +354,15 @@ def test_stale_active_trial_is_finalized(system):
 
 
 def test_weighted_successful_sampling_favors_higher_scores(repository, dataset_manager):
-    dataset_manager.prepare("mnist:v1")
-    repository.register_dataset("mnist:v1", str(dataset_manager.manifest_path_for("mnist:v1")))
-    runner = RunnerService(repository=repository, dataset_manager=dataset_manager)
-    system = EvolutionSystem(
+    _prepare_repo_dataset(repository, dataset_manager)
+    system, runner = _build_system(
         repository,
         dataset_manager,
         FixedGenerationBackend(source=build_baseline_linear_classifier()),
-        InlineRunnerLauncher(runner),
-        runner,
+        None,
     )
+    system.launcher = InlineRunnerLauncher(runner)
+    system.orchestrator.launcher = system.launcher
     track = system.create_track("weighted", "mnist:v1", {"sampling_settings": {"seed": 7}})
 
     trials = repository.list_trials(track.track_id)
@@ -469,12 +474,9 @@ def forward(self, x):
                 },
             )()
 
-    dataset_manager.prepare("mnist:v1")
-    repository.register_dataset("mnist:v1", str(dataset_manager.manifest_path_for("mnist:v1")))
+    _prepare_repo_dataset(repository, dataset_manager)
     generator = CapturingGenerator()
-    launcher = RecordingLauncher()
-    runner = RunnerService(repository=repository, dataset_manager=dataset_manager)
-    system = EvolutionSystem(repository, dataset_manager, generator, launcher, runner)
+    system, _ = _build_system(repository, dataset_manager, generator, RecordingLauncher())
     track = system.create_track("negatives", "mnist:v1", {})
 
     baseline = repository.list_trials(track.track_id)[0]
@@ -548,11 +550,9 @@ def test_reconcile_does_not_mutate_legacy_successes(repository, dataset_manager)
                 },
             )()
 
-    dataset_manager.prepare("mnist:v1")
-    repository.register_dataset("mnist:v1", str(dataset_manager.manifest_path_for("mnist:v1")))
+    _prepare_repo_dataset(repository, dataset_manager)
     generator = CapturingGenerator()
-    runner = RunnerService(repository=repository, dataset_manager=dataset_manager)
-    system = EvolutionSystem(repository, dataset_manager, generator, RecordingLauncher(), runner)
+    system, _ = _build_system(repository, dataset_manager, generator, RecordingLauncher())
     track = system.create_track("legacy-only", "mnist:v1", {})
 
     baseline = repository.list_trials(track.track_id)[0]

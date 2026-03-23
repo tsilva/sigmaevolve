@@ -394,6 +394,32 @@ class OpenRouterGenerationBackend:
             error_info["error_type"] = "generation_provider_failure"
         return error_info
 
+    def _error_result(
+        self,
+        *,
+        selected_config: dict[str, object],
+        request_messages: list[dict[str, str]],
+        context_trials: list[TrialSummary],
+        generation_index: int,
+        duplicate_retry_count: int,
+        error_info: dict[str, object],
+        provider_response_id: str | None = None,
+        response_text: str | None = None,
+    ) -> GenerationResult:
+        return GenerationResult(
+            source=None,
+            provenance_json=self._base_provenance(
+                selected_config,
+                request_messages,
+                context_trials,
+                generation_index=generation_index,
+                duplicate_retry_count=duplicate_retry_count,
+                provider_response_id=provider_response_id,
+                response_text=response_text,
+            ),
+            error_info=error_info,
+        )
+
     def generate(
         self,
         track: TrackRecord,
@@ -415,15 +441,12 @@ class OpenRouterGenerationBackend:
             selected_config,
         )
         if not self.api_key:
-            return GenerationResult(
-                source=None,
-                provenance_json=self._base_provenance(
-                    selected_config,
-                    request_messages,
-                    context_trials,
-                    generation_index=generation_index,
-                    duplicate_retry_count=duplicate_retry_count,
-                ),
+            return self._error_result(
+                selected_config=selected_config,
+                request_messages=request_messages,
+                context_trials=context_trials,
+                generation_index=generation_index,
+                duplicate_retry_count=duplicate_retry_count,
                 error_info={"reason": "missing_api_key", "detail": "OPENROUTER_API_KEY is required for OpenRouter generation."},
             )
         payload = {
@@ -449,15 +472,12 @@ class OpenRouterGenerationBackend:
                 raw_body = response.read().decode("utf-8")
         except HTTPError as exc:
             raw_body = exc.read().decode("utf-8", errors="replace")
-            return GenerationResult(
-                source=None,
-                provenance_json=self._base_provenance(
-                    selected_config,
-                    request_messages,
-                    context_trials,
-                    generation_index=generation_index,
-                    duplicate_retry_count=duplicate_retry_count,
-                ),
+            return self._error_result(
+                selected_config=selected_config,
+                request_messages=request_messages,
+                context_trials=context_trials,
+                generation_index=generation_index,
+                duplicate_retry_count=duplicate_retry_count,
                 error_info={
                     "reason": "provider_http_error",
                     "detail": f"{exc.code} {exc.reason}",
@@ -466,71 +486,56 @@ class OpenRouterGenerationBackend:
                 },
             )
         except URLError as exc:
-            return GenerationResult(
-                source=None,
-                provenance_json=self._base_provenance(
-                    selected_config,
-                    request_messages,
-                    context_trials,
-                    generation_index=generation_index,
-                    duplicate_retry_count=duplicate_retry_count,
-                ),
+            return self._error_result(
+                selected_config=selected_config,
+                request_messages=request_messages,
+                context_trials=context_trials,
+                generation_index=generation_index,
+                duplicate_retry_count=duplicate_retry_count,
                 error_info={"reason": "provider_request_failed", "detail": str(exc.reason)},
             )
         except Exception as exc:
-            return GenerationResult(
-                source=None,
-                provenance_json=self._base_provenance(
-                    selected_config,
-                    request_messages,
-                    context_trials,
-                    generation_index=generation_index,
-                    duplicate_retry_count=duplicate_retry_count,
-                ),
+            return self._error_result(
+                selected_config=selected_config,
+                request_messages=request_messages,
+                context_trials=context_trials,
+                generation_index=generation_index,
+                duplicate_retry_count=duplicate_retry_count,
                 error_info={"reason": "provider_request_failed", "detail": str(exc)},
             )
         try:
             body = json.loads(raw_body)
         except json.JSONDecodeError as exc:
-            return GenerationResult(
-                source=None,
-                provenance_json=self._base_provenance(
-                    selected_config,
-                    request_messages,
-                    context_trials,
-                    generation_index=generation_index,
-                    duplicate_retry_count=duplicate_retry_count,
-                ),
+            return self._error_result(
+                selected_config=selected_config,
+                request_messages=request_messages,
+                context_trials=context_trials,
+                generation_index=generation_index,
+                duplicate_retry_count=duplicate_retry_count,
                 error_info={"reason": "provider_response_invalid_json", "detail": str(exc), "response_body": raw_body},
             )
         choices = body.get("choices")
         if not isinstance(choices, list) or not choices:
-            return GenerationResult(
-                source=None,
-                provenance_json=self._base_provenance(
-                    selected_config,
-                    request_messages,
-                    context_trials,
-                    generation_index=generation_index,
-                    duplicate_retry_count=duplicate_retry_count,
-                    provider_response_id=body.get("id"),
-                ),
+            return self._error_result(
+                selected_config=selected_config,
+                request_messages=request_messages,
+                context_trials=context_trials,
+                generation_index=generation_index,
+                duplicate_retry_count=duplicate_retry_count,
+                provider_response_id=body.get("id"),
                 error_info={"reason": "provider_response_missing_choices", "response_body": raw_body},
             )
         message = choices[0].get("message") if isinstance(choices[0], dict) else None
         content = self._extract_message_content(message)
         if not isinstance(content, str) or not content.strip():
-            return GenerationResult(
-                source=None,
-                provenance_json=self._base_provenance(
-                    selected_config,
-                    request_messages,
-                    context_trials,
-                    generation_index=generation_index,
-                    duplicate_retry_count=duplicate_retry_count,
-                    provider_response_id=body.get("id"),
-                    response_text=content if isinstance(content, str) else None,
-                ),
+            return self._error_result(
+                selected_config=selected_config,
+                request_messages=request_messages,
+                context_trials=context_trials,
+                generation_index=generation_index,
+                duplicate_retry_count=duplicate_retry_count,
+                provider_response_id=body.get("id"),
+                response_text=content if isinstance(content, str) else None,
                 error_info=self._missing_content_error_info(
                     body,
                     raw_body,
