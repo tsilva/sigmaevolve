@@ -77,6 +77,25 @@ def _context():
     ]
 
 
+def _context_with_prior_programs():
+    return [
+        TrialSummary(
+            trial_id="trial_current",
+            score=0.992,
+            metrics_json={"accuracy": 0.992, "loss": 0.1},
+            source=_mutated_script("return torch.zeros((x.shape[0], 10), dtype=torch.float32) + 0.2"),
+            provenance_json={"backend": "openrouter", "candidate_kind": "strategy_v1"},
+        ),
+        TrialSummary(
+            trial_id="trial_prior",
+            score=0.998,
+            metrics_json={"accuracy": 0.998, "loss": 0.023},
+            source=_mutated_script("return torch.zeros((x.shape[0], 10), dtype=torch.float32) + 0.3"),
+            provenance_json={"backend": "openrouter", "candidate_kind": "strategy_v1"},
+        ),
+    ]
+
+
 def _negative_trials():
     return [
         TrialSummary(
@@ -151,17 +170,17 @@ def test_openrouter_generation_uses_model_pool_round_robin(monkeypatch):
 
     system_prompt = payloads[0]["messages"][0]["content"]
     first_prompt = payloads[0]["messages"][1]["content"]
-    assert "candidate module: train.py" in system_prompt
-    assert "Treat this as an evolutionary mutation task, not a rewrite from scratch." in system_prompt
-    assert "Follow this contract exactly:" in system_prompt
-    assert "Only change code between matching evolve block markers." in system_prompt
-    assert "Keep every non-evolve line identical to the parent source." in system_prompt
-    assert "Produce a mutated descendant of the parent model block, not a fresh rewrite of the file." in system_prompt
+    assert "# EVOLVE-BLOCK-START" in system_prompt
+    assert "# EVOLVE-BLOCK-END" in system_prompt
     assert not first_prompt.lstrip().startswith("{")
-    assert "Write a complete Python train.py module for dataset mnist:v1." in first_prompt
-    assert "- epochs: 5" in first_prompt
-    assert "Use this parent trial as the base candidate:" in first_prompt
-    assert "No recent negative trials are available." in first_prompt
+    assert "PRIOR PROGRAMS:" in first_prompt
+    assert "CURRENT PROGRAM:" in first_prompt
+    assert "Here is the current program we are trying to improve" in first_prompt
+    assert "(you will need to propose a modification to it below)." in first_prompt
+    assert "score: 0.5" in first_prompt
+    assert "val_acc: 0.5" in first_prompt
+    assert "val_loss: n/a" in first_prompt
+    assert first_prompt.rstrip().endswith("REPLACEMENTS:")
 
 
 def test_openrouter_generation_bumps_temperature_on_duplicate_retry(monkeypatch):
@@ -276,8 +295,28 @@ def test_openrouter_generation_prompt_includes_failure_feedback(monkeypatch):
 
     system_prompt = payloads[0]["messages"][0]["content"]
     prompt = payloads[0]["messages"][1]["content"]
-    assert "If you use linear layers, flatten inside the model" in system_prompt
-    assert "Make exactly one substantive improvement likely to improve validation accuracy within the fixed epoch budget." in system_prompt
-    assert "Trial trial_failed:" in prompt
-    assert "- returncode: 1" in prompt
-    assert "mat1 and mat2 shapes cannot be multiplied" in prompt
+    assert "# EVOLVE-BLOCK-START" in system_prompt
+    assert "# EVOLVE-BLOCK-END" in system_prompt
+    assert "CURRENT PROGRAM:" in prompt
+    assert "REPLACEMENTS:" in prompt
+
+
+def test_openrouter_generation_prompt_lists_prior_programs_before_current_program():
+    backend = OpenRouterGenerationBackend(api_key="test-key")
+
+    prompt = backend._build_user_prompt_text(
+        _track_with_pool(),
+        _manifest(),
+        _context_with_prior_programs(),
+        negative_trials=[],
+        selected_config={"model": "test/model"},
+    )
+
+    assert prompt.startswith("PRIOR PROGRAMS:\n\n---\nscore: 0.998")
+    assert "val_acc: 0.998" in prompt
+    assert "val_loss: 0.023" in prompt
+    assert "CURRENT PROGRAM:\n\nHere is the current program we are trying to improve" in prompt
+    assert "score: 0.992" in prompt
+    assert "val_acc: 0.992" in prompt
+    assert "val_loss: 0.1" in prompt
+    assert prompt.rstrip().endswith("REPLACEMENTS:")

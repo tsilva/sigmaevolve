@@ -4,8 +4,9 @@ import json
 import os
 import random
 import re
+from functools import lru_cache
+from importlib import resources
 from dataclasses import dataclass
-from textwrap import dedent
 from typing import Protocol
 from urllib import request
 
@@ -66,6 +67,11 @@ class FixedGenerationBackend:
                 "context_trial_ids": [trial.trial_id for trial in context_trials],
             },
         )
+
+
+@lru_cache(maxsize=1)
+def _load_system_prompt_template() -> str:
+    return (resources.files("sigmaevolve.prompts") / "system.md").read_text(encoding="utf-8").strip()
 
 
 class OpenRouterGenerationBackend:
@@ -172,51 +178,31 @@ class OpenRouterGenerationBackend:
             lines.append(f"- stderr excerpt: {excerpt}")
         return lines
 
-    def _build_system_prompt_text(self) -> str:
-        static_task_contract = {
-            "candidate module": "train.py",
-            "immutable shell": [
-                "All text outside evolve blocks is immutable and must remain byte-for-byte identical to the parent.",
-                "Dataset loading, normalization, batching, optimizer setup, training cadence, evaluation cadence, prediction normalization, and artifact bookkeeping already exist in the script and must not change.",
-                "The post-generation validator rejects any mutation outside evolve blocks.",
-            ],
-            "mutation boundaries": {
-                "start marker": EVOLVE_BLOCK_START,
-                "end marker": EVOLVE_BLOCK_END,
-                "rule": "Only change code between matching evolve block markers. Preserve marker count and order exactly.",
-            },
-            "allowed packages": ["numpy", "torch"],
-            "expected evolvable code": {
-                "build_model(*, input_shape, num_classes)": "Return a torch.nn.Module that maps one input batch to class logits.",
-                "optional model hook": "The immutable trainer calls model.on_epoch_start(epoch_index=..., num_epochs=...) when present.",
-            },
-            "writing rules": [
-                "Return only Python source for the full train.py file, with no markdown fences or commentary.",
-                "Keep every non-evolve line identical to the parent source.",
-                "Your mutation surface is the model implementation only; do not move training logic into the evolve block.",
-                "If you use linear layers, flatten inside the model or start the network with nn.Flatten().",
-                "Image inputs arrive as tensors with a channel dimension added automatically for 2D grayscale datasets.",
-                "The model forward pass must return class logits with one row per example.",
-            ],
-            "mutation rules": [
-                "Preserve the parent's working train.py integration unless a change inside an evolve block is required.",
-                "Produce a mutated descendant of the parent model block, not a fresh rewrite of the file.",
-                "Make exactly one substantive improvement likely to improve validation accuracy within the fixed epoch budget.",
-                "Avoid cosmetic refactors or rename-only changes.",
-            ],
-        }
-        lines = [
-            dedent(
-                """
-                You are generating a self-contained Python train.py module for a classification system.
-                Treat this as an evolutionary mutation task, not a rewrite from scratch.
-                Optimize for best validation accuracy while preserving the immutable shell outside evolve blocks.
-                Follow this contract exactly:
-                """
-            ).strip()
+    def _trial_prompt_metric(self, trial: TrialSummary, *names: str) -> str:
+        metrics = trial.metrics_json or {}
+        for name in names:
+            if name in metrics and metrics[name] is not None:
+                return self._format_scalar(metrics[name])
+        return "n/a"
+
+    def _render_trial_prompt_block(self, trial: TrialSummary) -> list[str]:
+        return [
+            "---",
+            f"score: {self._format_scalar(trial.score)}",
+            f"val_acc: {self._trial_prompt_metric(trial, 'val_acc', 'accuracy')}",
+            f"val_loss: {self._trial_prompt_metric(trial, 'val_loss', 'loss')}",
+            "---",
+            "```python",
+            trial.source.rstrip(),
+            "```",
         ]
-        lines.extend(self._format_mapping(static_task_contract, indent=0))
-        return "\n".join(lines)
+
+    def _build_system_prompt_text(self) -> str:
+        return (
+            _load_system_prompt_template()
+            .replace("{{EVOLVE_BLOCK_START}}", EVOLVE_BLOCK_START)
+            .replace("{{EVOLVE_BLOCK_END}}", EVOLVE_BLOCK_END)
+        )
 
     def _build_user_prompt_text(
         self,
@@ -226,102 +212,32 @@ class OpenRouterGenerationBackend:
         negative_trials: list[TrialSummary],
         selected_config: dict[str, object],
     ) -> str:
-        primary_parent = context_trials[0] if context_trials else None
-        lines = [
-            f"Write a complete Python train.py module for dataset {track.dataset_id}.",
-            "",
-            "Use the dataset metadata below when choosing the model, augmentation, and loss setup:",
-        ]
-        if dataset_manifest.metadata:
-            lines.extend(self._format_mapping(dict(dataset_manifest.metadata), indent=0))
+        del track, dataset_manifest, negative_trials, selected_config
+        current_program = context_trials[0] if context_trials else None
+        prior_programs = context_trials[1:] if len(context_trials) > 1 else []
+        lines = ["PRIOR PROGRAMS:", ""]
+        if prior_programs:
+            for index, trial in enumerate(prior_programs):
+                if index > 0:
+                    lines.append("")
+                lines.extend(self._render_trial_prompt_block(trial))
         else:
-            lines.append("- No dataset metadata was provided.")
+            lines.append("None.")
         lines.extend(
             [
                 "",
-                "Use these track-specific runtime settings:",
-            ]
-        )
-        lines.extend(
-            self._format_mapping(
-                {
-                    "epochs": track.policy_json["epochs"],
-                },
-                indent=0,
-            )
-        )
-        lines.extend(
-            [
+                "CURRENT PROGRAM:",
                 "",
-                "This attempt was selected with the following generation settings:",
-            ]
-        )
-        lines.extend(self._format_mapping(dict(selected_config), indent=0))
-        lines.extend(
-            [
+                "Here is the current program we are trying to improve",
+                "(you will need to propose a modification to it below).",
                 "",
-                "The broader generation policy for the track is:",
             ]
         )
-        lines.extend(self._format_mapping(dict(track.policy_json["generation_backend"]), indent=0))
-        lines.extend(
-            [
-                "",
-                "Use this parent trial as the base candidate:",
-            ]
-        )
-        if primary_parent is not None:
-            lines.extend(
-                [
-                    f"Trial {primary_parent.trial_id}:",
-                    f"- score: {self._format_scalar(primary_parent.score)}",
-                    f"- outcome reason: {self._format_scalar(primary_parent.outcome_reason)}",
-                ]
-            )
-            if primary_parent.metrics_json:
-                lines.append("- metrics:")
-                lines.extend(self._format_mapping(dict(primary_parent.metrics_json), indent=2))
-            lines.extend(self._summarize_error(primary_parent.error_json))
-            lines.extend(
-                [
-                    "",
-                    "Parent source:",
-                    "```python",
-                    primary_parent.source.rstrip(),
-                    "```",
-                ]
-            )
+        if current_program is not None:
+            lines.extend(self._render_trial_prompt_block(current_program))
         else:
-            lines.append("No prior trials are available.")
-        lines.extend(
-            [
-                "",
-                "Avoid the failure modes seen in these recent negative trials:",
-            ]
-        )
-        if negative_trials:
-            for trial in negative_trials:
-                lines.extend(
-                    [
-                        f"Trial {trial.trial_id}:",
-                        f"- score: {self._format_scalar(trial.score)}",
-                        f"- outcome reason: {self._format_scalar(trial.outcome_reason)}",
-                    ]
-                )
-                if trial.metrics_json:
-                    lines.append("- metrics:")
-                    lines.extend(self._format_mapping(dict(trial.metrics_json), indent=2))
-                lines.extend(self._summarize_error(trial.error_json))
-                lines.extend(
-                    [
-                        "- source preview:",
-                        "```python",
-                        trial.source.rstrip(),
-                        "```",
-                    ]
-                )
-        else:
-            lines.append("No recent negative trials are available.")
+            lines.append("None.")
+        lines.extend(["", "REPLACEMENTS:"])
         return "\n".join(lines)
 
     def _build_prompt(
@@ -364,7 +280,7 @@ class OpenRouterGenerationBackend:
         if not self.api_key:
             raise RuntimeError("OPENROUTER_API_KEY is required for OpenRouter generation.")
         generation_policy = dict(track.policy_json["generation_backend"])
-        generation_policy["_generation_index"] = generation_index
+        generation_policy["_generation_index"] = generation_index + duplicate_retry_count
         selected_config = self._normalize_generation_config(generation_policy)
         selected_config["temperature"] = float(selected_config.get("temperature", 0.2)) + (0.1 * duplicate_retry_count)
         payload = {
