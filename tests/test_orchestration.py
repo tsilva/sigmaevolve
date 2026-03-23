@@ -571,3 +571,37 @@ def test_reconcile_rejects_mutations_outside_evolve_blocks(repository, dataset_m
     assert result.generated_trial_ids == []
     assert result.errors
     assert result.errors[0].startswith("invalid_mutation:")
+
+
+def test_reconcile_persists_launcher_metadata_for_launched_trials(repository, dataset_manager):
+    class MetadataLauncher:
+        def launch_trial(self, trial_id: str, dispatch_token: str):
+            return {
+                "kind": "modal",
+                "run_id": f"fc-{trial_id}",
+                "run_url": f"https://modal.com/apps/test/runs/{trial_id}",
+            }
+
+    dataset_manager.prepare("mnist:v1")
+    repository.register_dataset("mnist:v1", str(dataset_manager.manifest_path_for("mnist:v1")))
+    runner = RunnerService(repository=repository, dataset_manager=dataset_manager)
+    system = EvolutionSystem(
+        repository,
+        dataset_manager,
+        FixedGenerationBackend(source=build_baseline_linear_classifier()),
+        MetadataLauncher(),
+        runner,
+    )
+    track = system.create_track("launch-metadata", "mnist:v1", {"ready_queue_threshold": 0, "max_parallelism": 1})
+
+    queued_trial = repository.list_trials(track.track_id)[0]
+    result = system.reconcile_track(track.track_id)
+    updated_trial = repository.get_trial(queued_trial.trial_id)
+
+    assert result.launched_trial_ids == [queued_trial.trial_id]
+    assert updated_trial is not None
+    assert updated_trial.provenance_json["launcher"] == {
+        "kind": "modal",
+        "run_id": f"fc-{queued_trial.trial_id}",
+        "run_url": f"https://modal.com/apps/test/runs/{queued_trial.trial_id}",
+    }

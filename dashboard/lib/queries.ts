@@ -149,6 +149,8 @@ export async function listTrials(
         trial_id as "trialId",
         status,
         outcome_reason as "outcomeReason",
+        provenance_json -> 'launcher' ->> 'run_id' as "modalRunId",
+        provenance_json -> 'launcher' ->> 'run_url' as "modalRunUrl",
         score,
         source,
         error_json as "errorJson",

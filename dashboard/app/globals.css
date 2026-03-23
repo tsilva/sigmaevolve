@@ -244,6 +244,7 @@ button {
 .meta-chip,
 .status-badge,
 .flag-chip,
+.external-link-chip,
 .filter-chip,
 .panel-toggle,
 .load-more {
@@ -263,6 +264,12 @@ button {
 
 .panel-toggle {
   cursor: pointer;
+}
+
+.external-link-chip {
+  color: #1d4f9a;
+  text-decoration: underline;
+  text-underline-offset: 0.14em;
 }
 
 .track-score {

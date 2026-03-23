@@ -2,14 +2,14 @@ from __future__ import annotations
 
 import random
 from dataclasses import replace
-from typing import Protocol
+from typing import Any, Protocol
 
 from sigmaevolve.evolve_blocks import EvolveBlockError, assert_only_evolve_blocks_changed
 from sigmaevolve.models import CANDIDATE_KIND_STRATEGY_V1, ReconcileResult, TrialSummary
 
 
 class RunnerLauncher(Protocol):
-    def launch_trial(self, trial_id: str, dispatch_token: str) -> None:
+    def launch_trial(self, trial_id: str, dispatch_token: str) -> dict[str, Any] | None:
         ...
 
 
@@ -17,8 +17,9 @@ class RecordingLauncher:
     def __init__(self) -> None:
         self.launched: list[tuple[str, str]] = []
 
-    def launch_trial(self, trial_id: str, dispatch_token: str) -> None:
+    def launch_trial(self, trial_id: str, dispatch_token: str) -> dict[str, Any] | None:
         self.launched.append((trial_id, dispatch_token))
+        return None
 
 
 class InlineRunnerLauncher:
@@ -27,18 +28,32 @@ class InlineRunnerLauncher:
         self.runner_id_prefix = runner_id_prefix
         self.launch_count = 0
 
-    def launch_trial(self, trial_id: str, dispatch_token: str) -> None:
+    def launch_trial(self, trial_id: str, dispatch_token: str) -> dict[str, Any] | None:
         self.launch_count += 1
         runner_id = f"{self.runner_id_prefix}_{self.launch_count}"
         self.runner_service.run_reserved_trial(trial_id, dispatch_token, runner_id)
+        return None
 
 
 class ModalRemoteLauncher:
     def __init__(self, modal_function) -> None:
         self.modal_function = modal_function
 
-    def launch_trial(self, trial_id: str, dispatch_token: str) -> None:
-        self.modal_function.spawn(trial_id=trial_id, dispatch_token=dispatch_token)
+    def launch_trial(self, trial_id: str, dispatch_token: str) -> dict[str, Any] | None:
+        function_call = self.modal_function.spawn(trial_id=trial_id, dispatch_token=dispatch_token)
+        metadata: dict[str, Any] = {"kind": "modal"}
+        object_id = getattr(function_call, "object_id", None)
+        if isinstance(object_id, str) and object_id:
+            metadata["run_id"] = object_id
+        get_dashboard_url = getattr(function_call, "get_dashboard_url", None)
+        if callable(get_dashboard_url):
+            try:
+                run_url = get_dashboard_url()
+            except Exception:
+                run_url = None
+            if isinstance(run_url, str) and run_url:
+                metadata["run_url"] = run_url
+        return metadata if len(metadata) > 1 else None
 
 
 class Orchestrator:
@@ -136,7 +151,9 @@ class Orchestrator:
         )
         for trial in reserved:
             try:
-                self.launcher.launch_trial(trial.trial_id, trial.dispatch_token or "")
+                launch_metadata = self.launcher.launch_trial(trial.trial_id, trial.dispatch_token or "")
+                if launch_metadata:
+                    self.repository.record_trial_launcher_metadata(trial.trial_id, launch_metadata)
                 result.launched_trial_ids.append(trial.trial_id)
             except Exception as exc:
                 result.errors.append(f"launch_failed:{trial.trial_id}:{exc}")

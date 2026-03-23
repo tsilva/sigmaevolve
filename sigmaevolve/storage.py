@@ -304,6 +304,26 @@ class SQLAlchemyRepository:
             row = conn.execute(sa.select(trials_table).where(trials_table.c.trial_id == trial_id)).fetchone()
         return _row_to_trial(row) if row else None
 
+    def record_trial_launcher_metadata(self, trial_id: str, launcher_metadata: dict[str, Any]) -> None:
+        payload = dict(launcher_metadata)
+        with self.transaction() as conn:
+            row = conn.execute(
+                sa.select(trials_table.c.track_id, trials_table.c.provenance_json).where(trials_table.c.trial_id == trial_id)
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"Trial not found: {trial_id}")
+            provenance_json = dict(row.provenance_json or {})
+            updated_provenance_json = dict(provenance_json)
+            updated_provenance_json["launcher"] = payload
+            if updated_provenance_json == provenance_json:
+                return
+            conn.execute(
+                sa.update(trials_table)
+                .where(trials_table.c.trial_id == trial_id)
+                .values(provenance_json=updated_provenance_json)
+            )
+            self._notify_dashboard(conn, track_id=row.track_id, reason="trial_changed")
+
     def list_trials(self, track_id: str, statuses: set[str] | None = None) -> list[TrialRecord]:
         stmt = sa.select(trials_table).where(trials_table.c.track_id == track_id).order_by(trials_table.c.created_at)
         if statuses:

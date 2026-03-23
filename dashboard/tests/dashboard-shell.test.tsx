@@ -50,6 +50,8 @@ function createTrial(overrides: Partial<TrialListItem>): TrialListItem {
     trialId: "trial_1",
     status: "finished",
     outcomeReason: "completed",
+    modalRunId: null,
+    modalRunUrl: null,
     score: 0.91,
     accuracy: 0.91,
     timeToBestEvalSec: 12,
@@ -201,6 +203,37 @@ describe("DashboardShell", () => {
 
     expect(screen.getByRole("heading", { name: "trial_1" })).toBeTruthy();
     expect(screen.queryByText("How each run went")).toBeNull();
+  });
+
+  it("shows a Modal run link in the table when the trial has a remote run URL", () => {
+    renderShell({
+      detail: createDetail([
+        createTrial({
+          trialId: "trial_modal",
+          modalRunId: "fc-123",
+          modalRunUrl: "https://modal.com/apps/test/runs/fc-123",
+        }),
+      ]),
+    });
+
+    const link = screen.getByRole("link", { name: "Open Modal run for trial_modal" });
+    expect(link.getAttribute("href")).toBe("https://modal.com/apps/test/runs/fc-123");
+  });
+
+  it("shows a Modal run link in the inspector when the selected trial has a remote run URL", () => {
+    renderShell({
+      detail: createDetail([
+        createTrial({
+          trialId: "trial_modal",
+          modalRunId: "fc-123",
+          modalRunUrl: "https://modal.com/apps/test/runs/fc-123",
+        }),
+      ]),
+      initialSelectedTrialId: "trial_modal",
+    });
+
+    const link = screen.getByRole("link", { name: "Open Modal run for trial_modal" });
+    expect(link.getAttribute("href")).toBe("https://modal.com/apps/test/runs/fc-123");
   });
 
   it("shows a mixed-source diff for the selected trial when prompt snippets are recorded", () => {

@@ -6,9 +6,16 @@ from sigmaevolve.modal_support import create_modal_launcher
 def test_modal_launcher_spawns_named_function(monkeypatch):
     captured = {}
 
+    class FakeFunctionCall:
+        object_id = "fc-123"
+
+        def get_dashboard_url(self):
+            return "https://modal.com/apps/test/runs/fc-123"
+
     class FakeFunctionHandle:
         def spawn(self, **kwargs):
             captured["spawn"] = kwargs
+            return FakeFunctionCall()
 
     class FakeFunction:
         @staticmethod
@@ -32,7 +39,7 @@ def test_modal_launcher_spawns_named_function(monkeypatch):
         dataset_root="/mnt/datasets",
         environment_name="main",
     )
-    launcher.launch_trial("trial_1", "dispatch_1")
+    metadata = launcher.launch_trial("trial_1", "dispatch_1")
 
     assert captured["lookup"]["app_name"] == "sigmaevolve-runner"
     assert captured["lookup"]["name"] == "run_trial"
@@ -40,3 +47,8 @@ def test_modal_launcher_spawns_named_function(monkeypatch):
     assert captured["spawn"]["dispatch_token"] == "dispatch_1"
     assert captured["spawn"]["database_url"] == "postgresql://example/db"
     assert captured["spawn"]["dataset_root"] == "/mnt/datasets"
+    assert metadata == {
+        "kind": "modal",
+        "run_id": "fc-123",
+        "run_url": "https://modal.com/apps/test/runs/fc-123",
+    }

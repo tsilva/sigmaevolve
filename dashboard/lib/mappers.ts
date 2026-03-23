@@ -22,6 +22,8 @@ type TrialRow = {
   trialId: string;
   status: TrialListItem["status"];
   outcomeReason: string | null;
+  modalRunId: string | null;
+  modalRunUrl: string | null;
   score: number | string | null;
   accuracy: number | string | null;
   timeToBestEvalSec: number | string | null;
@@ -84,6 +86,13 @@ function asNullableNumber(value: number | string | null | undefined): number | n
   return Number(value);
 }
 
+function asNullableString(value: string | null | undefined): string | null {
+  if (typeof value !== "string" || value.length === 0) {
+    return null;
+  }
+  return value;
+}
+
 export function mapTrackListItem(row: TrackRow): TrackListItem {
   return {
     trackId: row.trackId,
@@ -107,6 +116,8 @@ export function mapTrialListItem(row: TrialRow): TrialListItem {
     trialId: row.trialId,
     status: row.status,
     outcomeReason: row.outcomeReason,
+    modalRunId: asNullableString(row.modalRunId),
+    modalRunUrl: asNullableString(row.modalRunUrl),
     score: asNumber(row.score),
     accuracy: asNullableNumber(row.accuracy),
     timeToBestEvalSec: asNullableNumber(row.timeToBestEvalSec),

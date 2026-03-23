@@ -21,6 +21,8 @@ export type TrialListItem = {
   trialId: string;
   status: TrialStatus;
   outcomeReason: string | null;
+  modalRunId: string | null;
+  modalRunUrl: string | null;
   score: number;
   accuracy: number | null;
   timeToBestEvalSec: number | null;

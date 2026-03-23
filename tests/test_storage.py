@@ -70,6 +70,41 @@ def test_track_and_trial_mutations_publish_dashboard_notifications(repository):
     assert notifications[-1] == (track.track_id, "trial_changed")
 
 
+def test_record_trial_launcher_metadata_merges_into_provenance_and_notifies(repository):
+    repository.register_dataset("mnist:v1", "/tmp/manifest.json")
+
+    notifications: list[tuple[str, str]] = []
+    repository._notify_dashboard = lambda conn, track_id, reason: notifications.append((track_id, reason))  # type: ignore[method-assign]
+
+    track = repository.create_track(name="launcher", dataset_id="mnist:v1", policy_json={})
+    trial, created = repository.create_queued_trial_if_absent(
+        track_id=track.track_id,
+        source="print('candidate')\n",
+        provenance_json={"backend": "test", "model": "worker"},
+    )
+    assert created is True
+    assert trial is not None
+
+    repository.record_trial_launcher_metadata(
+        trial.trial_id,
+        {
+            "kind": "modal",
+            "run_id": "fc-123",
+            "run_url": "https://modal.com/apps/test/runs/fc-123",
+        },
+    )
+    updated = repository.get_trial(trial.trial_id)
+
+    assert updated is not None
+    assert updated.provenance_json["backend"] == "test"
+    assert updated.provenance_json["launcher"] == {
+        "kind": "modal",
+        "run_id": "fc-123",
+        "run_url": "https://modal.com/apps/test/runs/fc-123",
+    }
+    assert notifications[-1] == (track.track_id, "trial_changed")
+
+
 def test_trial_indexes_exist():
     index_names = {index.name for index in trials_table.indexes}
 

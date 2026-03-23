@@ -38,6 +38,8 @@ describe("dashboard row mappers", () => {
       trialId: "trial_1",
       status: "active",
       outcomeReason: null,
+      modalRunId: null,
+      modalRunUrl: null,
       score: "0",
       accuracy: null,
       timeToBestEvalSec: null,
@@ -62,6 +64,8 @@ describe("dashboard row mappers", () => {
       trialId: "trial_1",
       status: "active",
       outcomeReason: null,
+      modalRunId: null,
+      modalRunUrl: null,
       score: 0,
       accuracy: null,
       timeToBestEvalSec: null,
@@ -88,6 +92,8 @@ describe("dashboard row mappers", () => {
       trialId: "trial_success",
       status: "finished",
       outcomeReason: "succeeded",
+      modalRunId: "fc-123",
+      modalRunUrl: "https://modal.com/apps/test/runs/fc-123",
       score: "0.927",
       accuracy: "0.927",
       timeToBestEvalSec: "1.97",
@@ -109,6 +115,7 @@ describe("dashboard row mappers", () => {
     });
 
     expect(mapped.hasError).toBe(false);
+    expect(mapped.modalRunUrl).toBe("https://modal.com/apps/test/runs/fc-123");
     expect(mapped.errorJson).toEqual({ stderr: "", eval_artifacts: ["/tmp/eval_0001.npz"] });
   });
 
@@ -117,6 +124,8 @@ describe("dashboard row mappers", () => {
       trialId: "trial_success_string_flag",
       status: "finished",
       outcomeReason: "succeeded",
+      modalRunId: null,
+      modalRunUrl: null,
       score: "0.927",
       accuracy: "0.927",
       timeToBestEvalSec: "1.97",

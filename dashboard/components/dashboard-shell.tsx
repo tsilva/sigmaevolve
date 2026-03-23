@@ -181,6 +181,7 @@ function formatGenerationProperties(value: Record<string, unknown> | null): stri
     "provider_response_id",
     "generation_config",
     "context_trial_ids",
+    "launcher",
   ]) {
     if (key in value) {
       payload[key] = value[key];
@@ -220,6 +221,27 @@ function summarizeCrashDetails(value: string | null): string {
   }
 
   return firstLine.length > 160 ? `${firstLine.slice(0, 157)}...` : firstLine;
+}
+
+function renderModalRunLink(trial: TrialListItem, label = "Modal run") {
+  if (!trial.modalRunUrl) {
+    return null;
+  }
+
+  return (
+    <a
+      className="external-link-chip"
+      href={trial.modalRunUrl}
+      target="_blank"
+      rel="noreferrer"
+      onClick={(event) => event.stopPropagation()}
+      onKeyDown={(event) => event.stopPropagation()}
+      aria-label={`Open Modal run for ${trial.trialId}`}
+      title={trial.modalRunId ?? undefined}
+    >
+      {label}
+    </a>
+  );
 }
 
 function getTrackLabel(track: TrackListItem): string {
@@ -969,6 +991,7 @@ export function DashboardShell({
                         <td>
                           <div className="trial-cell-primary">{trial.trialId}</div>
                           <div className="trial-cell-secondary">{getTrialNarrative(trial)}</div>
+                          {renderModalRunLink(trial)}
                         </td>
                         <td>
                           <span className={`status-badge status-${trial.status}`}>
@@ -1049,6 +1072,7 @@ export function DashboardShell({
                     </span>
                     <span className="meta-chip">{selectedTrial.model ?? "unknown model"}</span>
                     <span className="meta-chip">{selectedTrial.backend ?? "unknown backend"}</span>
+                    {renderModalRunLink(selectedTrial)}
                   </div>
                 </div>
 
