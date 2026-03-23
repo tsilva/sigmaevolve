@@ -321,6 +321,54 @@ class Orchestrator:
         result.duplicate_trial_ids.append(duplicate_trial.trial_id)
         return result
 
+    def _handle_generation_failure(
+        self,
+        *,
+        reporter: Callable[[str, dict[str, Any]], None] | None,
+        track_id: str,
+        result: ReconcileResult,
+        failures: int,
+        max_failures: int,
+        completed_slots: set[int],
+        requested_generations: int,
+        pending: dict[Future[Any], GenerationAttempt],
+        attempt: GenerationAttempt,
+        provenance_json: dict[str, Any],
+        reason: str,
+        detail: str | None = None,
+        generated_source: str | None = None,
+        candidate_hash: str | None = None,
+        extra_error_json: dict[str, Any] | None = None,
+        result_error: str | None = None,
+    ) -> tuple[ReconcileResult, int]:
+        failures += 1
+        result = self._record_generation_attempt_failure(
+            track_id=track_id,
+            result=result,
+            provenance_json=provenance_json,
+            reason=reason,
+            detail=detail,
+            generated_source=generated_source,
+            candidate_hash=candidate_hash,
+            extra_error_json=extra_error_json,
+            result_error=result_error,
+        )
+        self._emit(
+            reporter,
+            "generation_failed",
+            slot_index=attempt.slot_index,
+            generation_index=attempt.generation_index,
+            duplicate_retry_count=attempt.duplicate_retry_count,
+            reason=reason,
+            detail=detail or "",
+            failures=failures,
+            max_failures=max_failures,
+            completed=len(completed_slots),
+            requested=requested_generations,
+            in_flight=len(pending),
+        )
+        return result, failures
+
     def reconcile_track(
         self,
         track_id: str,
@@ -418,10 +466,16 @@ class Orchestrator:
                         try:
                             raw_generated = future.result()
                         except Exception as exc:
-                            failures += 1
-                            result = self._record_generation_attempt_failure(
+                            result, failures = self._handle_generation_failure(
+                                reporter=reporter,
                                 track_id=track_id,
                                 result=result,
+                                failures=failures,
+                                max_failures=max_failures,
+                                completed_slots=completed_slots,
+                                requested_generations=requested_generations,
+                                pending=pending,
+                                attempt=attempt,
                                 provenance_json=self._fallback_generation_provenance(
                                     track,
                                     attempt.context_trials,
@@ -433,47 +487,25 @@ class Orchestrator:
                                 extra_error_json={"exception_type": type(exc).__name__},
                                 result_error=str(exc),
                             )
-                            self._emit(
-                                reporter,
-                                "generation_failed",
-                                slot_index=attempt.slot_index,
-                                generation_index=attempt.generation_index,
-                                duplicate_retry_count=attempt.duplicate_retry_count,
-                                reason="generator_exception",
-                                detail=str(exc),
-                                failures=failures,
-                                max_failures=max_failures,
-                                completed=len(completed_slots),
-                                requested=requested_generations,
-                                in_flight=len(pending),
-                            )
                             retry_needed = True
                         else:
                             generated = self._normalize_generation_result(raw_generated)
                             if not generated.succeeded:
-                                failures += 1
                                 error_info = dict(generated.error_info or {})
-                                result = self._record_generation_attempt_failure(
+                                result, failures = self._handle_generation_failure(
+                                    reporter=reporter,
                                     track_id=track_id,
                                     result=result,
+                                    failures=failures,
+                                    max_failures=max_failures,
+                                    completed_slots=completed_slots,
+                                    requested_generations=requested_generations,
+                                    pending=pending,
+                                    attempt=attempt,
                                     provenance_json=generated.provenance_json,
                                     reason=str(error_info.get("reason") or "generation_failed"),
                                     detail=str(error_info["detail"]) if error_info.get("detail") is not None else None,
                                     extra_error_json=error_info,
-                                )
-                                self._emit(
-                                    reporter,
-                                    "generation_failed",
-                                    slot_index=attempt.slot_index,
-                                    generation_index=attempt.generation_index,
-                                    duplicate_retry_count=attempt.duplicate_retry_count,
-                                    reason=str(error_info.get("reason") or "generation_failed"),
-                                    detail=str(error_info.get("detail") or ""),
-                                    failures=failures,
-                                    max_failures=max_failures,
-                                    completed=len(completed_slots),
-                                    requested=requested_generations,
-                                    in_flight=len(pending),
                                 )
                                 retry_needed = True
                             else:
@@ -484,28 +516,20 @@ class Orchestrator:
                                         generated.source,
                                     )
                                 except EvolveBlockError as exc:
-                                    failures += 1
-                                    result = self._record_generation_attempt_failure(
+                                    result, failures = self._handle_generation_failure(
+                                        reporter=reporter,
                                         track_id=track_id,
                                         result=result,
+                                        failures=failures,
+                                        max_failures=max_failures,
+                                        completed_slots=completed_slots,
+                                        requested_generations=requested_generations,
+                                        pending=pending,
+                                        attempt=attempt,
                                         provenance_json=generated.provenance_json,
                                         reason="candidate_materialization_failed",
                                         detail=str(exc),
                                         result_error=f"invalid_mutation:{exc}",
-                                    )
-                                    self._emit(
-                                        reporter,
-                                        "generation_failed",
-                                        slot_index=attempt.slot_index,
-                                        generation_index=attempt.generation_index,
-                                        duplicate_retry_count=attempt.duplicate_retry_count,
-                                        reason="candidate_materialization_failed",
-                                        detail=str(exc),
-                                        failures=failures,
-                                        max_failures=max_failures,
-                                        completed=len(completed_slots),
-                                        requested=requested_generations,
-                                        in_flight=len(pending),
                                     )
                                     retry_needed = True
                                 else:
@@ -516,30 +540,22 @@ class Orchestrator:
                                             candidate_source,
                                         )
                                     except EvolveBlockError as exc:
-                                        failures += 1
-                                        result = self._record_generation_attempt_failure(
+                                        result, failures = self._handle_generation_failure(
+                                            reporter=reporter,
                                             track_id=track_id,
                                             result=result,
+                                            failures=failures,
+                                            max_failures=max_failures,
+                                            completed_slots=completed_slots,
+                                            requested_generations=requested_generations,
+                                            pending=pending,
+                                            attempt=attempt,
                                             provenance_json=generated.provenance_json,
                                             reason="generation_assertion_failed",
                                             detail=str(exc),
                                             generated_source=candidate_source,
                                             candidate_hash=candidate_hash,
                                             result_error=f"invalid_mutation:{exc}",
-                                        )
-                                        self._emit(
-                                            reporter,
-                                            "generation_failed",
-                                            slot_index=attempt.slot_index,
-                                            generation_index=attempt.generation_index,
-                                            duplicate_retry_count=attempt.duplicate_retry_count,
-                                            reason="generation_assertion_failed",
-                                            detail=str(exc),
-                                            failures=failures,
-                                            max_failures=max_failures,
-                                            completed=len(completed_slots),
-                                            requested=requested_generations,
-                                            in_flight=len(pending),
                                         )
                                         retry_needed = True
                                     else:
