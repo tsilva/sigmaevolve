@@ -86,6 +86,89 @@ function formatJsonBlock(value: Record<string, unknown> | null): string {
   return JSON.stringify(value, null, 2);
 }
 
+type PropertyEntry = {
+  label: string;
+  mono?: boolean;
+  values: string[];
+};
+
+function toPropertyLabel(value: string): string {
+  return value
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function formatPropertyScalar(value: unknown): string | null {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  }
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? String(value) : null;
+  }
+  if (typeof value === "boolean") {
+    return value ? "Yes" : "No";
+  }
+  return null;
+}
+
+function appendPropertyEntries(
+  entries: PropertyEntry[],
+  label: string,
+  value: unknown,
+  options?: {
+    mono?: boolean;
+  },
+): void {
+  if (value === null || value === undefined) {
+    return;
+  }
+
+  if (Array.isArray(value)) {
+    const values = value.flatMap((item) => {
+      if (item && typeof item === "object") {
+        return Object.entries(item).flatMap(([key, nestedValue]) => {
+          const rendered = formatPropertyScalar(nestedValue);
+          return rendered ? [`${toPropertyLabel(key)}: ${rendered}`] : [];
+        });
+      }
+
+      const rendered = formatPropertyScalar(item);
+      return rendered ? [rendered] : [];
+    });
+
+    if (values.length > 0) {
+      entries.push({
+        label,
+        mono: options?.mono,
+        values,
+      });
+    }
+    return;
+  }
+
+  if (typeof value === "object") {
+    for (const [key, nestedValue] of Object.entries(value as Record<string, unknown>)) {
+      appendPropertyEntries(entries, `${label} ${toPropertyLabel(key)}`, nestedValue, options);
+    }
+    return;
+  }
+
+  const rendered = formatPropertyScalar(value);
+  if (!rendered) {
+    return;
+  }
+
+  entries.push({
+    label,
+    mono: options?.mono,
+    values: [rendered],
+  });
+}
+
 function extractCrashDetails(value: Record<string, unknown> | null): string | null {
   if (!value) {
     return null;
@@ -182,27 +265,24 @@ function extractMixedSourceSnapshot(messages: PromptMessage[]): { snippetCount: 
   };
 }
 
-function formatGenerationProperties(value: Record<string, unknown> | null): string {
+function getGenerationProperties(value: Record<string, unknown> | null): PropertyEntry[] {
   if (!value) {
-    return "No provenance payload recorded.";
+    return [];
   }
 
-  const payload: Record<string, unknown> = {};
-  for (const key of [
-    "backend",
-    "model",
-    "generation_index",
-    "provider_response_id",
-    "generation_config",
-    "context_trial_ids",
-    "launcher",
-  ]) {
-    if (key in value) {
-      payload[key] = value[key];
-    }
-  }
+  const entries: PropertyEntry[] = [];
 
-  return JSON.stringify(payload, null, 2);
+  appendPropertyEntries(entries, "Backend", value.backend);
+  appendPropertyEntries(entries, "Model", value.model);
+  appendPropertyEntries(entries, "Candidate Kind", value.candidate_kind);
+  appendPropertyEntries(entries, "Generation Index", value.generation_index);
+  appendPropertyEntries(entries, "Duplicate Retry Count", value.duplicate_retry_count);
+  appendPropertyEntries(entries, "Provider Response ID", value.provider_response_id, { mono: true });
+  appendPropertyEntries(entries, "Context Trials", value.context_trial_ids, { mono: true });
+  appendPropertyEntries(entries, "Config", value.generation_config);
+  appendPropertyEntries(entries, "Launcher", value.launcher);
+
+  return entries;
 }
 
 function formatAssertionFailures(failures: string[]): string {
@@ -537,6 +617,7 @@ export function DashboardShell({
   const selectedGeneratedSource = selectedTrial?.generatedSource ?? null;
   const selectedResponseText = selectedTrial?.responseText ?? null;
   const selectedAssertionFailures = selectedTrial?.generationAssertionFailures ?? [];
+  const selectedGenerationProperties = getGenerationProperties(selectedTrial?.provenanceJson ?? null);
   const selectedShowsDiagnosticSource = Boolean(
     selectedTrial && selectedGeneratedSource && selectedGeneratedSource !== selectedTrial.source,
   );
@@ -780,142 +861,148 @@ export function DashboardShell({
             </div>
           </div>
 
-          <div className="hero-metrics">
-            <article className="metric-tile">
-              <span className="metric-label">Best Score</span>
-              <strong className="metric-value">{formatNumber(detail.track.bestScore, 4)}</strong>
-              <span className="metric-note">
-                {bestTrial ? `${compactIdentifier(bestTrial.trialId)} leads the visible sample.` : "Waiting for scored trials."}
-              </span>
-            </article>
-            <article className="metric-tile">
-              <span className="metric-label">Completion</span>
-              <strong className="metric-value">{formatPercent(progressPercent)}</strong>
-              <span className="metric-note">
-                {detail.track.finishedTrials} of {detail.track.totalTrials} trials have finished.
-              </span>
-            </article>
-            <article className="metric-tile">
-              <span className="metric-label">Coverage</span>
-              <strong className="metric-value">{formatPercent(coveragePercent)}</strong>
-              <span className="metric-note">{detail.track.succeededTrials} runs produced scored metrics.</span>
-            </article>
-            <article className="metric-tile">
-              <span className="metric-label">Attention</span>
-              <strong className="metric-value">{attentionCount}</strong>
-              <span className="metric-note">
-                {detail.track.activeTrials > 0
-                  ? `${detail.track.activeTrials} trials are still running.`
-                  : "No active trials right now."}
-              </span>
-            </article>
-          </div>
-
           <div className="overview-grid">
-            <article className="analysis-card">
-              <div className="analysis-card-header">
-                <h3>Progress breakdown</h3>
-              </div>
-              <div className="progress-strip" aria-label="Track progress">
-                <span
-                  className="queued"
-                  style={{ width: `${detail.track.totalTrials === 0 ? 0 : (detail.track.queuedTrials / detail.track.totalTrials) * 100}%` }}
-                  title={`Queued: ${detail.track.queuedTrials}`}
-                />
-                <span
-                  className="dispatching"
-                  style={{ width: `${detail.track.totalTrials === 0 ? 0 : (detail.track.dispatchingTrials / detail.track.totalTrials) * 100}%` }}
-                  title={`Dispatching: ${detail.track.dispatchingTrials}`}
-                />
-                <span
-                  className="active"
-                  style={{ width: `${detail.track.totalTrials === 0 ? 0 : (detail.track.activeTrials / detail.track.totalTrials) * 100}%` }}
-                  title={`Active: ${detail.track.activeTrials}`}
-                />
-                <span
-                  className="finished"
-                  style={{ width: `${detail.track.totalTrials === 0 ? 0 : (detail.track.finishedTrials / detail.track.totalTrials) * 100}%` }}
-                  title={`Finished: ${detail.track.finishedTrials}`}
-                />
-              </div>
-            </article>
+            <article className="analysis-card wide-card overview-snapshot-card">
+              <div className="overview-snapshot-layout">
+                <div className="overview-snapshot-sidebar">
+                  <div className="hero-metrics overview-snapshot-metrics">
+                    <article className="metric-tile">
+                      <span className="metric-label">Best Score</span>
+                      <strong className="metric-value">{formatNumber(detail.track.bestScore, 4)}</strong>
+                      <span className="metric-note">
+                        {bestTrial ? `${compactIdentifier(bestTrial.trialId)} leads the visible sample.` : "Waiting for scored trials."}
+                      </span>
+                    </article>
+                    <article className="metric-tile">
+                      <span className="metric-label">Completion</span>
+                      <strong className="metric-value">{formatPercent(progressPercent)}</strong>
+                      <span className="metric-note">
+                        {detail.track.finishedTrials} of {detail.track.totalTrials} trials have finished.
+                      </span>
+                    </article>
+                    <article className="metric-tile">
+                      <span className="metric-label">Coverage</span>
+                      <strong className="metric-value">{formatPercent(coveragePercent)}</strong>
+                      <span className="metric-note">{detail.track.succeededTrials} runs produced scored metrics.</span>
+                    </article>
+                    <article className="metric-tile">
+                      <span className="metric-label">Attention</span>
+                      <strong className="metric-value">{attentionCount}</strong>
+                      <span className="metric-note">
+                        {detail.track.activeTrials > 0
+                          ? `${detail.track.activeTrials} trials are still running.`
+                          : "No active trials right now."}
+                      </span>
+                    </article>
+                  </div>
 
-            <article className="analysis-card wide-card">
-              <div className="analysis-card-header">
-                <h3>Score History</h3>
-                <span>
-                  {scoreChart.scoredCount} scored / {visibleTrials.length} displayed
-                </span>
-              </div>
-              <div className="score-chart-meta">
-                <span>Best {formatNumber(scoreChart.bestScore, 4)}</span>
-                <span>Range {formatNumber(scoreChart.yMin, 4)} to {formatNumber(scoreChart.yMax, 4)}</span>
-              </div>
-              <div className="score-chart-shell">
-                <svg
-                  className="score-chart"
-                  viewBox={`0 0 ${SCORE_CHART_WIDTH} ${SCORE_CHART_HEIGHT}`}
-                  role="img"
-                  aria-label="Score history for the trials currently displayed in the table"
-                >
-                  <line
-                    className="score-axis"
-                    x1={SCORE_CHART_PADDING.left}
-                    y1={SCORE_CHART_HEIGHT - SCORE_CHART_PADDING.bottom}
-                    x2={SCORE_CHART_WIDTH - SCORE_CHART_PADDING.right}
-                    y2={SCORE_CHART_HEIGHT - SCORE_CHART_PADDING.bottom}
-                  />
-                  <line
-                    className="score-axis"
-                    x1={SCORE_CHART_PADDING.left}
-                    y1={SCORE_CHART_PADDING.top}
-                    x2={SCORE_CHART_PADDING.left}
-                    y2={SCORE_CHART_HEIGHT - SCORE_CHART_PADDING.bottom}
-                  />
-                  {[scoreChart.yMax, (scoreChart.yMax + scoreChart.yMin) / 2, scoreChart.yMin].map((tick) => {
-                    const y =
-                      SCORE_CHART_PADDING.top +
-                      ((scoreChart.yMax - tick) / Math.max(0.02, scoreChart.yMax - scoreChart.yMin)) *
-                        (SCORE_CHART_HEIGHT - SCORE_CHART_PADDING.top - SCORE_CHART_PADDING.bottom);
-                    return (
-                      <g key={tick}>
-                        <line
-                          className="score-gridline"
-                          x1={SCORE_CHART_PADDING.left}
-                          y1={y}
-                          x2={SCORE_CHART_WIDTH - SCORE_CHART_PADDING.right}
-                          y2={y}
-                        />
-                        <text className="score-tick-label" x={SCORE_CHART_PADDING.left - 10} y={y + 4}>
-                          {formatNumber(tick, 3)}
-                        </text>
-                      </g>
-                    );
-                  })}
-                  {scoreChart.linePath ? <path className="score-line" d={scoreChart.linePath} /> : null}
-                  {scoreChart.points.map((point, index) => (
-                    <g key={point.trialId}>
-                      <circle
-                        className={`score-point tone-${point.tone} ${point.score === null ? "pending" : "scored"}`}
-                        cx={point.x}
-                        cy={point.y}
-                        r={point.score === null ? 3.5 : 4.5}
+                  <section className="overview-progress-panel">
+                    <div className="analysis-card-header">
+                      <h3>Progress breakdown</h3>
+                    </div>
+                    <div className="progress-strip" aria-label="Track progress">
+                      <span
+                        className="queued"
+                        style={{ width: `${detail.track.totalTrials === 0 ? 0 : (detail.track.queuedTrials / detail.track.totalTrials) * 100}%` }}
+                        title={`Queued: ${detail.track.queuedTrials}`}
+                      />
+                      <span
+                        className="dispatching"
+                        style={{ width: `${detail.track.totalTrials === 0 ? 0 : (detail.track.dispatchingTrials / detail.track.totalTrials) * 100}%` }}
+                        title={`Dispatching: ${detail.track.dispatchingTrials}`}
+                      />
+                      <span
+                        className="active"
+                        style={{ width: `${detail.track.totalTrials === 0 ? 0 : (detail.track.activeTrials / detail.track.totalTrials) * 100}%` }}
+                        title={`Active: ${detail.track.activeTrials}`}
+                      />
+                      <span
+                        className="finished"
+                        style={{ width: `${detail.track.totalTrials === 0 ? 0 : (detail.track.finishedTrials / detail.track.totalTrials) * 100}%` }}
+                        title={`Finished: ${detail.track.finishedTrials}`}
+                      />
+                    </div>
+                  </section>
+                </div>
+
+                <div className="overview-snapshot-chart">
+                  <div className="analysis-card-header">
+                    <h3>Score History</h3>
+                    <span>
+                      {scoreChart.scoredCount} scored / {visibleTrials.length} displayed
+                    </span>
+                  </div>
+                  <div className="score-chart-meta">
+                    <span>Best {formatNumber(scoreChart.bestScore, 4)}</span>
+                    <span>Range {formatNumber(scoreChart.yMin, 4)} to {formatNumber(scoreChart.yMax, 4)}</span>
+                  </div>
+                  <div className="score-chart-shell">
+                    <svg
+                      className="score-chart"
+                      viewBox={`0 0 ${SCORE_CHART_WIDTH} ${SCORE_CHART_HEIGHT}`}
+                      role="img"
+                      aria-label="Score history for the trials currently displayed in the table"
+                    >
+                      <line
+                        className="score-axis"
+                        x1={SCORE_CHART_PADDING.left}
+                        y1={SCORE_CHART_HEIGHT - SCORE_CHART_PADDING.bottom}
+                        x2={SCORE_CHART_WIDTH - SCORE_CHART_PADDING.right}
+                        y2={SCORE_CHART_HEIGHT - SCORE_CHART_PADDING.bottom}
+                      />
+                      <line
+                        className="score-axis"
+                        x1={SCORE_CHART_PADDING.left}
+                        y1={SCORE_CHART_PADDING.top}
+                        x2={SCORE_CHART_PADDING.left}
+                        y2={SCORE_CHART_HEIGHT - SCORE_CHART_PADDING.bottom}
+                      />
+                      {[scoreChart.yMax, (scoreChart.yMax + scoreChart.yMin) / 2, scoreChart.yMin].map((tick) => {
+                        const y =
+                          SCORE_CHART_PADDING.top +
+                          ((scoreChart.yMax - tick) / Math.max(0.02, scoreChart.yMax - scoreChart.yMin)) *
+                            (SCORE_CHART_HEIGHT - SCORE_CHART_PADDING.top - SCORE_CHART_PADDING.bottom);
+                        return (
+                          <g key={tick}>
+                            <line
+                              className="score-gridline"
+                              x1={SCORE_CHART_PADDING.left}
+                              y1={y}
+                              x2={SCORE_CHART_WIDTH - SCORE_CHART_PADDING.right}
+                              y2={y}
+                            />
+                            <text className="score-tick-label" x={SCORE_CHART_PADDING.left - 10} y={y + 4}>
+                              {formatNumber(tick, 3)}
+                            </text>
+                          </g>
+                        );
+                      })}
+                      {scoreChart.linePath ? <path className="score-line" d={scoreChart.linePath} /> : null}
+                      {scoreChart.points.map((point, index) => (
+                        <g key={point.trialId}>
+                          <circle
+                            className={`score-point tone-${point.tone} ${point.score === null ? "pending" : "scored"}`}
+                            cx={point.x}
+                            cy={point.y}
+                            r={point.score === null ? 3.5 : 4.5}
+                          >
+                            <title>
+                              {`#${index + 1} ${point.trialId} • ${point.status}${point.score === null ? "" : ` • score ${formatNumber(point.score, 4)}`}${point.model ? ` • ${point.model}` : ""}`}
+                            </title>
+                          </circle>
+                        </g>
+                      ))}
+                      <text
+                        className="score-axis-label"
+                        x={SCORE_CHART_WIDTH - SCORE_CHART_PADDING.right}
+                        y={SCORE_CHART_HEIGHT - 8}
+                        textAnchor="end"
                       >
-                        <title>
-                          {`#${index + 1} ${point.trialId} • ${point.status}${point.score === null ? "" : ` • score ${formatNumber(point.score, 4)}`}${point.model ? ` • ${point.model}` : ""}`}
-                        </title>
-                      </circle>
-                    </g>
-                  ))}
-                  <text
-                    className="score-axis-label"
-                    x={SCORE_CHART_WIDTH - SCORE_CHART_PADDING.right}
-                    y={SCORE_CHART_HEIGHT - 8}
-                    textAnchor="end"
-                  >
-                    Trial order
-                  </text>
-                </svg>
+                        Trial order
+                      </text>
+                    </svg>
+                  </div>
+                </div>
               </div>
             </article>
           </div>
@@ -1070,138 +1157,161 @@ export function DashboardShell({
                       </h2>
                       <p className="trial-summary-copy">{getTrialNarrative(selectedTrial)}</p>
                     </div>
+                    <div className="trial-summary-chip-row">
+                      <span className={`status-badge status-${selectedTrial.status}`}>
+                        <span className={`status-indicator ${selectedTrial.status}`} />
+                        {selectedTrial.status}
+                      </span>
+                      {selectedTrialRank ? <span className="meta-chip">Rank #{selectedTrialRank} by score</span> : null}
+                      {renderModalRunLink(selectedTrial)}
+                    </div>
                   </div>
 
                   <div className="trial-summary-grid">
                     <div className="trial-summary-column">
-                      <div className="trial-summary-section-label">Summary</div>
-                      <div className="trial-summary-chip-row">
-                        <span className={`status-badge status-${selectedTrial.status}`}>
-                          <span className={`status-indicator ${selectedTrial.status}`} />
-                          {selectedTrial.status}
-                        </span>
-                        {selectedTrialRank ? <span className="meta-chip">Rank #{selectedTrialRank} by score</span> : null}
-                        {renderModalRunLink(selectedTrial)}
-                      </div>
-                      <div className="context-stack">
-                        <div className="context-row">
-                          <span>Trial ID</span>
-                          <strong title={selectedTrial.trialId}>{selectedTrial.trialId}</strong>
+                      <section className="trial-summary-panel">
+                        <div className="trial-summary-section-label">Overview</div>
+                        <div className="context-stack">
+                          <div className="context-row">
+                            <span>Trial ID</span>
+                            <strong className="trial-summary-mono" title={selectedTrial.trialId}>
+                              {selectedTrial.trialId}
+                            </strong>
+                          </div>
+                          <div className="context-row">
+                            <span>Model</span>
+                            <strong>{selectedTrial.model ?? "unknown model"}</strong>
+                          </div>
+                          <div className="context-row">
+                            <span>Backend</span>
+                            <strong>{selectedTrial.backend ?? "unknown backend"}</strong>
+                          </div>
+                          <div className="context-row">
+                            <span>Outcome</span>
+                            <strong>
+                              {selectedTrial.outcomeReason ? (
+                                <span className="flag-chip">{selectedTrial.outcomeReason}</span>
+                              ) : (
+                                "Not reported"
+                              )}
+                            </strong>
+                          </div>
+                          <div className="context-row">
+                            <span>Last Phase</span>
+                            <strong>
+                              {selectedTrial.lastPhase ? <span className="flag-chip">{selectedTrial.lastPhase}</span> : "—"}
+                            </strong>
+                          </div>
                         </div>
-                        <div className="context-row">
-                          <span>Model</span>
-                          <strong>{selectedTrial.model ?? "unknown model"}</strong>
+                        <div className="flag-row trial-summary-flags">
+                          {selectedTrial.timedOut ? <span className="flag-chip flag-warning">timed out</span> : null}
+                          {selectedTrial.hadUnscoredWorkAtTimeout ? (
+                            <span className="flag-chip flag-warning">left work unscored</span>
+                          ) : null}
+                          {selectedTrial.hasError ? <span className="flag-chip flag-danger">error payload captured</span> : null}
                         </div>
-                        <div className="context-row">
-                          <span>Backend</span>
-                          <strong>{selectedTrial.backend ?? "unknown backend"}</strong>
+                      </section>
+
+                      <section className="trial-summary-panel">
+                        <div className="trial-summary-section-label">Metrics</div>
+                        <div className="context-stack">
+                          <div className="context-row">
+                            <span>Score</span>
+                            <strong>{formatNumber(selectedTrial.score, 4)}</strong>
+                          </div>
+                          <div className="context-row">
+                            <span>Accuracy</span>
+                            <strong>{formatNumber(selectedTrial.accuracy, 4)}</strong>
+                          </div>
+                          <div className="context-row">
+                            <span>Time To Best Eval</span>
+                            <strong>{formatDuration(selectedTrial.timeToBestEvalSec)}</strong>
+                          </div>
+                          <div className="context-row">
+                            <span>Duration</span>
+                            <strong>{formatDuration(selectedTrial.durationSec)}</strong>
+                          </div>
+                          <div className="context-row">
+                            <span>Dispatch Attempts</span>
+                            <strong>{selectedTrial.dispatchAttempts}</strong>
+                          </div>
+                          <div className="context-row">
+                            <span>Idle Since Eval</span>
+                            <strong>{formatDuration(selectedTrial.timeSinceLastEvalSec)}</strong>
+                          </div>
                         </div>
-                      </div>
-                      <div className="flag-row trial-summary-flags">
-                        {selectedTrial.outcomeReason ? <span className="flag-chip">{selectedTrial.outcomeReason}</span> : null}
-                        {selectedTrial.timedOut ? <span className="flag-chip flag-warning">timed out</span> : null}
-                        {selectedTrial.hadUnscoredWorkAtTimeout ? (
-                          <span className="flag-chip flag-warning">left work unscored</span>
-                        ) : null}
-                        {selectedTrial.hasError ? <span className="flag-chip flag-danger">error payload captured</span> : null}
-                      </div>
+                      </section>
                     </div>
 
                     <div className="trial-summary-column">
-                      <div className="trial-summary-section-label">Metrics</div>
-                      <div className="context-stack">
-                        <div className="context-row">
-                          <span>Score</span>
-                          <strong>{formatNumber(selectedTrial.score, 4)}</strong>
+                      <section className="trial-summary-panel">
+                        <div className="trial-summary-section-label">Run timeline</div>
+                        <div className="timeline-list">
+                          <div className="timeline-row">
+                            <span>Queued</span>
+                            <strong>{formatDate(selectedTrial.createdAt)}</strong>
+                          </div>
+                          <div className="timeline-row">
+                            <span>Started</span>
+                            <strong>{formatDate(selectedTrial.startedAt)}</strong>
+                          </div>
+                          <div className="timeline-row">
+                            <span>Finished</span>
+                            <strong>{formatDate(selectedTrial.finishedAt)}</strong>
+                          </div>
+                          <div className="timeline-row">
+                            <span>Crash detail</span>
+                            <strong title={selectedCrashDetails ?? undefined}>{selectedCrashSummary}</strong>
+                          </div>
+                          <div className="timeline-row">
+                            <span>Generation assertions</span>
+                            <strong>
+                              {selectedTrial.generationAssertionsPassed === null ? (
+                                "Not recorded"
+                              ) : selectedTrial.generationAssertionsPassed ? (
+                                <span className="flag-chip flag-success">Passed</span>
+                              ) : (
+                                <span className="flag-chip flag-danger">Failed</span>
+                              )}
+                            </strong>
+                          </div>
+                          <div className="timeline-row">
+                            <span>Assertion failures</span>
+                            <strong className="timeline-detail">{formatAssertionFailures(selectedAssertionFailures)}</strong>
+                          </div>
                         </div>
-                        <div className="context-row">
-                          <span>Accuracy</span>
-                          <strong>{formatNumber(selectedTrial.accuracy, 4)}</strong>
-                        </div>
-                        <div className="context-row">
-                          <span>Time To Best Eval</span>
-                          <strong>{formatDuration(selectedTrial.timeToBestEvalSec)}</strong>
-                        </div>
-                        <div className="context-row">
-                          <span>Duration</span>
-                          <strong>{formatDuration(selectedTrial.durationSec)}</strong>
-                        </div>
-                        <div className="context-row">
-                          <span>Dispatch Attempts</span>
-                          <strong>{selectedTrial.dispatchAttempts}</strong>
-                        </div>
-                        <div className="context-row">
-                          <span>Idle Since Eval</span>
-                          <strong>{formatDuration(selectedTrial.timeSinceLastEvalSec)}</strong>
-                        </div>
-                      </div>
-                    </div>
+                      </section>
 
-                    <div className="trial-summary-column trial-summary-timeline">
-                      <div className="trial-summary-section-label">Run timeline</div>
-                      <div className="timeline-list">
-                        <div className="timeline-row">
-                          <span>Queued</span>
-                          <strong>{formatDate(selectedTrial.createdAt)}</strong>
-                        </div>
-                        <div className="timeline-row">
-                          <span>Started</span>
-                          <strong>{formatDate(selectedTrial.startedAt)}</strong>
-                        </div>
-                        <div className="timeline-row">
-                          <span>Finished</span>
-                          <strong>{formatDate(selectedTrial.finishedAt)}</strong>
-                        </div>
-                        <div className="timeline-row">
-                          <span>Last known phase</span>
-                          <strong>{selectedTrial.lastPhase ?? "—"}</strong>
-                        </div>
-                        <div className="timeline-row">
-                          <span>Outcome reason</span>
-                          <strong>{selectedTrial.outcomeReason ?? "Not reported"}</strong>
-                        </div>
-                        <div className="timeline-row">
-                          <span>Crash detail</span>
-                          <strong title={selectedCrashDetails ?? undefined}>{selectedCrashSummary}</strong>
-                        </div>
-                        <div className="timeline-row">
-                          <span>Generation assertions</span>
-                          <strong>
-                            {selectedTrial.generationAssertionsPassed === null
-                              ? "Not recorded"
-                              : selectedTrial.generationAssertionsPassed
-                                ? "Passed"
-                                : "Failed"}
-                          </strong>
-                        </div>
-                        <div className="timeline-row">
-                          <span>Passed</span>
-                          <strong>
-                            {selectedTrial.generationAssertionsPassed === null
-                              ? "Not recorded"
-                              : selectedTrial.generationAssertionsPassed
-                                ? "Yes"
-                                : "No"}
-                          </strong>
-                        </div>
-                        <div className="timeline-row">
-                          <span>Assertion failures</span>
-                          <strong className="timeline-detail">{formatAssertionFailures(selectedAssertionFailures)}</strong>
-                        </div>
-                        <div className="timeline-row">
-                          <span>Backend</span>
-                          <strong>{selectedTrial.backend ?? "Unknown"}</strong>
-                        </div>
-                        <div className="timeline-row">
-                          <span>Model</span>
-                          <strong>{selectedTrial.model ?? "Unknown"}</strong>
-                        </div>
-                      </div>
-                      <HighlightedCode
-                        code={formatGenerationProperties(selectedTrial.provenanceJson)}
-                        language="json"
-                        wrap
-                      />
+                      <section className="trial-summary-panel">
+                        <div className="trial-summary-section-label">Generation provenance</div>
+                        {selectedGenerationProperties.length > 0 ? (
+                          <div className="context-stack">
+                            {selectedGenerationProperties.map((entry) => (
+                              <div className="context-row" key={entry.label}>
+                                <span>{entry.label}</span>
+                                <strong className={entry.mono ? "trial-summary-mono" : undefined}>
+                                  {entry.values.length === 1 ? (
+                                    entry.values[0]
+                                  ) : (
+                                    <span className="property-chip-list">
+                                      {entry.values.map((item) => (
+                                        <span
+                                          key={`${entry.label}:${item}`}
+                                          className={`meta-chip ${entry.mono ? "meta-chip-mono" : ""}`.trim()}
+                                        >
+                                          {item}
+                                        </span>
+                                      ))}
+                                    </span>
+                                  )}
+                                </strong>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <p className="section-copy">No provenance payload recorded.</p>
+                        )}
+                      </section>
                     </div>
                   </div>
                 </article>

@@ -316,6 +316,38 @@ describe("DashboardShell", () => {
     expect(screen.getByText(/stored row source is diagnostic-only/i)).toBeTruthy();
   });
 
+  it("renders provenance as property rows instead of a raw JSON block", () => {
+    renderShell({
+      detail: createDetail([
+        createTrial({
+          trialId: "trial_provenance",
+          provenanceJson: {
+            backend: "openrouter",
+            model: "x-ai/grok-4.1-fast",
+            generation_index: 4,
+            provider_response_id: "gen_1774284821",
+            generation_config: {
+              model: "x-ai/grok-4.1-fast",
+              temperature: 0.2,
+              max_tokens: 1200,
+              retry_count: 1,
+            },
+            context_trial_ids: ["trial_parent_a", "trial_parent_b"],
+          },
+        }),
+      ]),
+      initialSelectedTrialId: "trial_provenance",
+    });
+
+    expect(screen.getByText("Generation provenance")).toBeTruthy();
+    expect(screen.getByText("Provider Response ID")).toBeTruthy();
+    expect(screen.getByText("gen_1774284821")).toBeTruthy();
+    expect(screen.getByText("Config Temperature")).toBeTruthy();
+    expect(screen.getByText("0.2")).toBeTruthy();
+    expect(screen.getByText("trial_parent_a")).toBeTruthy();
+    expect(screen.queryByText('"generation_config"')).toBeNull();
+  });
+
   it("keeps the explorer visible when a filter changes the visible trial set", async () => {
     const queuedTrials = [
       createTrial({
