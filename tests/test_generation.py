@@ -19,8 +19,29 @@ def _track_with_pool():
                 "backend": "openrouter",
                 "selection": "round_robin",
                 "model_pool": [
-                    {"model": "openai/gpt-4o-mini", "temperature": 0.1, "max_tokens": 1200},
-                    {"model": "anthropic/claude-3.5-sonnet", "temperature": 0.8, "max_tokens": 2200},
+                    {"model": "x-ai/grok-4.1-fast", "temperature": 0.1, "max_tokens": 1200},
+                    {"model": "anthropic/claude-sonnet-4.6", "temperature": 0.8, "max_tokens": 2200},
+                ],
+            },
+        },
+        created_at=now_utc(),
+    )
+
+
+def _track_with_weighted_pool():
+    return TrackRecord(
+        track_id="track_weighted",
+        name="weighted",
+        dataset_id="mnist:v1",
+        policy_json={
+            "epochs": 5,
+            "generation_backend": {
+                "backend": "openrouter",
+                "selection": "weighted_random",
+                "seed": 11,
+                "model_pool": [
+                    {"model": "x-ai/grok-4.1-fast", "temperature": 0.1, "max_tokens": 1200, "probability": 0.0},
+                    {"model": "moonshotai/kimi-k2.5", "temperature": 0.3, "max_tokens": 1600, "probability": 1.0},
                 ],
             },
         },
@@ -121,9 +142,9 @@ def test_openrouter_generation_uses_model_pool_round_robin(monkeypatch):
     first_result = backend.generate(track, _manifest(), _context(), generation_index=0)
     second_result = backend.generate(track, _manifest(), _context(), generation_index=1)
 
-    assert payloads[0]["model"] == "openai/gpt-4o-mini"
-    assert payloads[1]["model"] == "anthropic/claude-3.5-sonnet"
-    assert first_result.provenance_json["model"] == "openai/gpt-4o-mini"
+    assert payloads[0]["model"] == "x-ai/grok-4.1-fast"
+    assert payloads[1]["model"] == "anthropic/claude-sonnet-4.6"
+    assert first_result.provenance_json["model"] == "x-ai/grok-4.1-fast"
     assert first_result.provenance_json["candidate_kind"] == "strategy_v1"
     assert second_result.provenance_json["generation_config"]["temperature"] == 0.8
     assert first_result.provenance_json["request_messages"] == payloads[0]["messages"]
@@ -179,6 +200,45 @@ def test_openrouter_generation_bumps_temperature_on_duplicate_retry(monkeypatch)
     assert payloads[0]["temperature"] == pytest.approx(0.3)
     assert result.provenance_json["duplicate_retry_count"] == 2
     assert result.provenance_json["generation_config"]["temperature"] == pytest.approx(0.3)
+
+
+def test_openrouter_generation_uses_weighted_random_probabilities(monkeypatch):
+    backend = OpenRouterGenerationBackend(api_key="test-key")
+    payloads = []
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps(
+                {
+                    "id": "resp_1",
+                    "choices": [
+                        {
+                            "message": {
+                                "content": _mutated_script("return torch.zeros((x.shape[0], 10), dtype=torch.float32)")
+                            }
+                        }
+                    ],
+                }
+            ).encode("utf-8")
+
+    def fake_urlopen(req, timeout=0):
+        payloads.append(json.loads(req.data.decode("utf-8")))
+        return FakeResponse()
+
+    monkeypatch.setattr("sigmaevolve.generation.request.urlopen", fake_urlopen)
+
+    result = backend.generate(_track_with_weighted_pool(), _manifest(), _context(), generation_index=0)
+
+    assert payloads[0]["model"] == "moonshotai/kimi-k2.5"
+    assert result.provenance_json["model"] == "moonshotai/kimi-k2.5"
+    assert result.provenance_json["generation_config"]["selection_probability"] == pytest.approx(1.0)
+    assert result.provenance_json["request_messages"] == payloads[0]["messages"]
 
 
 def test_openrouter_generation_prompt_includes_failure_feedback(monkeypatch):

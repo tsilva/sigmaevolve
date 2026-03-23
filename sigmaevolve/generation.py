@@ -83,11 +83,29 @@ class OpenRouterGenerationBackend:
         model_pool = generation_policy.get("model_pool")
         if isinstance(model_pool, list) and model_pool:
             selection = generation_policy.get("selection", "round_robin")
-            if selection == "random":
-                seed = int(generation_policy.get("seed", 0))
-                rng = random.Random(seed)
-                return dict(rng.choice(model_pool))
             index = int(generation_policy.get("_generation_index", 0))
+            seed = int(generation_policy.get("seed", 0))
+            if selection == "random":
+                rng = random.Random(seed + index)
+                return dict(rng.choice(model_pool))
+            if selection == "weighted_random":
+                weights: list[float] = []
+                normalized_pool: list[dict[str, object]] = []
+                for entry in model_pool:
+                    item = dict(entry)
+                    raw_weight = item.get("probability", item.get("weight", 1.0))
+                    weight = float(raw_weight)
+                    if weight < 0:
+                        raise ValueError("generation_backend model_pool probabilities must be non-negative.")
+                    normalized_pool.append(item)
+                    weights.append(weight)
+                total_weight = sum(weights)
+                if total_weight <= 0:
+                    raise ValueError("generation_backend weighted_random selection requires a positive total probability.")
+                rng = random.Random(seed + index)
+                selected = dict(rng.choices(normalized_pool, weights=weights, k=1)[0])
+                selected["selection_probability"] = float(selected.get("probability", 1.0)) / total_weight
+                return selected
             return dict(model_pool[index % len(model_pool)])
         return {
             "model": generation_policy["model"],

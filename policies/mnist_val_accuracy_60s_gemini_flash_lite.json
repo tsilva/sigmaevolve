@@ -16,13 +16,43 @@
   },
   "generation_backend": {
     "backend": "openrouter",
-    "selection": "round_robin",
+    "selection": "weighted_random",
+    "seed": 0,
     "model_pool": [
       {
+        "model": "x-ai/grok-4.1-fast",
+        "temperature": 0.2,
+        "max_tokens": 2500,
+        "retry_count": 2,
+        "probability": 0.5436
+      },
+      {
         "model": "google/gemini-3.1-flash-lite-preview",
-        "temperature": 0.4,
-        "max_tokens": 2200,
-        "retry_count": 2
+        "temperature": 0.2,
+        "max_tokens": 2500,
+        "retry_count": 2,
+        "probability": 0.2446
+      },
+      {
+        "model": "moonshotai/kimi-k2.5",
+        "temperature": 0.2,
+        "max_tokens": 2500,
+        "retry_count": 2,
+        "probability": 0.1578
+      },
+      {
+        "model": "google/gemini-3.1-pro-preview",
+        "temperature": 0.2,
+        "max_tokens": 2500,
+        "retry_count": 2,
+        "probability": 0.0306
+      },
+      {
+        "model": "anthropic/claude-sonnet-4.6",
+        "temperature": 0.2,
+        "max_tokens": 2500,
+        "retry_count": 2,
+        "probability": 0.0233
       }
     ]
   }

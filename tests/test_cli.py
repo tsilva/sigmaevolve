@@ -133,12 +133,12 @@ def test_cli_create_track_from_policy_file(tmp_path, monkeypatch):
     policy_file.write_text(
         json.dumps(
             {
-                "generation_backend": {
-                    "backend": "openrouter",
-                    "selection": "round_robin",
-                    "model_pool": [
-                        {"model": "openai/gpt-4o-mini", "temperature": 0.2, "max_tokens": 1000, "retry_count": 1},
-                        {"model": "anthropic/claude-3.5-sonnet", "temperature": 0.7, "max_tokens": 2000, "retry_count": 1},
+                    "generation_backend": {
+                        "backend": "openrouter",
+                        "selection": "round_robin",
+                        "model_pool": [
+                        {"model": "x-ai/grok-4.1-fast", "temperature": 0.2, "max_tokens": 1000, "retry_count": 1},
+                        {"model": "anthropic/claude-sonnet-4.6", "temperature": 0.7, "max_tokens": 2000, "retry_count": 1},
                     ],
                 }
             }
@@ -194,7 +194,7 @@ def test_cli_create_track_from_policy_file(tmp_path, monkeypatch):
     track = json.loads(create_out.getvalue())
     pool = track["policy_json"]["generation_backend"]["model_pool"]
     assert len(pool) == 2
-    assert pool[1]["model"] == "anthropic/claude-3.5-sonnet"
+    assert pool[1]["model"] == "anthropic/claude-sonnet-4.6"
 
 
 def test_cli_loads_env_file_for_defaults(tmp_path, monkeypatch):

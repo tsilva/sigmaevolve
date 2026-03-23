@@ -30,7 +30,45 @@ TERMINAL_OUTCOMES = {
 }
 
 CANDIDATE_KIND_STRATEGY_V1 = "strategy_v1"
-DEFAULT_GENERATION_MODEL = "google/gemini-3.1-flash-lite-preview"
+DEFAULT_GENERATION_MODEL = "x-ai/grok-4.1-fast"
+DEFAULT_GENERATION_SELECTION = "weighted_random"
+DEFAULT_GENERATION_MODEL_POOL = [
+    {
+        "model": "x-ai/grok-4.1-fast",
+        "temperature": 0.2,
+        "max_tokens": 2500,
+        "retry_count": 2,
+        "probability": 0.5436,
+    },
+    {
+        "model": "google/gemini-3.1-flash-lite-preview",
+        "temperature": 0.2,
+        "max_tokens": 2500,
+        "retry_count": 2,
+        "probability": 0.2446,
+    },
+    {
+        "model": "moonshotai/kimi-k2.5",
+        "temperature": 0.2,
+        "max_tokens": 2500,
+        "retry_count": 2,
+        "probability": 0.1578,
+    },
+    {
+        "model": "google/gemini-3.1-pro-preview",
+        "temperature": 0.2,
+        "max_tokens": 2500,
+        "retry_count": 2,
+        "probability": 0.0306,
+    },
+    {
+        "model": "anthropic/claude-sonnet-4.6",
+        "temperature": 0.2,
+        "max_tokens": 2500,
+        "retry_count": 2,
+        "probability": 0.0233,
+    },
+]
 
 
 def now_utc() -> datetime:
@@ -120,15 +158,9 @@ class TrackPolicy:
     generation_backend: dict[str, Any] = field(
         default_factory=lambda: {
             "backend": "openrouter",
-            "selection": "round_robin",
-            "model_pool": [
-                {
-                    "model": DEFAULT_GENERATION_MODEL,
-                    "temperature": 0.2,
-                    "max_tokens": 2500,
-                    "retry_count": 2,
-                }
-            ],
+            "selection": DEFAULT_GENERATION_SELECTION,
+            "seed": 0,
+            "model_pool": [dict(entry) for entry in DEFAULT_GENERATION_MODEL_POOL],
         }
     )
 
