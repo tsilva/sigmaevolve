@@ -34,15 +34,35 @@ def _json_arg(value: str | None) -> dict[str, Any]:
     return parsed
 
 
-def _load_policy(policy_json: str | None, policy_file: str | None) -> dict[str, Any]:
-    if policy_json and policy_file:
-        raise argparse.ArgumentTypeError("Use either --policy-json or --policy-file, not both.")
-    if policy_file:
-        parsed = json.loads(Path(policy_file).read_text())
-        if not isinstance(parsed, dict):
-            raise argparse.ArgumentTypeError("Policy file must contain a JSON object.")
-        return parsed
-    return _json_arg(policy_json)
+def _load_track_definition(track_file: str) -> tuple[str | None, str, dict[str, Any]]:
+    parsed = json.loads(Path(track_file).read_text())
+    if not isinstance(parsed, dict):
+        raise argparse.ArgumentTypeError("Track file must contain a JSON object.")
+
+    dataset_id = parsed.get("dataset_id")
+    if not isinstance(dataset_id, str) or not dataset_id:
+        raise argparse.ArgumentTypeError("Track file must include a non-empty string dataset_id.")
+
+    raw_name = parsed.get("name")
+    if raw_name is not None and not isinstance(raw_name, str):
+        raise argparse.ArgumentTypeError("Track file name must be a string when provided.")
+    name = raw_name if isinstance(raw_name, str) else None
+
+    policy = parsed.get("policy")
+    if policy is None:
+        policy = parsed.get("policy_json")
+    if policy is not None:
+        if not isinstance(policy, dict):
+            raise argparse.ArgumentTypeError("Track file policy must be a JSON object.")
+        policy_json = dict(policy)
+    else:
+        policy_json = {
+            key: value
+            for key, value in parsed.items()
+            if key not in {"dataset_id", "name"}
+        }
+
+    return name, dataset_id, policy_json
 
 
 def _non_negative_int(value: str) -> int:
@@ -276,24 +296,21 @@ def _ensure_dataset_prepared(system, dataset_id: str) -> None:
         system.prepare_dataset(dataset_id)
 
 
-def _launch_pass_settings(system, track_id: str, *, count: int | None, maintain_running: int | None) -> tuple[int, int]:
-    if (count is None) == (maintain_running is None):
-        raise ValueError("Specify exactly one of count or maintain_running.")
+def _launch_pass_settings(system, track_id: str, *, target_count: int, daemon: bool) -> tuple[int, int]:
     queue_count = system.repository.count_trials(track_id, statuses={"queued"})
     active_count = system.repository.count_trials(track_id, statuses=ACTIVE_STATUSES)
-    if count is not None:
-        return max(queue_count, count), active_count + count
-    assert maintain_running is not None
-    needed_slots = max(0, maintain_running - active_count)
-    return max(queue_count, needed_slots), maintain_running
+    if not daemon:
+        return max(queue_count, target_count), active_count + target_count
+    needed_slots = max(0, target_count - active_count)
+    return max(queue_count, needed_slots), target_count
 
 
-def _run_launch_pass(system, track_id: str, reporter: _CliReconcileReporter, *, count: int | None, maintain_running: int | None):
+def _run_launch_pass(system, track_id: str, reporter: _CliReconcileReporter, *, target_count: int, daemon: bool):
     ready_queue_threshold, max_parallelism = _launch_pass_settings(
         system,
         track_id,
-        count=count,
-        maintain_running=maintain_running,
+        target_count=target_count,
+        daemon=daemon,
     )
     return system.reconcile_track(
         track_id,
@@ -332,9 +349,9 @@ def cmd_prepare_dataset(args) -> int:
 
 def cmd_create_track(args) -> int:
     system = _make_system(args)
-    _ensure_dataset_prepared(system, args.dataset_id)
-    policy = _load_policy(args.policy_json, args.policy_file)
-    track = system.create_track(args.name, args.dataset_id, policy)
+    name, dataset_id, policy = _load_track_definition(args.track_file)
+    _ensure_dataset_prepared(system, dataset_id)
+    track = system.create_track(name, dataset_id, policy)
     _print_json(
         {
             "track_id": track.track_id,
@@ -350,23 +367,23 @@ def cmd_create_track(args) -> int:
 def cmd_launch(args) -> int:
     system = _make_system(args)
     reporter = _CliReconcileReporter(sys.stderr)
-    if args.count is not None:
-        result = _run_launch_pass(system, args.track_id, reporter, count=args.count, maintain_running=None)
+    if not args.daemon:
+        result = _run_launch_pass(system, args.track_id, reporter, target_count=args.count, daemon=False)
         payload = _result_payload(result)
         payload["mode"] = "count"
         payload["requested_launch_count"] = args.count
         _print_json(payload)
         return 0
 
-    summary = _LaunchSummary(mode="maintain_running", cycles_completed=0)
+    summary = _LaunchSummary(mode="daemon", cycles_completed=0)
     try:
         while True:
             result = _run_launch_pass(
                 system,
                 args.track_id,
                 reporter,
-                count=None,
-                maintain_running=args.maintain_running,
+                target_count=args.count,
+                daemon=True,
             )
             summary.cycles_completed += 1
             summary.generated_count += len(result.generated_trial_ids)
@@ -383,7 +400,7 @@ def cmd_launch(args) -> int:
         summary.stopped_reason = "keyboard_interrupt"
 
     payload = asdict(summary)
-    payload["target_running"] = args.maintain_running
+    payload["target_running"] = args.count
     _print_json(payload)
     return 0
 
@@ -529,45 +546,35 @@ def build_parser() -> argparse.ArgumentParser:
     prepare_dataset.set_defaults(func=cmd_prepare_dataset)
 
     create_track = subparsers.add_parser("create-track", help="Create a track and seed the baseline trial.")
-    create_track.add_argument("dataset_id")
-    create_track.add_argument("--name", default=None)
-    policy_source = create_track.add_mutually_exclusive_group()
-    policy_source.add_argument(
-        "--policy-json",
-        default=None,
-        help="JSON object overriding track policy fields.",
-    )
-    policy_source.add_argument(
-        "--policy-file",
-        default=None,
-        help="Path to a JSON file overriding track policy fields.",
+    create_track.add_argument(
+        "track_file",
+        help="Path to a JSON file containing dataset_id, optional name, and track policy fields.",
     )
     create_track.set_defaults(func=cmd_create_track)
 
     launch = subparsers.add_parser("launch", help="Generate and launch trials for a track.")
     launch.add_argument("track_id")
-    launch_mode = launch.add_mutually_exclusive_group(required=True)
-    launch_mode.add_argument(
-        "--count",
+    launch.add_argument(
+        "count",
         type=_positive_int,
-        help="Launch this many additional trials in a single pass.",
+        help="Trial count. Use as a one-shot launch target by default, or a maintained running target with --daemon.",
     )
-    launch_mode.add_argument(
-        "--maintain-running",
-        type=_positive_int,
+    launch.add_argument(
+        "--daemon",
+        action="store_true",
         help="Continuously keep this many trials running until interrupted.",
     )
     launch.add_argument(
         "--poll-interval-sec",
         type=_positive_float,
         default=5.0,
-        help="Seconds to wait between maintain-running launch passes. Default: 5.0",
+        help="Seconds to wait between daemon launch passes. Default: 5.0",
     )
     launch.add_argument(
         "--max-cycles",
         type=_positive_int,
         default=None,
-        help="Optional number of maintain-running launch passes before exiting.",
+        help="Optional number of daemon launch passes before exiting.",
     )
     launch.set_defaults(func=cmd_launch)
 

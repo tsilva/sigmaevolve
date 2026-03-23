@@ -1,4 +1,6 @@
 {
+  "dataset_id": "mnist:v1",
+  "name": "mnist-val-accuracy-60s-gemini-flash-lite",
   "epochs": 5,
   "dispatch_ttl_sec": 300,
   "heartbeat_interval_sec": 15,

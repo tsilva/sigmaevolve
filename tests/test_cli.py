@@ -9,9 +9,22 @@ from sigmaevolve.models import DEFAULT_GENERATION_MODEL
 from sigmaevolve.storage import normalize_database_url
 
 
+def _write_track_file(tmp_path, payload: dict, filename: str = "track.json") -> str:
+    track_file = tmp_path / filename
+    track_file.write_text(json.dumps(payload))
+    return str(track_file)
+
+
 def test_cli_create_track_and_list_trials(tmp_path, monkeypatch):
     db_url = f"sqlite:///{tmp_path / 'cli.sqlite'}"
     dataset_root = tmp_path / "datasets"
+    track_file = _write_track_file(
+        tmp_path,
+        {
+            "dataset_id": "mnist:v1",
+            "name": "cli-test",
+        },
+    )
 
     from sigmaevolve.datasets import ArrayDatasetProvider
     import numpy as np
@@ -52,9 +65,7 @@ def test_cli_create_track_and_list_trials(tmp_path, monkeypatch):
                     "--dataset-root",
                     str(dataset_root),
                     "create-track",
-                    "mnist:v1",
-                    "--name",
-                    "cli-test",
+                    track_file,
                 ]
             )
             == 0
@@ -73,6 +84,7 @@ def test_cli_create_track_and_list_trials(tmp_path, monkeypatch):
 def test_cli_create_track_uses_default_generation_model(tmp_path, monkeypatch):
     db_url = f"sqlite:///{tmp_path / 'cli-default-policy.sqlite'}"
     dataset_root = tmp_path / "datasets"
+    track_file = _write_track_file(tmp_path, {"dataset_id": "mnist:v1"})
 
     from sigmaevolve.datasets import ArrayDatasetProvider
     import numpy as np
@@ -112,7 +124,7 @@ def test_cli_create_track_uses_default_generation_model(tmp_path, monkeypatch):
                     "--dataset-root",
                     str(dataset_root),
                     "create-track",
-                    "mnist:v1",
+                    track_file,
                 ]
             )
             == 0
@@ -124,23 +136,23 @@ def test_cli_create_track_uses_default_generation_model(tmp_path, monkeypatch):
     assert pool[0]["model"] == DEFAULT_GENERATION_MODEL
 
 
-def test_cli_create_track_from_policy_file(tmp_path, monkeypatch):
+def test_cli_create_track_from_track_file(tmp_path, monkeypatch):
     db_url = f"sqlite:///{tmp_path / 'cli-policy.sqlite'}"
     dataset_root = tmp_path / "datasets"
-    policy_file = tmp_path / "policy.json"
-    policy_file.write_text(
-        json.dumps(
-            {
-                    "generation_backend": {
-                        "backend": "openrouter",
-                        "selection": "round_robin",
-                        "model_pool": [
-                        {"model": "x-ai/grok-4.1-fast", "temperature": 0.2, "max_tokens": 1000, "retry_count": 1},
-                        {"model": "anthropic/claude-sonnet-4.6", "temperature": 0.7, "max_tokens": 2000, "retry_count": 1},
-                    ],
-                }
-            }
-        )
+    track_file = _write_track_file(
+        tmp_path,
+        {
+            "dataset_id": "mnist:v1",
+            "name": "policy-track",
+            "generation_backend": {
+                "backend": "openrouter",
+                "selection": "round_robin",
+                "model_pool": [
+                    {"model": "x-ai/grok-4.1-fast", "temperature": 0.2, "max_tokens": 1000, "retry_count": 1},
+                    {"model": "anthropic/claude-sonnet-4.6", "temperature": 0.7, "max_tokens": 2000, "retry_count": 1},
+                ],
+            },
+        },
     )
 
     from sigmaevolve.datasets import ArrayDatasetProvider
@@ -180,9 +192,7 @@ def test_cli_create_track_from_policy_file(tmp_path, monkeypatch):
                     "--dataset-root",
                     str(dataset_root),
                     "create-track",
-                    "mnist:v1",
-                    "--policy-file",
-                    str(policy_file),
+                    track_file,
                 ]
             )
             == 0
@@ -253,6 +263,7 @@ def test_cli_modal_commands_call_support_helpers(tmp_path, monkeypatch):
 def test_cli_launch_count_reports_progress_to_stderr(tmp_path, monkeypatch):
     db_url = f"sqlite:///{tmp_path / 'cli-launch-progress.sqlite'}"
     dataset_root = tmp_path / "datasets"
+    track_file = _write_track_file(tmp_path, {"dataset_id": "mnist:v1"}, "launch-track.json")
 
     from sigmaevolve.datasets import ArrayDatasetProvider
     import numpy as np
@@ -291,7 +302,7 @@ def test_cli_launch_count_reports_progress_to_stderr(tmp_path, monkeypatch):
                     "--dataset-root",
                     str(dataset_root),
                     "create-track",
-                    "mnist:v1",
+                    track_file,
                 ]
             )
             == 0
@@ -310,7 +321,6 @@ def test_cli_launch_count_reports_progress_to_stderr(tmp_path, monkeypatch):
                     str(dataset_root),
                     "launch",
                     track_id,
-                    "--count",
                     "1",
                 ]
             )
@@ -329,6 +339,14 @@ def test_cli_launch_count_reports_progress_to_stderr(tmp_path, monkeypatch):
 def test_cli_launch_maintain_running_stops_after_max_cycles(tmp_path, monkeypatch):
     db_url = f"sqlite:///{tmp_path / 'cli-launch-maintain.sqlite'}"
     dataset_root = tmp_path / "datasets"
+    track_file = _write_track_file(
+        tmp_path,
+        {
+            "dataset_id": "mnist:v1",
+            "name": "cli-maintain",
+        },
+        "maintain-track.json",
+    )
 
     from sigmaevolve.datasets import ArrayDatasetProvider
     import numpy as np
@@ -367,9 +385,7 @@ def test_cli_launch_maintain_running_stops_after_max_cycles(tmp_path, monkeypatc
                     "--dataset-root",
                     str(dataset_root),
                     "create-track",
-                    "mnist:v1",
-                    "--name",
-                    "cli-maintain",
+                    track_file,
                 ]
             )
             == 0
@@ -389,8 +405,8 @@ def test_cli_launch_maintain_running_stops_after_max_cycles(tmp_path, monkeypatc
                     "recording",
                     "launch",
                     track_id,
-                    "--maintain-running",
                     "1",
+                    "--daemon",
                     "--max-cycles",
                     "1",
                 ]
@@ -399,7 +415,7 @@ def test_cli_launch_maintain_running_stops_after_max_cycles(tmp_path, monkeypatc
         )
 
     payload = json.loads(launch_out.getvalue())
-    assert payload["mode"] == "maintain_running"
+    assert payload["mode"] == "daemon"
     assert payload["cycles_completed"] == 1
     assert payload["target_running"] == 1
     assert payload["stopped_reason"] == "max_cycles_reached"
