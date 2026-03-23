@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import io
 import json
 import pytest
+from urllib.error import HTTPError, URLError
 
 from sigmaevolve.generation import OpenRouterGenerationBackend
 from sigmaevolve.models import DatasetManifest, TrackRecord, TrialSummary, now_utc
@@ -167,6 +169,10 @@ def test_openrouter_generation_uses_model_pool_round_robin(monkeypatch):
     assert first_result.provenance_json["candidate_kind"] == "strategy_v1"
     assert second_result.provenance_json["generation_config"]["temperature"] == 0.8
     assert first_result.provenance_json["request_messages"] == payloads[0]["messages"]
+    assert first_result.provenance_json["generation"]["system_prompt"] == payloads[0]["messages"][0]["content"]
+    assert first_result.provenance_json["generation"]["user_prompt"] == payloads[0]["messages"][1]["content"]
+    assert "return torch.zeros((x.shape[0], 10), dtype=torch.float32) + 0.1" in first_result.provenance_json["generation"]["response_text"]
+    assert first_result.error_info is None
 
     system_prompt = payloads[0]["messages"][0]["content"]
     first_prompt = payloads[0]["messages"][1]["content"]
@@ -320,3 +326,121 @@ def test_openrouter_generation_prompt_lists_prior_programs_before_current_progra
     assert "val_acc: 0.992" in prompt
     assert "val_loss: 0.1" in prompt
     assert prompt.rstrip().endswith("REPLACEMENTS:")
+
+
+def test_openrouter_generation_reports_missing_api_key(monkeypatch):
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    backend = OpenRouterGenerationBackend(api_key=None)
+
+    result = backend.generate(_track_with_pool(), _manifest(), _context(), generation_index=0)
+
+    assert result.source is None
+    assert result.error_info == {
+        "reason": "missing_api_key",
+        "detail": "OPENROUTER_API_KEY is required for OpenRouter generation.",
+    }
+    assert result.provenance_json["generation"]["response_text"] is None
+    assert result.provenance_json["generation"]["system_prompt"]
+    assert result.provenance_json["generation"]["user_prompt"]
+
+
+def test_openrouter_generation_captures_http_errors(monkeypatch):
+    backend = OpenRouterGenerationBackend(api_key="test-key")
+
+    def fake_urlopen(req, timeout=0):
+        raise HTTPError(req.full_url, 503, "Service Unavailable", hdrs=None, fp=io.BytesIO(b'{"error":"overloaded"}'))
+
+    monkeypatch.setattr("sigmaevolve.generation.request.urlopen", fake_urlopen)
+
+    result = backend.generate(_track_with_pool(), _manifest(), _context(), generation_index=0)
+
+    assert result.source is None
+    assert result.error_info is not None
+    assert result.error_info["reason"] == "provider_http_error"
+    assert result.error_info["status_code"] == 503
+    assert result.error_info["response_body"] == '{"error":"overloaded"}'
+
+
+def test_openrouter_generation_captures_invalid_json_responses(monkeypatch):
+    backend = OpenRouterGenerationBackend(api_key="test-key")
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return b"{not-json"
+
+    monkeypatch.setattr("sigmaevolve.generation.request.urlopen", lambda req, timeout=0: FakeResponse())
+
+    result = backend.generate(_track_with_pool(), _manifest(), _context(), generation_index=0)
+
+    assert result.source is None
+    assert result.error_info is not None
+    assert result.error_info["reason"] == "provider_response_invalid_json"
+    assert result.error_info["response_body"] == "{not-json"
+
+
+def test_openrouter_generation_captures_missing_choices(monkeypatch):
+    backend = OpenRouterGenerationBackend(api_key="test-key")
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps({"id": "resp_1", "choices": []}).encode("utf-8")
+
+    monkeypatch.setattr("sigmaevolve.generation.request.urlopen", lambda req, timeout=0: FakeResponse())
+
+    result = backend.generate(_track_with_pool(), _manifest(), _context(), generation_index=0)
+
+    assert result.source is None
+    assert result.error_info is not None
+    assert result.error_info["reason"] == "provider_response_missing_choices"
+    assert result.provenance_json["provider_response_id"] == "resp_1"
+
+
+def test_openrouter_generation_captures_missing_message_content(monkeypatch):
+    backend = OpenRouterGenerationBackend(api_key="test-key")
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps({"id": "resp_1", "choices": [{"message": {"content": "   "}}]}).encode("utf-8")
+
+    monkeypatch.setattr("sigmaevolve.generation.request.urlopen", lambda req, timeout=0: FakeResponse())
+
+    result = backend.generate(_track_with_pool(), _manifest(), _context(), generation_index=0)
+
+    assert result.source is None
+    assert result.error_info is not None
+    assert result.error_info["reason"] == "provider_response_missing_content"
+    assert result.provenance_json["generation"]["response_text"] == "   "
+
+
+def test_openrouter_generation_captures_transport_errors(monkeypatch):
+    backend = OpenRouterGenerationBackend(api_key="test-key")
+
+    def fake_urlopen(req, timeout=0):
+        raise URLError("network down")
+
+    monkeypatch.setattr("sigmaevolve.generation.request.urlopen", fake_urlopen)
+
+    result = backend.generate(_track_with_pool(), _manifest(), _context(), generation_index=0)
+
+    assert result.source is None
+    assert result.error_info is not None
+    assert result.error_info["reason"] == "provider_request_failed"
+    assert "network down" in result.error_info["detail"]

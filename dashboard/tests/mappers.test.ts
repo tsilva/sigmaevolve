@@ -57,7 +57,16 @@ describe("dashboard row mappers", () => {
       hasError: true,
       source: "print('hello')\n",
       errorJson: { stderr: "boom" },
-      provenanceJson: { model: "google/gemini", request_messages: [] },
+      provenanceJson: {
+        model: "google/gemini",
+        request_messages: [],
+        generation: {
+          response_text: "raw response",
+          generated_source: "print('candidate')\n",
+          assertions_passed: false,
+          assertion_failures: ["candidate modified immutable text outside evolve blocks"],
+        },
+      },
     });
 
     expect(mapped).toEqual({
@@ -82,8 +91,21 @@ describe("dashboard row mappers", () => {
       durationSec: null,
       hasError: true,
       source: "print('hello')\n",
+      responseText: "raw response",
+      generatedSource: "print('candidate')\n",
+      generationAssertionsPassed: false,
+      generationAssertionFailures: ["candidate modified immutable text outside evolve blocks"],
       errorJson: { stderr: "boom" },
-      provenanceJson: { model: "google/gemini", request_messages: [] },
+      provenanceJson: {
+        model: "google/gemini",
+        request_messages: [],
+        generation: {
+          response_text: "raw response",
+          generated_source: "print('candidate')\n",
+          assertions_passed: false,
+          assertion_failures: ["candidate modified immutable text outside evolve blocks"],
+        },
+      },
     });
   });
 
@@ -117,6 +139,10 @@ describe("dashboard row mappers", () => {
     expect(mapped.hasError).toBe(false);
     expect(mapped.modalRunUrl).toBe("https://modal.com/apps/test/runs/fc-123");
     expect(mapped.errorJson).toEqual({ stderr: "", eval_artifacts: ["/tmp/eval_0001.npz"] });
+    expect(mapped.responseText).toBeNull();
+    expect(mapped.generatedSource).toBeNull();
+    expect(mapped.generationAssertionsPassed).toBeNull();
+    expect(mapped.generationAssertionFailures).toEqual([]);
   });
 
   it("ignores a truthy hasError row value when the payload has no error signal", () => {

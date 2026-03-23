@@ -6,9 +6,9 @@ import time
 import pytest
 
 from sigmaevolve.baseline import build_baseline_linear_classifier
-from sigmaevolve.generation import FixedGenerationBackend
+from sigmaevolve.generation import FixedGenerationBackend, OpenRouterGenerationBackend
 from sigmaevolve.hashing import compute_script_hash, normalize_source
-from sigmaevolve.models import CANDIDATE_KIND_STRATEGY_V1
+from sigmaevolve.models import CANDIDATE_KIND_STRATEGY_V1, GenerationResult
 from sigmaevolve.orchestrator import InlineRunnerLauncher, RecordingLauncher
 from sigmaevolve.runner import RunnerService
 from sigmaevolve.storage import trials_table
@@ -119,8 +119,12 @@ def test_reconcile_generates_duplicates_without_dispatching_more_work(repository
     )
 
     result = system.reconcile_track(track.track_id)
+    trials = system.repository.list_trials(track.track_id)
     assert len(result.duplicate_hashes) == 4
+    assert len(result.duplicate_trial_ids) == 4
     assert result.launched_trial_ids == []
+    assert len(trials) == 5
+    assert all(trial.outcome_reason == "duplicate" for trial in trials[1:])
 
 
 def test_reconcile_retries_duplicate_generation_with_incremented_retry_count(repository, dataset_manager):
@@ -179,6 +183,7 @@ def test_reconcile_retries_duplicate_generation_with_incremented_retry_count(rep
 
     assert generator.retry_counts == [0, 1, 2, 3]
     assert len(result.duplicate_hashes) == 4
+    assert len(result.duplicate_trial_ids) == 4
     assert result.generated_trial_ids == []
     assert result.launched_trial_ids == []
 
@@ -260,10 +265,12 @@ def forward(self, x):
 
     assert generator.retry_counts == [0, 1]
     assert len(result.duplicate_hashes) == 1
+    assert len(result.duplicate_trial_ids) == 1
     assert result.generated_trial_ids == [created_trial.trial_id]
     assert created_trial.provenance_json["duplicate_retry_count"] == 1
     assert created_trial.provenance_json["generation_index"] == 1
     assert created_trial.provenance_json["generation_config"]["temperature"] == pytest.approx(0.3)
+    assert created_trial.provenance_json["generation"]["assertions_passed"] is True
 
 
 def test_expired_dispatch_is_marked_stale_when_retries_exhausted(system):
@@ -584,6 +591,12 @@ def test_reconcile_rejects_mutations_outside_evolve_blocks(repository, dataset_m
     assert result.generated_trial_ids == []
     assert result.errors
     assert result.errors[0].startswith("invalid_mutation:")
+    assert len(result.failed_generation_trial_ids) == 1
+    failed_trial = repository.get_trial(result.failed_generation_trial_ids[0])
+    assert failed_trial is not None
+    assert failed_trial.outcome_reason == "generation_failed"
+    assert failed_trial.provenance_json["generation"]["assertions_passed"] is False
+    assert failed_trial.provenance_json["generation"]["assertion_failures"]
 
 
 def test_reconcile_applies_search_replace_response_before_queueing(repository, dataset_manager):
@@ -689,6 +702,125 @@ IMMUTABLE_BREAK = True
     assert result.generated_trial_ids == []
     assert result.errors
     assert result.errors[0].startswith("invalid_mutation:")
+    assert len(result.failed_generation_trial_ids) == 1
+    failed_trial = repository.get_trial(result.failed_generation_trial_ids[0])
+    assert failed_trial is not None
+    assert failed_trial.outcome_reason == "generation_failed"
+    assert failed_trial.provenance_json["generation"]["assertions_passed"] is False
+
+
+def test_reconcile_persists_generation_failed_trial_when_backend_returns_error(repository, dataset_manager):
+    class ProviderFailureGenerator:
+        def generate(
+            self,
+            track,
+            dataset_manifest,
+            context_trials,
+            negative_trials=None,
+            generation_index=0,
+            duplicate_retry_count=0,
+        ):
+            return GenerationResult(
+                source=None,
+                provenance_json=make_llm_provenance(model="provider-failure"),
+                error_info={"reason": "provider_request_failed", "detail": "upstream timeout"},
+            )
+
+    dataset_manager.prepare("mnist:v1")
+    repository.register_dataset("mnist:v1", str(dataset_manager.manifest_path_for("mnist:v1")))
+    runner = RunnerService(repository=repository, dataset_manager=dataset_manager)
+    system = EvolutionSystem(repository, dataset_manager, ProviderFailureGenerator(), RecordingLauncher(), runner)
+    track = system.create_track("provider-failure", "mnist:v1", {"ready_queue_threshold": 1})
+
+    baseline = repository.list_trials(track.track_id)[0]
+    repository.finalize_trial(
+        trial_id=baseline.trial_id,
+        runner_id=None,
+        outcome_reason="succeeded",
+        metrics={"accuracy": 0.5},
+        score=0.5,
+        error_info=None,
+    )
+
+    result = system.reconcile_track(track.track_id)
+
+    assert result.generated_trial_ids == []
+    assert len(result.failed_generation_trial_ids) == 1
+    failed_trial = repository.get_trial(result.failed_generation_trial_ids[0])
+    assert failed_trial is not None
+    assert failed_trial.outcome_reason == "generation_failed"
+    assert failed_trial.error_json["reason"] == "provider_request_failed"
+    assert failed_trial.error_json["detail"] == "upstream timeout"
+
+
+def test_reconcile_persists_generation_failed_trial_when_response_cannot_materialize(repository, dataset_manager):
+    class UnmaterializableGenerator:
+        def generate(
+            self,
+            track,
+            dataset_manifest,
+            context_trials,
+            negative_trials=None,
+            generation_index=0,
+            duplicate_retry_count=0,
+        ):
+            return GenerationResult(
+                source="not python and not a valid patch",
+                provenance_json=make_llm_provenance(model="bad-response"),
+            )
+
+    dataset_manager.prepare("mnist:v1")
+    repository.register_dataset("mnist:v1", str(dataset_manager.manifest_path_for("mnist:v1")))
+    runner = RunnerService(repository=repository, dataset_manager=dataset_manager)
+    system = EvolutionSystem(repository, dataset_manager, UnmaterializableGenerator(), RecordingLauncher(), runner)
+    track = system.create_track("bad-response", "mnist:v1", {"ready_queue_threshold": 1})
+
+    baseline = repository.list_trials(track.track_id)[0]
+    repository.finalize_trial(
+        trial_id=baseline.trial_id,
+        runner_id=None,
+        outcome_reason="succeeded",
+        metrics={"accuracy": 0.5},
+        score=0.5,
+        error_info=None,
+    )
+
+    result = system.reconcile_track(track.track_id)
+
+    assert result.generated_trial_ids == []
+    assert len(result.failed_generation_trial_ids) == 1
+    failed_trial = repository.get_trial(result.failed_generation_trial_ids[0])
+    assert failed_trial is not None
+    assert failed_trial.outcome_reason == "generation_failed"
+    assert failed_trial.error_json["reason"] == "candidate_materialization_failed"
+
+
+def test_reconcile_persists_generation_failed_trial_when_api_key_missing(repository, dataset_manager, monkeypatch):
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    dataset_manager.prepare("mnist:v1")
+    repository.register_dataset("mnist:v1", str(dataset_manager.manifest_path_for("mnist:v1")))
+    runner = RunnerService(repository=repository, dataset_manager=dataset_manager)
+    generator = OpenRouterGenerationBackend(api_key=None)
+    system = EvolutionSystem(repository, dataset_manager, generator, RecordingLauncher(), runner)
+    track = system.create_track("missing-api-key", "mnist:v1", {"ready_queue_threshold": 1})
+
+    baseline = repository.list_trials(track.track_id)[0]
+    repository.finalize_trial(
+        trial_id=baseline.trial_id,
+        runner_id=None,
+        outcome_reason="succeeded",
+        metrics={"accuracy": 0.5},
+        score=0.5,
+        error_info=None,
+    )
+
+    result = system.reconcile_track(track.track_id)
+
+    assert result.generated_trial_ids == []
+    assert len(result.failed_generation_trial_ids) == 1
+    failed_trial = repository.get_trial(result.failed_generation_trial_ids[0])
+    assert failed_trial is not None
+    assert failed_trial.error_json["reason"] == "missing_api_key"
 
 
 def test_reconcile_persists_launcher_metadata_for_launched_trials(repository, dataset_manager):

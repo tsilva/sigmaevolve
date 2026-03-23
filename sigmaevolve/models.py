@@ -17,6 +17,7 @@ OUTCOME_TIMEOUT = "timeout"
 OUTCOME_CRASHED = "crashed"
 OUTCOME_EVAL_FAILED = "eval_failed"
 OUTCOME_STALE = "stale"
+OUTCOME_GENERATION_FAILED = "generation_failed"
 
 SUCCESS_OUTCOMES = {OUTCOME_SUCCEEDED, OUTCOME_TIMEOUT}
 ACTIVE_STATUSES = {TRIAL_STATUS_DISPATCHING, TRIAL_STATUS_ACTIVE}
@@ -27,6 +28,7 @@ TERMINAL_OUTCOMES = {
     OUTCOME_CRASHED,
     OUTCOME_EVAL_FAILED,
     OUTCOME_STALE,
+    OUTCOME_GENERATION_FAILED,
 }
 
 CANDIDATE_KIND_STRATEGY_V1 = "strategy_v1"
@@ -245,8 +247,13 @@ class TrialSummary:
 
 @dataclass(frozen=True)
 class GenerationResult:
-    source: str
+    source: str | None
     provenance_json: dict[str, Any]
+    error_info: dict[str, Any] | None = None
+
+    @property
+    def succeeded(self) -> bool:
+        return self.error_info is None and self.source is not None
 
 
 @dataclass(frozen=True)
@@ -254,6 +261,8 @@ class ReconcileResult:
     generated_trial_ids: list[str] = field(default_factory=list)
     launched_trial_ids: list[str] = field(default_factory=list)
     duplicate_hashes: list[str] = field(default_factory=list)
+    duplicate_trial_ids: list[str] = field(default_factory=list)
+    failed_generation_trial_ids: list[str] = field(default_factory=list)
     requeued_trial_ids: list[str] = field(default_factory=list)
     stale_trial_ids: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)

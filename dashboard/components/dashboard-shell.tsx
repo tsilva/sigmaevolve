@@ -135,6 +135,20 @@ function asPromptMessages(value: Record<string, unknown> | null): PromptMessage[
   });
 }
 
+function getGenerationPayload(value: Record<string, unknown> | null): Record<string, unknown> | null {
+  const raw = value?.generation;
+  if (!raw || typeof raw !== "object") {
+    return null;
+  }
+  return raw as Record<string, unknown>;
+}
+
+function getGenerationPrompt(value: Record<string, unknown> | null, field: "system_prompt" | "user_prompt"): string | null {
+  const generation = getGenerationPayload(value);
+  const prompt = generation?.[field];
+  return typeof prompt === "string" && prompt.length > 0 ? prompt : null;
+}
+
 function normalizeSourceSnippet(content: string): string {
   const normalized = content.replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim();
   return normalized ? `${normalized}\n` : "";
@@ -189,6 +203,13 @@ function formatGenerationProperties(value: Record<string, unknown> | null): stri
   }
 
   return JSON.stringify(payload, null, 2);
+}
+
+function formatAssertionFailures(failures: string[]): string {
+  if (failures.length === 0) {
+    return "No assertion failures recorded.";
+  }
+  return failures.join("\n");
 }
 
 function detectPromptLanguage(content: string): "json" | "markdown" {
@@ -270,6 +291,9 @@ function getTrialTone(trial: TrialListItem): "success" | "warning" | "danger" | 
   if (trial.status !== "finished") {
     return "neutral";
   }
+  if (trial.outcomeReason === "duplicate") {
+    return "warning";
+  }
   if (trial.hasError) {
     return "danger";
   }
@@ -288,6 +312,12 @@ function getTrialNarrative(trial: TrialListItem): string {
   }
   if (trial.status === "active") {
     return trial.lastPhase ? `Running in ${trial.lastPhase}.` : "Currently executing.";
+  }
+  if (trial.outcomeReason === "generation_failed") {
+    return "Generation failed before queueing a runnable candidate.";
+  }
+  if (trial.outcomeReason === "duplicate") {
+    return "Generated a duplicate candidate hash and skipped dispatch.";
   }
   if (trial.hasError) {
     return "Finished with an execution error.";
@@ -314,6 +344,8 @@ function matchesSearch(trial: TrialListItem, query: string): boolean {
     trial.model,
     trial.lastPhase,
     trial.source,
+    trial.responseText,
+    trial.generatedSource,
   ]
     .filter((value): value is string => typeof value === "string" && value.length > 0)
     .join(" ")
@@ -497,9 +529,17 @@ export function DashboardShell({
       ? null
       : detail.trials.filter((trial) => trial.score > selectedTrial.score).length + 1;
   const selectedPromptMessages = asPromptMessages(selectedTrial?.provenanceJson ?? null);
+  const selectedSystemPrompt = getGenerationPrompt(selectedTrial?.provenanceJson ?? null, "system_prompt");
+  const selectedUserPrompt = getGenerationPrompt(selectedTrial?.provenanceJson ?? null, "user_prompt");
   const selectedMixedSource = extractMixedSourceSnapshot(selectedPromptMessages);
   const selectedCrashDetails = extractCrashDetails(selectedTrial?.errorJson ?? null);
   const selectedCrashSummary = summarizeCrashDetails(selectedCrashDetails);
+  const selectedGeneratedSource = selectedTrial?.generatedSource ?? null;
+  const selectedResponseText = selectedTrial?.responseText ?? null;
+  const selectedAssertionFailures = selectedTrial?.generationAssertionFailures ?? [];
+  const selectedShowsDiagnosticSource = Boolean(
+    selectedTrial && selectedGeneratedSource && selectedGeneratedSource !== selectedTrial.source,
+  );
   const progressPercent = getProgressPercent(detail.track);
   const coveragePercent = getCoveragePercent(detail.track);
   const attentionCount = getAttentionCount(detail.track);
@@ -1150,6 +1190,16 @@ export function DashboardShell({
                         <span>Crash detail</span>
                         <strong title={selectedCrashDetails ?? undefined}>{selectedCrashSummary}</strong>
                       </div>
+                      <div className="context-row">
+                        <span>Generation assertions</span>
+                        <strong>
+                          {selectedTrial.generationAssertionsPassed === null
+                            ? "Not recorded"
+                            : selectedTrial.generationAssertionsPassed
+                              ? "Passed"
+                              : "Failed"}
+                        </strong>
+                      </div>
                     </div>
                   </article>
 
@@ -1170,22 +1220,68 @@ export function DashboardShell({
                     <HighlightedCode code={formatGenerationProperties(selectedTrial.provenanceJson)} language="json" wrap />
                   </article>
 
-                  {selectedPromptMessages.length > 0 ? (
-                    <article className="analysis-card wide-card">
-                      <div className="analysis-card-header">
-                        <h3>Prompt context</h3>
-                        <span>{selectedPromptMessages.length} messages</span>
+                  <article className="analysis-card wide-card">
+                    <div className="analysis-card-header">
+                      <h3>System prompt</h3>
+                    </div>
+                    <HighlightedCode
+                      code={selectedSystemPrompt ?? "No system prompt recorded."}
+                      language={detectPromptLanguage(selectedSystemPrompt ?? "")}
+                      wrap
+                    />
+                  </article>
+
+                  <article className="analysis-card wide-card">
+                    <div className="analysis-card-header">
+                      <h3>User prompt</h3>
+                    </div>
+                    <HighlightedCode
+                      code={selectedUserPrompt ?? "No user prompt recorded."}
+                      language={detectPromptLanguage(selectedUserPrompt ?? "")}
+                      wrap
+                    />
+                  </article>
+
+                  <article className="analysis-card wide-card">
+                    <div className="analysis-card-header">
+                      <h3>Raw LLM response</h3>
+                    </div>
+                    <HighlightedCode
+                      code={selectedResponseText ?? "No response received."}
+                      language={detectPromptLanguage(selectedResponseText ?? "")}
+                      wrap
+                    />
+                  </article>
+
+                  <article className="analysis-card wide-card">
+                    <div className="analysis-card-header">
+                      <h3>Generated program</h3>
+                    </div>
+                    <HighlightedCode
+                      code={selectedGeneratedSource ?? "No generated program recorded."}
+                      language="python"
+                      wrap
+                    />
+                  </article>
+
+                  <article className="analysis-card wide-card">
+                    <div className="analysis-card-header">
+                      <h3>Generation assertions</h3>
+                    </div>
+                    <div className="context-stack">
+                      <div className="context-row">
+                        <span>Passed</span>
+                        <strong>
+                          {selectedTrial.generationAssertionsPassed === null
+                            ? "Not recorded"
+                            : selectedTrial.generationAssertionsPassed
+                              ? "Yes"
+                              : "No"}
+                        </strong>
                       </div>
-                      <div className="prompt-stack">
-                        {selectedPromptMessages.map((message, index) => (
-                          <section key={`${message.role}-${index}`} className="prompt-card">
-                            <div className="prompt-role">{message.role}</div>
-                            <HighlightedCode code={message.content} language={detectPromptLanguage(message.content)} wrap />
-                          </section>
-                        ))}
-                      </div>
-                    </article>
-                  ) : null}
+                    </div>
+                    <HighlightedCode code={formatAssertionFailures(selectedAssertionFailures)} language="markdown" wrap />
+                  </article>
 
                   <article className="analysis-card wide-card">
                     <div className="analysis-card-header">
@@ -1197,7 +1293,7 @@ export function DashboardShell({
                       </span>
                     </div>
                     {selectedMixedSource ? (
-                      <SourceDiff before={selectedMixedSource.source} after={selectedTrial.source || ""} />
+                      <SourceDiff before={selectedMixedSource.source} after={selectedGeneratedSource ?? selectedTrial.source ?? ""} />
                     ) : (
                       <p className="section-copy">No prompt-embedded source snippets were recorded for this trial.</p>
                     )}
@@ -1214,8 +1310,14 @@ export function DashboardShell({
 
                   <article className="analysis-card wide-card">
                     <div className="analysis-card-header">
-                      <h3>Source under test</h3>
+                      <h3>{selectedShowsDiagnosticSource ? "Diagnostic source row" : "Source under test"}</h3>
                     </div>
+                    {selectedShowsDiagnosticSource ? (
+                      <p className="section-copy">
+                        This trial never became runnable. The stored row source is diagnostic-only; use Generated
+                        program above for the attempted candidate.
+                      </p>
+                    ) : null}
                     <HighlightedCode code={selectedTrial.source || "// No source captured."} language="python" wrap />
                   </article>
                 </div>

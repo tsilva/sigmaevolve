@@ -9,6 +9,7 @@ from importlib import resources
 from dataclasses import dataclass
 from typing import Protocol
 from urllib import request
+from urllib.error import HTTPError, URLError
 
 from sigmaevolve.evolve_blocks import EVOLVE_BLOCK_END, EVOLVE_BLOCK_START
 from sigmaevolve.models import CANDIDATE_KIND_STRATEGY_V1, DatasetManifest, GenerationResult, TrackRecord, TrialSummary
@@ -41,6 +42,8 @@ class FixedGenerationBackend:
         generation_index: int = 0,
         duplicate_retry_count: int = 0,
     ) -> GenerationResult:
+        system_prompt = "Test-only fixed generator stub for a recorded LLM prompt."
+        user_prompt = "Use this parent trial as the base candidate:\n```python\n# fixed backend stub\n```"
         return GenerationResult(
             source=self.source,
             provenance_json={
@@ -57,14 +60,23 @@ class FixedGenerationBackend:
                 "request_messages": [
                     {
                         "role": "system",
-                        "content": "Test-only fixed generator stub for a recorded LLM prompt.",
+                        "content": system_prompt,
                     },
                     {
                         "role": "user",
-                        "content": "Use this parent trial as the base candidate:\n```python\n# fixed backend stub\n```",
+                        "content": user_prompt,
                     },
                 ],
                 "context_trial_ids": [trial.trial_id for trial in context_trials],
+                "generation": {
+                    "system_prompt": system_prompt,
+                    "user_prompt": user_prompt,
+                    "response_text": self.source,
+                    "generated_source": None,
+                    "assertions_passed": False,
+                    "assertion_failures": [],
+                    "candidate_hash": None,
+                },
             },
         )
 
@@ -248,19 +260,54 @@ class OpenRouterGenerationBackend:
         negative_trials: list[TrialSummary],
         selected_config: dict[str, object],
     ) -> list[dict[str, str]]:
+        system_prompt = self._build_system_prompt_text()
+        user_prompt = self._build_user_prompt_text(
+            track,
+            dataset_manifest,
+            context_trials,
+            negative_trials,
+            selected_config,
+        )
         return [
-            {"role": "system", "content": self._build_system_prompt_text()},
-            {
-                "role": "user",
-                "content": self._build_user_prompt_text(
-                    track,
-                    dataset_manifest,
-                    context_trials,
-                    negative_trials,
-                    selected_config,
-                ),
-            },
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
         ]
+
+    def _base_provenance(
+        self,
+        selected_config: dict[str, object],
+        request_messages: list[dict[str, str]],
+        context_trials: list[TrialSummary],
+        *,
+        generation_index: int,
+        duplicate_retry_count: int,
+        provider_response_id: str | None = None,
+        response_text: str | None = None,
+    ) -> dict[str, object]:
+        system_prompt = request_messages[0]["content"] if request_messages else ""
+        user_prompt = request_messages[1]["content"] if len(request_messages) > 1 else ""
+        provenance_json: dict[str, object] = {
+            "backend": "openrouter",
+            "model": str(selected_config["model"]),
+            "candidate_kind": CANDIDATE_KIND_STRATEGY_V1,
+            "generation_config": dict(selected_config),
+            "generation_index": generation_index,
+            "duplicate_retry_count": duplicate_retry_count,
+            "request_messages": request_messages,
+            "context_trial_ids": [trial.trial_id for trial in context_trials],
+            "generation": {
+                "system_prompt": system_prompt,
+                "user_prompt": user_prompt,
+                "response_text": response_text,
+                "generated_source": None,
+                "assertions_passed": False,
+                "assertion_failures": [],
+                "candidate_hash": None,
+            },
+        }
+        if provider_response_id:
+            provenance_json["provider_response_id"] = provider_response_id
+        return provenance_json
 
     def _extract_source(self, raw_text: str) -> str:
         match = re.search(r"```(?:python)?\n(.*?)```", raw_text, flags=re.DOTALL)
@@ -277,21 +324,32 @@ class OpenRouterGenerationBackend:
         generation_index: int = 0,
         duplicate_retry_count: int = 0,
     ) -> GenerationResult:
-        if not self.api_key:
-            raise RuntimeError("OPENROUTER_API_KEY is required for OpenRouter generation.")
         generation_policy = dict(track.policy_json["generation_backend"])
         generation_policy["_generation_index"] = generation_index + duplicate_retry_count
         selected_config = self._normalize_generation_config(generation_policy)
         selected_config["temperature"] = float(selected_config.get("temperature", 0.2)) + (0.1 * duplicate_retry_count)
+        request_messages = self._build_prompt(
+            track,
+            dataset_manifest,
+            context_trials,
+            negative_trials or [],
+            selected_config,
+        )
+        if not self.api_key:
+            return GenerationResult(
+                source=None,
+                provenance_json=self._base_provenance(
+                    selected_config,
+                    request_messages,
+                    context_trials,
+                    generation_index=generation_index,
+                    duplicate_retry_count=duplicate_retry_count,
+                ),
+                error_info={"reason": "missing_api_key", "detail": "OPENROUTER_API_KEY is required for OpenRouter generation."},
+            )
         payload = {
             "model": selected_config["model"],
-            "messages": self._build_prompt(
-                track,
-                dataset_manifest,
-                context_trials,
-                negative_trials or [],
-                selected_config,
-            ),
+            "messages": request_messages,
             "temperature": selected_config.get("temperature", 0.2),
             "max_tokens": selected_config.get("max_tokens", 2500),
         }
@@ -306,21 +364,105 @@ class OpenRouterGenerationBackend:
             },
             method="POST",
         )
-        with request.urlopen(req, timeout=120) as response:
-            body = json.loads(response.read().decode("utf-8"))
-        content = body["choices"][0]["message"]["content"]
-        request_messages = payload["messages"]
+        raw_body: str | None = None
+        try:
+            with request.urlopen(req, timeout=120) as response:
+                raw_body = response.read().decode("utf-8")
+        except HTTPError as exc:
+            raw_body = exc.read().decode("utf-8", errors="replace")
+            return GenerationResult(
+                source=None,
+                provenance_json=self._base_provenance(
+                    selected_config,
+                    request_messages,
+                    context_trials,
+                    generation_index=generation_index,
+                    duplicate_retry_count=duplicate_retry_count,
+                ),
+                error_info={
+                    "reason": "provider_http_error",
+                    "detail": f"{exc.code} {exc.reason}",
+                    "status_code": exc.code,
+                    "response_body": raw_body,
+                },
+            )
+        except URLError as exc:
+            return GenerationResult(
+                source=None,
+                provenance_json=self._base_provenance(
+                    selected_config,
+                    request_messages,
+                    context_trials,
+                    generation_index=generation_index,
+                    duplicate_retry_count=duplicate_retry_count,
+                ),
+                error_info={"reason": "provider_request_failed", "detail": str(exc.reason)},
+            )
+        except Exception as exc:
+            return GenerationResult(
+                source=None,
+                provenance_json=self._base_provenance(
+                    selected_config,
+                    request_messages,
+                    context_trials,
+                    generation_index=generation_index,
+                    duplicate_retry_count=duplicate_retry_count,
+                ),
+                error_info={"reason": "provider_request_failed", "detail": str(exc)},
+            )
+        try:
+            body = json.loads(raw_body)
+        except json.JSONDecodeError as exc:
+            return GenerationResult(
+                source=None,
+                provenance_json=self._base_provenance(
+                    selected_config,
+                    request_messages,
+                    context_trials,
+                    generation_index=generation_index,
+                    duplicate_retry_count=duplicate_retry_count,
+                ),
+                error_info={"reason": "provider_response_invalid_json", "detail": str(exc), "response_body": raw_body},
+            )
+        choices = body.get("choices")
+        if not isinstance(choices, list) or not choices:
+            return GenerationResult(
+                source=None,
+                provenance_json=self._base_provenance(
+                    selected_config,
+                    request_messages,
+                    context_trials,
+                    generation_index=generation_index,
+                    duplicate_retry_count=duplicate_retry_count,
+                    provider_response_id=body.get("id"),
+                ),
+                error_info={"reason": "provider_response_missing_choices", "response_body": raw_body},
+            )
+        message = choices[0].get("message") if isinstance(choices[0], dict) else None
+        content = message.get("content") if isinstance(message, dict) else None
+        if not isinstance(content, str) or not content.strip():
+            return GenerationResult(
+                source=None,
+                provenance_json=self._base_provenance(
+                    selected_config,
+                    request_messages,
+                    context_trials,
+                    generation_index=generation_index,
+                    duplicate_retry_count=duplicate_retry_count,
+                    provider_response_id=body.get("id"),
+                    response_text=content if isinstance(content, str) else None,
+                ),
+                error_info={"reason": "provider_response_missing_content", "response_body": raw_body},
+            )
         return GenerationResult(
             source=self._extract_source(content),
-            provenance_json={
-                "backend": "openrouter",
-                "model": selected_config["model"],
-                "candidate_kind": CANDIDATE_KIND_STRATEGY_V1,
-                "generation_config": selected_config,
-                "generation_index": generation_index,
-                "duplicate_retry_count": duplicate_retry_count,
-                "provider_response_id": body.get("id"),
-                "request_messages": request_messages,
-                "context_trial_ids": [trial.trial_id for trial in context_trials],
-            },
+            provenance_json=self._base_provenance(
+                selected_config,
+                request_messages,
+                context_trials,
+                generation_index=generation_index,
+                duplicate_retry_count=duplicate_retry_count,
+                provider_response_id=body.get("id"),
+                response_text=content,
+            ),
         )

@@ -39,6 +39,10 @@ export type TrialListItem = {
   durationSec: number | null;
   hasError: boolean;
   source: string;
+  responseText: string | null;
+  generatedSource: string | null;
+  generationAssertionsPassed: boolean | null;
+  generationAssertionFailures: string[];
   errorJson: Record<string, unknown> | null;
   provenanceJson: Record<string, unknown> | null;
 };

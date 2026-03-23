@@ -11,6 +11,8 @@ from sqlalchemy.engine import Connection, Engine
 from sigmaevolve.hashing import compute_script_hash, normalize_source
 from sigmaevolve.models import (
     ACTIVE_STATUSES,
+    OUTCOME_DUPLICATE,
+    OUTCOME_GENERATION_FAILED,
     OUTCOME_STALE,
     SUCCESS_OUTCOMES,
     TERMINAL_OUTCOMES,
@@ -200,6 +202,21 @@ def _has_error_signal(payload: dict[str, Any] | None) -> bool:
     return payload.get("returncode") is not None
 
 
+def _build_generation_attempt_source(trial_id: str, outcome_reason: str) -> str:
+    return normalize_source(
+        "\n".join(
+            [
+                "# sigmaevolve generation attempt",
+                f"# trial_id: {trial_id}",
+                f"# outcome_reason: {outcome_reason}",
+                "# diagnostic_source: true",
+                "raise RuntimeError('diagnostic generation attempt source; see provenance_json.generation')",
+            ]
+        )
+        + "\n"
+    )
+
+
 class SQLAlchemyRepository:
     def __init__(self, database_url: str) -> None:
         database_url = normalize_database_url(database_url)
@@ -344,6 +361,48 @@ class SQLAlchemyRepository:
             row = conn.execute(sa.select(trials_table).where(trials_table.c.trial_id == trial_id)).one()
             self._notify_dashboard(conn, track_id=track_id, reason="trial_changed")
         return _row_to_trial(row), True
+
+    def create_generation_attempt_trial(
+        self,
+        track_id: str,
+        provenance_json: dict[str, Any],
+        *,
+        outcome_reason: str,
+        error_json: dict[str, Any] | None,
+    ) -> TrialRecord:
+        if outcome_reason not in {OUTCOME_DUPLICATE, OUTCOME_GENERATION_FAILED}:
+            raise ValueError(f"Unsupported generation attempt outcome_reason: {outcome_reason}")
+        validated_provenance = _validate_trial_provenance(provenance_json)
+        trial_id = make_id("trial")
+        source = _build_generation_attempt_source(trial_id, outcome_reason)
+        script_hash = compute_script_hash(source)
+        created_at = now_utc()
+        with self.transaction() as conn:
+            conn.execute(
+                sa.insert(trials_table).values(
+                    trial_id=trial_id,
+                    track_id=track_id,
+                    source=source,
+                    script_hash=script_hash,
+                    provenance_json=validated_provenance,
+                    status=TRIAL_STATUS_FINISHED,
+                    outcome_reason=outcome_reason,
+                    dispatch_token=None,
+                    dispatch_deadline_at=None,
+                    runner_id=None,
+                    heartbeat_at=created_at,
+                    started_at=None,
+                    finished_at=created_at,
+                    metrics_json=None,
+                    score=0.0,
+                    error_json=dict(error_json) if error_json else None,
+                    dispatch_attempts=0,
+                    created_at=created_at,
+                )
+            )
+            row = conn.execute(sa.select(trials_table).where(trials_table.c.trial_id == trial_id)).one()
+            self._notify_dashboard(conn, track_id=track_id, reason="trial_changed")
+        return _row_to_trial(row)
 
     def get_trial(self, trial_id: str) -> TrialRecord | None:
         with self.engine.connect() as conn:

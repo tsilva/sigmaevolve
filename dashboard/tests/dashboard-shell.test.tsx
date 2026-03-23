@@ -68,6 +68,10 @@ function createTrial(overrides: Partial<TrialListItem>): TrialListItem {
     durationSec: 60,
     hasError: false,
     source: "print('hello')\n",
+    responseText: null,
+    generatedSource: null,
+    generationAssertionsPassed: null,
+    generationAssertionFailures: [],
     errorJson: null,
     provenanceJson: { backend: "openrouter", request_messages: [] },
     ...overrides,
@@ -241,6 +245,7 @@ describe("DashboardShell", () => {
       createTrial({
         trialId: "trial_diff",
         source: "print('new candidate')\n",
+        generatedSource: "print('new candidate')\n",
         provenanceJson: {
           backend: "openrouter",
           request_messages: [
@@ -276,6 +281,39 @@ describe("DashboardShell", () => {
     expect(screen.getAllByText("print('new candidate')").length).toBeGreaterThan(0);
     expect(screen.getAllByText("print('old parent')").length).toBeGreaterThan(0);
     expect(screen.getAllByText("print('bad candidate')").length).toBeGreaterThan(0);
+  });
+
+  it("renders generation trace fields and diagnostic-source fallback for failed generation attempts", () => {
+    renderShell({
+      detail: createDetail([
+        createTrial({
+          trialId: "trial_generation_failed",
+          outcomeReason: "generation_failed",
+          hasError: true,
+          source: "# diagnostic stub\n",
+          responseText: null,
+          generatedSource: "print('attempted candidate')\n",
+          generationAssertionsPassed: false,
+          generationAssertionFailures: ["candidate modified immutable text outside evolve blocks"],
+          provenanceJson: {
+            backend: "openrouter",
+            request_messages: [],
+            generation: {
+              system_prompt: "system prompt text",
+              user_prompt: "user prompt text",
+            },
+          },
+        }),
+      ]),
+      initialSelectedTrialId: "trial_generation_failed",
+    });
+
+    expect(screen.getByText("system prompt text")).toBeTruthy();
+    expect(screen.getByText("user prompt text")).toBeTruthy();
+    expect(screen.getByText("No response received.")).toBeTruthy();
+    expect(screen.getByText("print('attempted candidate')")).toBeTruthy();
+    expect(screen.getByText("candidate modified immutable text outside evolve blocks")).toBeTruthy();
+    expect(screen.getByText(/stored row source is diagnostic-only/i)).toBeTruthy();
   });
 
   it("keeps the explorer visible when a filter changes the visible trial set", async () => {

@@ -44,7 +44,7 @@ type TrialRow = {
   provenanceJson: Record<string, unknown> | null;
 };
 
-const FAILURE_OUTCOMES = new Set(["crashed", "eval_failed", "stale"]);
+const FAILURE_OUTCOMES = new Set(["crashed", "eval_failed", "stale", "generation_failed"]);
 
 function hasErrorSignal(value: Record<string, unknown> | null): boolean {
   if (!value) {
@@ -93,6 +93,23 @@ function asNullableString(value: string | null | undefined): string | null {
   return value;
 }
 
+function asStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.filter((entry): entry is string => typeof entry === "string" && entry.length > 0);
+}
+
+function getGenerationPayload(
+  provenanceJson: Record<string, unknown> | null,
+): Record<string, unknown> | null {
+  const generation = provenanceJson?.generation;
+  if (!generation || typeof generation !== "object") {
+    return null;
+  }
+  return generation as Record<string, unknown>;
+}
+
 export function mapTrackListItem(row: TrackRow): TrackListItem {
   return {
     trackId: row.trackId,
@@ -112,6 +129,7 @@ export function mapTrackListItem(row: TrackRow): TrackListItem {
 
 export function mapTrialListItem(row: TrialRow): TrialListItem {
   const hasError = FAILURE_OUTCOMES.has(row.outcomeReason ?? "") || hasErrorSignal(row.errorJson ?? null);
+  const generation = getGenerationPayload(row.provenanceJson ?? null);
   return {
     trialId: row.trialId,
     status: row.status,
@@ -134,6 +152,11 @@ export function mapTrialListItem(row: TrialRow): TrialListItem {
     durationSec: asNullableNumber(row.durationSec),
     hasError,
     source: row.source ?? "",
+    responseText: asNullableString(generation?.response_text as string | null | undefined),
+    generatedSource: asNullableString(generation?.generated_source as string | null | undefined),
+    generationAssertionsPassed:
+      typeof generation?.assertions_passed === "boolean" ? (generation.assertions_passed as boolean) : null,
+    generationAssertionFailures: asStringArray(generation?.assertion_failures),
     errorJson: row.errorJson ?? null,
     provenanceJson: row.provenanceJson ?? null,
   };

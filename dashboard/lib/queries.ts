@@ -173,7 +173,7 @@ export async function listTrials(
         end as "durationSec",
         (
           status = 'finished'
-          and outcome_reason in ('crashed', 'eval_failed', 'stale')
+          and outcome_reason in ('crashed', 'eval_failed', 'stale', 'generation_failed')
         ) as "hasError"
       from trials
       where ${whereClauses.join(" and ")}
