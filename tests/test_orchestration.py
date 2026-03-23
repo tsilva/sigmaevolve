@@ -27,6 +27,58 @@ def test_create_track_seeds_one_baseline_candidate(system):
     assert trials[0].provenance_json["candidate_kind"] == CANDIDATE_KIND_STRATEGY_V1
 
 
+def test_reconcile_generates_from_queued_baseline_before_first_result(repository, dataset_manager):
+    class CapturingGenerator:
+        def __init__(self):
+            self.context_trials = None
+
+        def generate(
+            self,
+            track,
+            dataset_manifest,
+            context_trials,
+            negative_trials=None,
+            generation_index=0,
+            duplicate_retry_count=0,
+        ):
+            del track, dataset_manifest, negative_trials, generation_index, duplicate_retry_count
+            self.context_trials = context_trials
+            return GenerationResult(
+                source=build_candidate_train_script(
+                    build_model_block(
+                        """
+def forward(self, x):
+    flat = x.reshape(x.shape[0], -1)
+    scores = flat.sum(dim=1)
+    return torch.stack((-scores, scores), dim=1)
+"""
+                    )
+                ),
+                provenance_json=make_llm_provenance(
+                    model="cold-start",
+                    context_trial_ids=[trial.trial_id for trial in context_trials],
+                ),
+            )
+
+    dataset_manager.prepare("mnist:v1")
+    repository.register_dataset("mnist:v1", str(dataset_manager.manifest_path_for("mnist:v1")))
+    generator = CapturingGenerator()
+    runner = RunnerService(repository=repository, dataset_manager=dataset_manager)
+    system = EvolutionSystem(repository, dataset_manager, generator, RecordingLauncher(), runner)
+    track = system.create_track("cold-start", "mnist:v1", {})
+
+    baseline = repository.list_trials(track.track_id)[0]
+    result = system.reconcile_track(track.track_id, ready_queue_threshold=2, max_parallelism=0)
+    trials = repository.list_trials(track.track_id)
+
+    assert generator.context_trials is not None
+    assert [trial.trial_id for trial in generator.context_trials] == [baseline.trial_id]
+    assert len(result.generated_trial_ids) == 1
+    assert len(trials) == 2
+    assert trials[0].trial_id == baseline.trial_id
+    assert trials[0].status == "queued"
+
+
 def test_same_source_is_deduped_within_track_and_allowed_across_tracks(system):
     system.prepare_dataset("mnist:v1")
     first = system.create_track("a", "mnist:v1", {})

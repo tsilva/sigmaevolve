@@ -94,6 +94,18 @@ def forward(self, x):
 
 MISSING_EXPORT_BLOCK = "import torch\n"
 
+LOGGING_BLOCK = build_model_block(
+    """
+def forward(self, x):
+    print("stdout-marker", flush=True)
+    print("stderr-marker", file=sys.stderr, flush=True)
+    flat = x.reshape(x.shape[0], -1)
+    scores = flat.sum(dim=1)
+    return torch.stack((-scores, scores), dim=1)
+""",
+    imports="import sys\nimport torch",
+)
+
 
 def build_inline_system(repository, dataset_manager, hard_timeout_sec=5.0):
     runner = RunnerService(repository=repository, dataset_manager=dataset_manager, hard_timeout_sec=hard_timeout_sec)
@@ -210,6 +222,18 @@ def test_missing_required_exports_finalizes_as_eval_failed(repository, dataset_m
     assert finished.outcome_reason == "eval_failed"
     assert finished.error_json["reason"] == "train_script_contract_violation"
     assert finished.score == 0.0
+
+
+def test_run_streams_child_output_to_parent_logs(repository, dataset_manager, capsys):
+    system = build_inline_system(repository, dataset_manager)
+    system.prepare_dataset("mnist:v1")
+    track = system.create_track("logging", "mnist:v1", {"epochs": 1})
+    finalize_baseline(system, track.track_id)
+    finished = _run_trial(system, track.track_id, LOGGING_BLOCK)
+    captured = capsys.readouterr()
+    assert finished.outcome_reason == "succeeded"
+    assert "stdout-marker" in captured.out
+    assert "stderr-marker" in captured.err
 
 
 def test_rescore_updates_only_derived_score(repository, dataset_manager):

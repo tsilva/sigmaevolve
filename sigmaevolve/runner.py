@@ -6,6 +6,7 @@ import sys
 import tempfile
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +38,64 @@ def _coerce_text(value: Any) -> str | None:
     if isinstance(value, bytes):
         return value.decode("utf-8", errors="replace")
     return str(value)
+
+
+@dataclass(frozen=True)
+class _StreamedProcessResult:
+    returncode: int
+    stdout: str | None
+    stderr: str | None
+    timed_out: bool
+
+
+def _stream_pipe(pipe, sink, chunks: list[str]) -> None:
+    try:
+        for chunk in iter(pipe.readline, ""):
+            if not chunk:
+                break
+            sink.write(chunk)
+            sink.flush()
+            chunks.append(chunk)
+    finally:
+        pipe.close()
+
+
+def _run_streamed_subprocess(command: list[str], timeout: float) -> _StreamedProcessResult:
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+    )
+    assert process.stdout is not None
+    assert process.stderr is not None
+
+    stdout_chunks: list[str] = []
+    stderr_chunks: list[str] = []
+    stdout_thread = threading.Thread(target=_stream_pipe, args=(process.stdout, sys.stdout, stdout_chunks), daemon=True)
+    stderr_thread = threading.Thread(target=_stream_pipe, args=(process.stderr, sys.stderr, stderr_chunks), daemon=True)
+    stdout_thread.start()
+    stderr_thread.start()
+
+    timed_out = False
+    try:
+        returncode = process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        process.kill()
+        returncode = process.wait()
+
+    stdout_thread.join()
+    stderr_thread.join()
+    stdout = "".join(stdout_chunks) or None
+    stderr = "".join(stderr_chunks) or None
+    return _StreamedProcessResult(
+        returncode=returncode,
+        stdout=stdout,
+        stderr=stderr,
+        timed_out=timed_out,
+    )
 
 
 class RunnerService:
@@ -251,30 +310,19 @@ class RunnerService:
                 )
                 command = [self.python_executable, str(train_script_path), "--config", str(config_path)]
                 timed_out = False
-                completed: subprocess.CompletedProcess[str] | None = None
                 stdout: str | None = None
                 stderr: str | None = None
                 started_at = time.monotonic()
-                try:
-                    completed = subprocess.run(
-                        command,
-                        capture_output=True,
-                        text=True,
-                        timeout=self.hard_timeout_sec,
-                        check=False,
-                    )
-                    stdout = _coerce_text(completed.stdout)
-                    stderr = _coerce_text(completed.stderr)
-                except subprocess.TimeoutExpired as exc:
-                    timed_out = True
-                    stdout = _coerce_text(exc.stdout)
-                    stderr = _coerce_text(exc.stderr)
+                completed = _run_streamed_subprocess(command, timeout=self.hard_timeout_sec)
+                timed_out = completed.timed_out
+                stdout = _coerce_text(completed.stdout)
+                stderr = _coerce_text(completed.stderr)
                 process_elapsed_sec = time.monotonic() - started_at
                 progress_payload = self._read_progress(progress_path)
                 debug_payload = self._read_debug_payload(debug_path)
                 timed_out = bool(timed_out or (debug_payload or {}).get("timed_out"))
 
-                if completed is not None and completed.returncode != 0:
+                if completed.returncode != 0 and not timed_out:
                     failure_outcome = (debug_payload or {}).get("failure_outcome")
                     if failure_outcome == OUTCOME_EVAL_FAILED:
                         self.repository.finalize_trial(

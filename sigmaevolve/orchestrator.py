@@ -116,6 +116,33 @@ class Orchestrator:
         sampled.sort(key=lambda trial: (-float(trial.score), candidate_ranks[trial.trial_id]))
         return sampled
 
+    def _sample_generation_context_trials(self, track_id: str, sampling_settings: dict, generation_index: int) -> list[TrialSummary]:
+        successful_context = self._sample_successful_context_trials(track_id, sampling_settings, generation_index)
+        if successful_context:
+            return successful_context
+
+        if self.repository.sample_trial_context(track_id, limit=self.repository.count_trials(track_id)):
+            return []
+
+        # Cold-start tracks only have the system-seeded baseline. Use it as the
+        # first parent before any scored results exist.
+        for trial in self.repository.list_trials(track_id):
+            provenance = dict(trial.provenance_json or {})
+            if provenance.get("backend") != "baseline":
+                continue
+            return [
+                TrialSummary(
+                    trial_id=trial.trial_id,
+                    score=float(trial.score or 0.0),
+                    metrics_json=dict(trial.metrics_json) if trial.metrics_json else None,
+                    source=trial.source,
+                    provenance_json=provenance,
+                    outcome_reason=trial.outcome_reason,
+                    error_json=dict(trial.error_json) if trial.error_json else None,
+                )
+            ]
+        return []
+
     def _with_generation_trace(
         self,
         provenance_json: dict[str, Any],
@@ -246,7 +273,7 @@ class Orchestrator:
         generation_index: int,
         duplicate_retry_count: int,
     ) -> tuple[Future[Any], GenerationAttempt] | None:
-        context_trials = self._sample_successful_context_trials(
+        context_trials = self._sample_generation_context_trials(
             track.track_id,
             sampling_settings,
             generation_index,
