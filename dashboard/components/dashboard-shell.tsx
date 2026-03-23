@@ -1174,23 +1174,15 @@ export function DashboardShell({
                         <span>Last known phase</span>
                         <strong>{selectedTrial.lastPhase ?? "—"}</strong>
                       </div>
-                    </div>
-                  </article>
-
-                  <article className="analysis-card">
-                    <div className="analysis-card-header">
-                      <h3>Failure context</h3>
-                    </div>
-                    <div className="context-stack">
-                      <div className="context-row">
+                      <div className="timeline-row">
                         <span>Outcome reason</span>
                         <strong>{selectedTrial.outcomeReason ?? "Not reported"}</strong>
                       </div>
-                      <div className="context-row">
+                      <div className="timeline-row">
                         <span>Crash detail</span>
                         <strong title={selectedCrashDetails ?? undefined}>{selectedCrashSummary}</strong>
                       </div>
-                      <div className="context-row">
+                      <div className="timeline-row">
                         <span>Generation assertions</span>
                         <strong>
                           {selectedTrial.generationAssertionsPassed === null
@@ -1201,6 +1193,22 @@ export function DashboardShell({
                         </strong>
                       </div>
                     </div>
+                  </article>
+
+                  <article className="analysis-card wide-card">
+                    <div className="analysis-card-header">
+                      <h3>Mixed vs generated diff</h3>
+                      <span>
+                        {selectedMixedSource
+                          ? `${selectedMixedSource.snippetCount} prompt source${selectedMixedSource.snippetCount === 1 ? "" : "s"}`
+                          : "No prompt source snippets"}
+                      </span>
+                    </div>
+                    {selectedMixedSource ? (
+                      <SourceDiff before={selectedMixedSource.source} after={selectedGeneratedSource ?? selectedTrial.source ?? ""} />
+                    ) : (
+                      <p className="section-copy">No prompt-embedded source snippets were recorded for this trial.</p>
+                    )}
                   </article>
 
                   <article className="analysis-card">
@@ -1257,8 +1265,14 @@ export function DashboardShell({
                     <div className="analysis-card-header">
                       <h3>Generated program</h3>
                     </div>
+                    {selectedShowsDiagnosticSource ? (
+                      <p className="section-copy">
+                        This trial never became runnable. The stored row source is diagnostic-only; this is the
+                        attempted candidate captured from generation.
+                      </p>
+                    ) : null}
                     <HighlightedCode
-                      code={selectedGeneratedSource ?? "No generated program recorded."}
+                      code={selectedGeneratedSource ?? selectedTrial.source ?? "No generated program recorded."}
                       language="python"
                       wrap
                     />
@@ -1283,22 +1297,6 @@ export function DashboardShell({
                     <HighlightedCode code={formatAssertionFailures(selectedAssertionFailures)} language="markdown" wrap />
                   </article>
 
-                  <article className="analysis-card wide-card">
-                    <div className="analysis-card-header">
-                      <h3>Mixed vs generated diff</h3>
-                      <span>
-                        {selectedMixedSource
-                          ? `${selectedMixedSource.snippetCount} prompt source${selectedMixedSource.snippetCount === 1 ? "" : "s"}`
-                          : "No prompt source snippets"}
-                      </span>
-                    </div>
-                    {selectedMixedSource ? (
-                      <SourceDiff before={selectedMixedSource.source} after={selectedGeneratedSource ?? selectedTrial.source ?? ""} />
-                    ) : (
-                      <p className="section-copy">No prompt-embedded source snippets were recorded for this trial.</p>
-                    )}
-                  </article>
-
                   {selectedTrial.hasError ? (
                     <article className="analysis-card wide-card">
                       <div className="analysis-card-header">
@@ -1308,18 +1306,6 @@ export function DashboardShell({
                     </article>
                   ) : null}
 
-                  <article className="analysis-card wide-card">
-                    <div className="analysis-card-header">
-                      <h3>{selectedShowsDiagnosticSource ? "Diagnostic source row" : "Source under test"}</h3>
-                    </div>
-                    {selectedShowsDiagnosticSource ? (
-                      <p className="section-copy">
-                        This trial never became runnable. The stored row source is diagnostic-only; use Generated
-                        program above for the attempted candidate.
-                      </p>
-                    ) : null}
-                    <HighlightedCode code={selectedTrial.source || "// No source captured."} language="python" wrap />
-                  </article>
                 </div>
               </>
             ) : (

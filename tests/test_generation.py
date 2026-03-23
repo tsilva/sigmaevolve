@@ -178,6 +178,8 @@ def test_openrouter_generation_uses_model_pool_round_robin(monkeypatch):
     first_prompt = payloads[0]["messages"][1]["content"]
     assert "# EVOLVE-BLOCK-START" in system_prompt
     assert "# EVOLVE-BLOCK-END" in system_prompt
+    assert "Never wrap the response in triple backticks or fenced code blocks" in system_prompt
+    assert "If emitting a patch, begin immediately with <<<<<<< SEARCH on the first line" in system_prompt
     assert not first_prompt.lstrip().startswith("{")
     assert "PRIOR PROGRAMS:" in first_prompt
     assert "CURRENT PROGRAM:" in first_prompt
@@ -318,10 +320,10 @@ def test_openrouter_generation_prompt_lists_prior_programs_before_current_progra
         selected_config={"model": "test/model"},
     )
 
-    assert prompt.startswith("PRIOR PROGRAMS:\n\n---\nscore: 0.998")
+    assert prompt.startswith("PRIOR PROGRAMS:\n---\nscore: 0.998")
     assert "val_acc: 0.998" in prompt
     assert "val_loss: 0.023" in prompt
-    assert "CURRENT PROGRAM:\n\nHere is the current program we are trying to improve" in prompt
+    assert "CURRENT PROGRAM:\nHere is the current program we are trying to improve" in prompt
     assert "score: 0.992" in prompt
     assert "val_acc: 0.992" in prompt
     assert "val_loss: 0.1" in prompt

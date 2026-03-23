@@ -11,6 +11,9 @@ Response rules:
 - No prose
 - No markdown
 - No commentary
+- Never wrap the response in triple backticks or fenced code blocks
+- Never prepend a language label such as python, diff, or text
+- If emitting a patch, begin immediately with <<<<<<< SEARCH on the first line
 
 Patch syntax:
 

@@ -227,29 +227,24 @@ class OpenRouterGenerationBackend:
         del track, dataset_manifest, negative_trials, selected_config
         current_program = context_trials[0] if context_trials else None
         prior_programs = context_trials[1:] if len(context_trials) > 1 else []
-        lines = ["PRIOR PROGRAMS:", ""]
+        lines = ["PRIOR PROGRAMS:"]
         if prior_programs:
             for index, trial in enumerate(prior_programs):
-                if index > 0:
-                    lines.append("")
                 lines.extend(self._render_trial_prompt_block(trial))
         else:
             lines.append("None.")
         lines.extend(
             [
-                "",
                 "CURRENT PROGRAM:",
-                "",
                 "Here is the current program we are trying to improve",
                 "(you will need to propose a modification to it below).",
-                "",
             ]
         )
         if current_program is not None:
             lines.extend(self._render_trial_prompt_block(current_program))
         else:
             lines.append("None.")
-        lines.extend(["", "REPLACEMENTS:"])
+        lines.append("REPLACEMENTS:")
         return "\n".join(lines)
 
     def _build_prompt(
