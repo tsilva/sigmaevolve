@@ -316,6 +316,24 @@ describe("DashboardShell", () => {
     expect(screen.getByText(/stored row source is diagnostic-only/i)).toBeTruthy();
   });
 
+  it("merges the assertion status and empty failure state into one row", () => {
+    renderShell({
+      detail: createDetail([
+        createTrial({
+          trialId: "trial_generation_passed",
+          generationAssertionsPassed: true,
+          generationAssertionFailures: [],
+        }),
+      ]),
+      initialSelectedTrialId: "trial_generation_passed",
+    });
+
+    expect(screen.getByText("Generation assertions")).toBeTruthy();
+    expect(screen.getByText("Passed")).toBeTruthy();
+    expect(screen.queryByText("Assertion failures")).toBeNull();
+    expect(screen.queryByText("No assertion failures recorded.")).toBeNull();
+  });
+
   it("renders provenance as property rows instead of a raw JSON block", () => {
     renderShell({
       detail: createDetail([

@@ -285,11 +285,27 @@ function getGenerationProperties(value: Record<string, unknown> | null): Propert
   return entries;
 }
 
-function formatAssertionFailures(failures: string[]): string {
-  if (failures.length === 0) {
-    return "No assertion failures recorded.";
+function renderGenerationAssertionSummary(passed: boolean | null, failures: string[]) {
+  if (passed === null) {
+    return "Not recorded";
   }
-  return failures.join("\n");
+
+  const status = passed ? (
+    <span className="flag-chip flag-success">Passed</span>
+  ) : (
+    <span className="flag-chip flag-danger">Failed</span>
+  );
+
+  if (failures.length === 0) {
+    return status;
+  }
+
+  return (
+    <span className="timeline-assertion-summary">
+      {status}
+      <span className="timeline-detail">{failures.join("\n")}</span>
+    </span>
+  );
 }
 
 function detectPromptLanguage(content: string): "json" | "markdown" {
@@ -1265,19 +1281,7 @@ export function DashboardShell({
                           </div>
                           <div className="timeline-row">
                             <span>Generation assertions</span>
-                            <strong>
-                              {selectedTrial.generationAssertionsPassed === null ? (
-                                "Not recorded"
-                              ) : selectedTrial.generationAssertionsPassed ? (
-                                <span className="flag-chip flag-success">Passed</span>
-                              ) : (
-                                <span className="flag-chip flag-danger">Failed</span>
-                              )}
-                            </strong>
-                          </div>
-                          <div className="timeline-row">
-                            <span>Assertion failures</span>
-                            <strong className="timeline-detail">{formatAssertionFailures(selectedAssertionFailures)}</strong>
+                            <strong>{renderGenerationAssertionSummary(selectedTrial.generationAssertionsPassed, selectedAssertionFailures)}</strong>
                           </div>
                         </div>
                       </section>

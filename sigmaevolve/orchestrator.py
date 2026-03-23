@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import random
-from dataclasses import replace
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from dataclasses import dataclass, replace
 from typing import Any, Protocol
 
 from sigmaevolve.evolve_blocks import EvolveBlockError, assert_only_evolve_blocks_changed, materialize_candidate_source
@@ -64,8 +65,16 @@ class ModalRemoteLauncher:
         return metadata if len(metadata) > 1 else None
 
 
+@dataclass(frozen=True)
+class GenerationAttempt:
+    slot_index: int
+    generation_index: int
+    duplicate_retry_count: int
+    context_trials: list[TrialSummary]
+
+
 class Orchestrator:
-    MAX_DUPLICATE_RETRIES = 3
+    GENERATION_FAILURE_LIMIT_MULTIPLIER = 2
 
     def __init__(self, repository, dataset_manager, generator, launcher) -> None:
         self.repository = repository
@@ -86,10 +95,22 @@ class Orchestrator:
 
         seed = int(sampling_settings.get("seed", 0))
         rng = random.Random(seed + generation_index)
-        weights = [max(float(trial.score), 0.0) for trial in candidates]
-        if sum(weights) <= 0.0:
-            return [rng.choice(candidates)]
-        return [rng.choices(candidates, weights=weights, k=1)[0]]
+        remaining = list(candidates)
+        remaining_weights = [max(float(trial.score), 0.0) for trial in remaining]
+        sampled: list[TrialSummary] = []
+
+        for _ in range(min(2, len(remaining))):
+            total_weight = sum(remaining_weights)
+            if total_weight <= 0.0:
+                selected_index = rng.randrange(len(remaining))
+            else:
+                selected_index = rng.choices(range(len(remaining)), weights=remaining_weights, k=1)[0]
+            sampled.append(remaining.pop(selected_index))
+            remaining_weights.pop(selected_index)
+
+        candidate_ranks = {trial.trial_id: index for index, trial in enumerate(candidates)}
+        sampled.sort(key=lambda trial: (-float(trial.score), candidate_ranks[trial.trial_id]))
+        return sampled
 
     def _with_generation_trace(
         self,
@@ -210,6 +231,65 @@ class Orchestrator:
         result.errors.append(result_error or f"generation_failed:{reason}")
         return result
 
+    def _schedule_generation_attempt(
+        self,
+        executor: ThreadPoolExecutor,
+        track,
+        dataset_manifest,
+        sampling_settings: dict[str, Any],
+        *,
+        slot_index: int,
+        generation_index: int,
+        duplicate_retry_count: int,
+    ) -> tuple[Future[Any], GenerationAttempt] | None:
+        context_trials = self._sample_successful_context_trials(
+            track.track_id,
+            sampling_settings,
+            generation_index,
+        )
+        if not context_trials:
+            return None
+        attempt = GenerationAttempt(
+            slot_index=slot_index,
+            generation_index=generation_index,
+            duplicate_retry_count=duplicate_retry_count,
+            context_trials=context_trials,
+        )
+        future = executor.submit(
+            self.generator.generate,
+            track,
+            dataset_manifest,
+            context_trials,
+            [],
+            generation_index,
+            duplicate_retry_count,
+        )
+        return future, attempt
+
+    def _record_duplicate_generation_attempt(
+        self,
+        track_id: str,
+        result: ReconcileResult,
+        provenance_json: dict[str, Any],
+        *,
+        candidate_hash: str,
+        trial_id: str,
+    ) -> ReconcileResult:
+        duplicate_trial = self.repository.create_generation_attempt_trial(
+            track_id=track_id,
+            provenance_json=provenance_json,
+            outcome_reason=OUTCOME_DUPLICATE,
+            error_json={
+                "reason": "duplicate_candidate",
+                "detail": f"Candidate source already exists as {trial_id}.",
+                "candidate_hash": candidate_hash,
+                "existing_trial_id": trial_id,
+            },
+        )
+        result.duplicate_hashes.append(candidate_hash)
+        result.duplicate_trial_ids.append(duplicate_trial.trial_id)
+        return result
+
     def reconcile_track(self, track_id: str) -> ReconcileResult:
         track = self.repository.get_track(track_id)
         if track is None:
@@ -234,108 +314,146 @@ class Orchestrator:
         queue_count = self.repository.count_trials(track_id, statuses={"queued"})
         if queue_count < int(policy["ready_queue_threshold"]):
             dataset_manifest = self.dataset_manager.verify(track.dataset_id)
-            generation_index = self.repository.count_trials(track_id)
-            context_trials = self._sample_successful_context_trials(
-                track_id,
-                policy.get("sampling_settings", {}),
-                generation_index,
-            )
-            if context_trials:
-                for duplicate_retry_count in range(self.MAX_DUPLICATE_RETRIES + 1):
-                    try:
-                        raw_generated = self.generator.generate(
-                            track,
-                            dataset_manifest,
-                            context_trials,
-                            negative_trials=[],
-                            generation_index=generation_index,
-                            duplicate_retry_count=duplicate_retry_count,
-                        )
-                    except Exception as exc:
-                        result = self._record_generation_attempt_failure(
-                            track_id=track_id,
-                            result=result,
-                            provenance_json=self._fallback_generation_provenance(
+            requested_generations = int(policy["ready_queue_threshold"]) - queue_count
+            generation_index_base = self.repository.count_trials(track_id)
+            sampling_settings = policy.get("sampling_settings", {})
+            max_failures = requested_generations * self.GENERATION_FAILURE_LIMIT_MULTIPLIER
+            failures = 0
+            completed_slots: set[int] = set()
+            pending: dict[Future[Any], GenerationAttempt] = {}
+
+            with ThreadPoolExecutor(max_workers=requested_generations) as executor:
+                for slot_index in range(requested_generations):
+                    scheduled = self._schedule_generation_attempt(
+                        executor,
+                        track,
+                        dataset_manifest,
+                        sampling_settings,
+                        slot_index=slot_index,
+                        generation_index=generation_index_base + slot_index,
+                        duplicate_retry_count=0,
+                    )
+                    if scheduled is not None:
+                        future, attempt = scheduled
+                        pending[future] = attempt
+
+                while pending and len(completed_slots) < requested_generations:
+                    done, _ = wait(tuple(pending), return_when=FIRST_COMPLETED)
+                    for future in done:
+                        attempt = pending.pop(future)
+                        retry_needed = False
+
+                        try:
+                            raw_generated = future.result()
+                        except Exception as exc:
+                            failures += 1
+                            result = self._record_generation_attempt_failure(
+                                track_id=track_id,
+                                result=result,
+                                provenance_json=self._fallback_generation_provenance(
+                                    track,
+                                    attempt.context_trials,
+                                    generation_index=attempt.generation_index,
+                                    duplicate_retry_count=attempt.duplicate_retry_count,
+                                ),
+                                reason="generator_exception",
+                                detail=str(exc),
+                                extra_error_json={"exception_type": type(exc).__name__},
+                                result_error=str(exc),
+                            )
+                            retry_needed = True
+                        else:
+                            generated = self._normalize_generation_result(raw_generated)
+                            if not generated.succeeded:
+                                failures += 1
+                                error_info = dict(generated.error_info or {})
+                                result = self._record_generation_attempt_failure(
+                                    track_id=track_id,
+                                    result=result,
+                                    provenance_json=generated.provenance_json,
+                                    reason=str(error_info.get("reason") or "generation_failed"),
+                                    detail=str(error_info["detail"]) if error_info.get("detail") is not None else None,
+                                    extra_error_json=error_info,
+                                )
+                                retry_needed = True
+                            else:
+                                assert generated.source is not None
+                                try:
+                                    candidate_source = materialize_candidate_source(
+                                        attempt.context_trials[0].source,
+                                        generated.source,
+                                    )
+                                except EvolveBlockError as exc:
+                                    failures += 1
+                                    result = self._record_generation_attempt_failure(
+                                        track_id=track_id,
+                                        result=result,
+                                        provenance_json=generated.provenance_json,
+                                        reason="candidate_materialization_failed",
+                                        detail=str(exc),
+                                        result_error=f"invalid_mutation:{exc}",
+                                    )
+                                    retry_needed = True
+                                else:
+                                    candidate_hash = compute_script_hash(candidate_source)
+                                    try:
+                                        assert_only_evolve_blocks_changed(
+                                            attempt.context_trials[0].source,
+                                            candidate_source,
+                                        )
+                                    except EvolveBlockError as exc:
+                                        failures += 1
+                                        result = self._record_generation_attempt_failure(
+                                            track_id=track_id,
+                                            result=result,
+                                            provenance_json=generated.provenance_json,
+                                            reason="generation_assertion_failed",
+                                            detail=str(exc),
+                                            generated_source=candidate_source,
+                                            candidate_hash=candidate_hash,
+                                            result_error=f"invalid_mutation:{exc}",
+                                        )
+                                        retry_needed = True
+                                    else:
+                                        final_provenance = self._with_generation_trace(
+                                            generated.provenance_json,
+                                            generated_source=candidate_source,
+                                            assertions_passed=True,
+                                            assertion_failures=[],
+                                            candidate_hash=candidate_hash,
+                                        )
+                                        trial, created = self.repository.create_queued_trial_if_absent(
+                                            track_id=track_id,
+                                            source=candidate_source,
+                                            provenance_json=final_provenance,
+                                        )
+                                        if created and trial is not None:
+                                            result.generated_trial_ids.append(trial.trial_id)
+                                            completed_slots.add(attempt.slot_index)
+                                        elif trial is not None:
+                                            failures += 1
+                                            result = self._record_duplicate_generation_attempt(
+                                                track_id=track_id,
+                                                result=result,
+                                                provenance_json=final_provenance,
+                                                candidate_hash=candidate_hash,
+                                                trial_id=trial.trial_id,
+                                            )
+                                            retry_needed = True
+
+                        if retry_needed and failures + len(pending) < max_failures:
+                            scheduled = self._schedule_generation_attempt(
+                                executor,
                                 track,
-                                context_trials,
-                                generation_index=generation_index,
-                                duplicate_retry_count=duplicate_retry_count,
-                            ),
-                            reason="generator_exception",
-                            detail=str(exc),
-                            extra_error_json={"exception_type": type(exc).__name__},
-                            result_error=str(exc),
-                        )
-                        break
-                    generated = self._normalize_generation_result(raw_generated)
-                    if not generated.succeeded:
-                        error_info = dict(generated.error_info or {})
-                        result = self._record_generation_attempt_failure(
-                            track_id=track_id,
-                            result=result,
-                            provenance_json=generated.provenance_json,
-                            reason=str(error_info.get("reason") or "generation_failed"),
-                            detail=str(error_info["detail"]) if error_info.get("detail") is not None else None,
-                            extra_error_json=error_info,
-                        )
-                        break
-                    assert generated.source is not None
-                    try:
-                        candidate_source = materialize_candidate_source(context_trials[0].source, generated.source)
-                    except EvolveBlockError as exc:
-                        result = self._record_generation_attempt_failure(
-                            track_id=track_id,
-                            result=result,
-                            provenance_json=generated.provenance_json,
-                            reason="candidate_materialization_failed",
-                            detail=str(exc),
-                            result_error=f"invalid_mutation:{exc}",
-                        )
-                        break
-                    candidate_hash = compute_script_hash(candidate_source)
-                    try:
-                        assert_only_evolve_blocks_changed(context_trials[0].source, candidate_source)
-                    except EvolveBlockError as exc:
-                        result = self._record_generation_attempt_failure(
-                            track_id=track_id,
-                            result=result,
-                            provenance_json=generated.provenance_json,
-                            reason="generation_assertion_failed",
-                            detail=str(exc),
-                            generated_source=candidate_source,
-                            candidate_hash=candidate_hash,
-                            result_error=f"invalid_mutation:{exc}",
-                        )
-                        break
-                    final_provenance = self._with_generation_trace(
-                        generated.provenance_json,
-                        generated_source=candidate_source,
-                        assertions_passed=True,
-                        assertion_failures=[],
-                        candidate_hash=candidate_hash,
-                    )
-                    trial, created = self.repository.create_queued_trial_if_absent(
-                        track_id=track_id,
-                        source=candidate_source,
-                        provenance_json=final_provenance,
-                    )
-                    if created and trial is not None:
-                        result.generated_trial_ids.append(trial.trial_id)
-                        break
-                    if trial is not None:
-                        duplicate_trial = self.repository.create_generation_attempt_trial(
-                            track_id=track_id,
-                            provenance_json=final_provenance,
-                            outcome_reason=OUTCOME_DUPLICATE,
-                            error_json={
-                                "reason": "duplicate_candidate",
-                                "detail": f"Candidate source already exists as {trial.trial_id}.",
-                                "candidate_hash": candidate_hash,
-                                "existing_trial_id": trial.trial_id,
-                            },
-                        )
-                        result.duplicate_hashes.append(candidate_hash)
-                        result.duplicate_trial_ids.append(duplicate_trial.trial_id)
+                                dataset_manifest,
+                                sampling_settings,
+                                slot_index=attempt.slot_index,
+                                generation_index=attempt.generation_index,
+                                duplicate_retry_count=attempt.duplicate_retry_count + 1,
+                            )
+                            if scheduled is not None:
+                                next_future, next_attempt = scheduled
+                                pending[next_future] = next_attempt
 
         reserved = self.repository.reserve_trials(
             track_id=track_id,

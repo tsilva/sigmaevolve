@@ -473,6 +473,12 @@ button {
   white-space: pre-wrap;
 }
 
+.timeline-assertion-summary {
+  display: grid;
+  gap: 6px;
+  justify-items: start;
+}
+
 .status-indicator {
   width: 8px;
   height: 8px;

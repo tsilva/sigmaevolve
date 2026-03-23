@@ -181,7 +181,7 @@ def test_reconcile_retries_duplicate_generation_with_incremented_retry_count(rep
 
     result = system.reconcile_track(track.track_id)
 
-    assert generator.retry_counts == [0, 1, 2, 3]
+    assert sorted(generator.retry_counts) == [0, 0, 1, 1]
     assert len(result.duplicate_hashes) == 4
     assert len(result.duplicate_trial_ids) == 4
     assert result.generated_trial_ids == []
@@ -247,7 +247,7 @@ def forward(self, x):
         runner,
     )
     track = system.create_track(
-        "dup-success", "mnist:v1", {"ready_queue_threshold": 2, "dispatch_ttl_sec": 1, "epochs": 2}
+        "dup-success", "mnist:v1", {"ready_queue_threshold": 1, "dispatch_ttl_sec": 1, "epochs": 2}
     )
     baseline = system.repository.list_trials(track.track_id)[0]
     system.repository.finalize_trial(
@@ -361,16 +361,23 @@ def forward(self, x):
         error_info=None,
     )
 
-    counts = {baseline.trial_id: 0, mid.trial_id: 0, low.trial_id: 0}
+    draw_counts = {baseline.trial_id: 0, mid.trial_id: 0, low.trial_id: 0}
+    current_counts = {baseline.trial_id: 0, mid.trial_id: 0, low.trial_id: 0}
     for generation_index in range(300):
         sampled = system.orchestrator._sample_successful_context_trials(
             track.track_id,
             {"seed": 7},
             generation_index,
         )
-        counts[sampled[0].trial_id] += 1
+        assert len(sampled) == 2
+        assert sampled[0].trial_id != sampled[1].trial_id
+        assert sampled[0].score >= sampled[1].score
+        for trial in sampled:
+            draw_counts[trial.trial_id] += 1
+        current_counts[sampled[0].trial_id] += 1
 
-    assert counts[baseline.trial_id] > counts[mid.trial_id] > counts[low.trial_id]
+    assert draw_counts[baseline.trial_id] > draw_counts[mid.trial_id] > draw_counts[low.trial_id]
+    assert current_counts[baseline.trial_id] > current_counts[mid.trial_id] > current_counts[low.trial_id]
 
 
 def test_reconcile_never_passes_failed_trials_as_generation_context(repository, dataset_manager):
@@ -590,13 +597,13 @@ def test_reconcile_rejects_mutations_outside_evolve_blocks(repository, dataset_m
 
     assert result.generated_trial_ids == []
     assert result.errors
-    assert result.errors[0].startswith("invalid_mutation:")
-    assert len(result.failed_generation_trial_ids) == 1
-    failed_trial = repository.get_trial(result.failed_generation_trial_ids[0])
-    assert failed_trial is not None
-    assert failed_trial.outcome_reason == "generation_failed"
-    assert failed_trial.provenance_json["generation"]["assertions_passed"] is False
-    assert failed_trial.provenance_json["generation"]["assertion_failures"]
+    assert all(error.startswith("invalid_mutation:") for error in result.errors)
+    assert len(result.failed_generation_trial_ids) == 2
+    failed_trials = [repository.get_trial(trial_id) for trial_id in result.failed_generation_trial_ids]
+    assert all(trial is not None for trial in failed_trials)
+    assert all(trial.outcome_reason == "generation_failed" for trial in failed_trials if trial is not None)
+    assert all(trial.provenance_json["generation"]["assertions_passed"] is False for trial in failed_trials if trial is not None)
+    assert all(trial.provenance_json["generation"]["assertion_failures"] for trial in failed_trials if trial is not None)
 
 
 def test_reconcile_applies_search_replace_response_before_queueing(repository, dataset_manager):
@@ -701,12 +708,12 @@ IMMUTABLE_BREAK = True
 
     assert result.generated_trial_ids == []
     assert result.errors
-    assert result.errors[0].startswith("invalid_mutation:")
-    assert len(result.failed_generation_trial_ids) == 1
-    failed_trial = repository.get_trial(result.failed_generation_trial_ids[0])
-    assert failed_trial is not None
-    assert failed_trial.outcome_reason == "generation_failed"
-    assert failed_trial.provenance_json["generation"]["assertions_passed"] is False
+    assert all(error.startswith("invalid_mutation:") for error in result.errors)
+    assert len(result.failed_generation_trial_ids) == 2
+    failed_trials = [repository.get_trial(trial_id) for trial_id in result.failed_generation_trial_ids]
+    assert all(trial is not None for trial in failed_trials)
+    assert all(trial.outcome_reason == "generation_failed" for trial in failed_trials if trial is not None)
+    assert all(trial.provenance_json["generation"]["assertions_passed"] is False for trial in failed_trials if trial is not None)
 
 
 def test_reconcile_persists_generation_failed_trial_when_backend_returns_error(repository, dataset_manager):
@@ -745,12 +752,12 @@ def test_reconcile_persists_generation_failed_trial_when_backend_returns_error(r
     result = system.reconcile_track(track.track_id)
 
     assert result.generated_trial_ids == []
-    assert len(result.failed_generation_trial_ids) == 1
-    failed_trial = repository.get_trial(result.failed_generation_trial_ids[0])
-    assert failed_trial is not None
-    assert failed_trial.outcome_reason == "generation_failed"
-    assert failed_trial.error_json["reason"] == "provider_request_failed"
-    assert failed_trial.error_json["detail"] == "upstream timeout"
+    assert len(result.failed_generation_trial_ids) == 2
+    failed_trials = [repository.get_trial(trial_id) for trial_id in result.failed_generation_trial_ids]
+    assert all(trial is not None for trial in failed_trials)
+    assert all(trial.outcome_reason == "generation_failed" for trial in failed_trials if trial is not None)
+    assert all(trial.error_json["reason"] == "provider_request_failed" for trial in failed_trials if trial is not None)
+    assert all(trial.error_json["detail"] == "upstream timeout" for trial in failed_trials if trial is not None)
 
 
 def test_reconcile_persists_generation_failed_trial_when_response_cannot_materialize(repository, dataset_manager):
@@ -788,11 +795,11 @@ def test_reconcile_persists_generation_failed_trial_when_response_cannot_materia
     result = system.reconcile_track(track.track_id)
 
     assert result.generated_trial_ids == []
-    assert len(result.failed_generation_trial_ids) == 1
-    failed_trial = repository.get_trial(result.failed_generation_trial_ids[0])
-    assert failed_trial is not None
-    assert failed_trial.outcome_reason == "generation_failed"
-    assert failed_trial.error_json["reason"] == "candidate_materialization_failed"
+    assert len(result.failed_generation_trial_ids) == 2
+    failed_trials = [repository.get_trial(trial_id) for trial_id in result.failed_generation_trial_ids]
+    assert all(trial is not None for trial in failed_trials)
+    assert all(trial.outcome_reason == "generation_failed" for trial in failed_trials if trial is not None)
+    assert all(trial.error_json["reason"] == "candidate_materialization_failed" for trial in failed_trials if trial is not None)
 
 
 def test_reconcile_persists_generation_failed_trial_when_api_key_missing(repository, dataset_manager, monkeypatch):
@@ -817,10 +824,80 @@ def test_reconcile_persists_generation_failed_trial_when_api_key_missing(reposit
     result = system.reconcile_track(track.track_id)
 
     assert result.generated_trial_ids == []
-    assert len(result.failed_generation_trial_ids) == 1
-    failed_trial = repository.get_trial(result.failed_generation_trial_ids[0])
-    assert failed_trial is not None
-    assert failed_trial.error_json["reason"] == "missing_api_key"
+    assert len(result.failed_generation_trial_ids) == 2
+    failed_trials = [repository.get_trial(trial_id) for trial_id in result.failed_generation_trial_ids]
+    assert all(trial is not None for trial in failed_trials)
+    assert all(trial.error_json["reason"] == "missing_api_key" for trial in failed_trials if trial is not None)
+
+
+def test_reconcile_generates_requested_candidates_in_parallel(repository, dataset_manager):
+    class ParallelTrackingGenerator:
+        def __init__(self):
+            self.active = 0
+            self.max_active = 0
+            self.lock = threading.Lock()
+
+        def generate(
+            self,
+            track,
+            dataset_manifest,
+            context_trials,
+            negative_trials=None,
+            generation_index=0,
+            duplicate_retry_count=0,
+        ):
+            del track, dataset_manifest, context_trials, negative_trials, duplicate_retry_count
+            with self.lock:
+                self.active += 1
+                self.max_active = max(self.max_active, self.active)
+            try:
+                time.sleep(0.05)
+                return type(
+                    "Generated",
+                    (),
+                    {
+                        "source": build_candidate_train_script(
+                            build_model_block(
+                                f"""
+def forward(self, x):
+    flat = x.reshape(x.shape[0], -1)
+    scores = flat.sum(dim=1) + {generation_index}
+    return torch.stack((-scores, scores), dim=1)
+"""
+                            )
+                        ),
+                        "provenance_json": {
+                            **make_llm_provenance(model="parallel-capture"),
+                            "generation_index": generation_index,
+                            "duplicate_retry_count": 0,
+                        },
+                    },
+                )()
+            finally:
+                with self.lock:
+                    self.active -= 1
+
+    dataset_manager.prepare("mnist:v1")
+    repository.register_dataset("mnist:v1", str(dataset_manager.manifest_path_for("mnist:v1")))
+    generator = ParallelTrackingGenerator()
+    runner = RunnerService(repository=repository, dataset_manager=dataset_manager)
+    system = EvolutionSystem(repository, dataset_manager, generator, RecordingLauncher(), runner)
+    track = system.create_track("parallel", "mnist:v1", {"ready_queue_threshold": 2, "max_parallelism": 0})
+
+    baseline = repository.list_trials(track.track_id)[0]
+    repository.finalize_trial(
+        trial_id=baseline.trial_id,
+        runner_id=None,
+        outcome_reason="succeeded",
+        metrics={"accuracy": 0.5},
+        score=0.5,
+        error_info=None,
+    )
+
+    result = system.reconcile_track(track.track_id)
+
+    assert len(result.generated_trial_ids) == 2
+    assert generator.max_active == 2
 
 
 def test_reconcile_persists_launcher_metadata_for_launched_trials(repository, dataset_manager):
