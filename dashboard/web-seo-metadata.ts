@@ -1,5 +1,7 @@
 import type { Metadata } from "next";
 
+export const APP_THEME_COLOR = "#f5f1e7";
+
 const payload: Omit<Metadata, "metadataBase"> = {
   "title": "SigmaEvolve Dashboard",
   "applicationName": "SigmaEvolve Dashboard",

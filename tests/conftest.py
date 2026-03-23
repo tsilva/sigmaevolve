@@ -10,7 +10,9 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from sigmaevolve.baseline import build_baseline_train_script
 from sigmaevolve.datasets import ArrayDatasetProvider, DatasetManager
+from sigmaevolve.evolve_blocks import replace_evolve_block_payloads
 from sigmaevolve.generation import FixedGenerationBackend
 from sigmaevolve.orchestrator import RecordingLauncher
 from sigmaevolve.runner import RunnerService
@@ -20,8 +22,7 @@ from sigmaevolve.system import EvolutionSystem
 
 def make_policy(**overrides):
     policy = {
-        "budget_sec": 2,
-        "max_eval_gap_sec": 1,
+        "epochs": 3,
         "max_parallelism": 1,
         "ready_queue_threshold": 1,
         "dispatch_ttl_sec": 1,
@@ -66,6 +67,13 @@ def make_provider(seed: int) -> ArrayDatasetProvider:
     )
 
 
+def build_candidate_train_script(block_payload: str) -> str:
+    return replace_evolve_block_payloads(
+        build_baseline_train_script(),
+        [block_payload.strip("\n") + "\n"],
+    )
+
+
 @pytest.fixture
 def providers():
     return {
@@ -89,14 +97,19 @@ def dataset_manager(tmp_path, providers):
 def system(repository, dataset_manager):
     launcher = RecordingLauncher()
     generator = FixedGenerationBackend(
-        source=(
-            "def initialize(ctx):\n"
-            "    return {}\n\n"
-            "def train_window(ctx, state):\n"
-            "    state['window'] = state.get('window', 0) + 1\n\n"
-            "def predict_validation(ctx, state):\n"
-            "    labels = ctx.validation_features\n"
-            "    return (labels.sum(axis=1) > 0).astype(int)\n"
+        source=build_candidate_train_script(
+            """
+def build_state(*, train_features, train_labels, validation_features, dataset_metadata, random_seed, device):
+    return {"epoch_index": 0}
+
+
+def train_epoch(state, *, epoch_index, num_epochs):
+    state["epoch_index"] = epoch_index
+
+
+def predict_validation(state, validation_features):
+    return (validation_features.sum(axis=1) > 0).astype(int)
+"""
         )
     )
     runner_service = RunnerService(repository=repository, dataset_manager=dataset_manager)

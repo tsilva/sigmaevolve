@@ -9,6 +9,7 @@ from textwrap import dedent
 from typing import Protocol
 from urllib import request
 
+from sigmaevolve.evolve_blocks import EVOLVE_BLOCK_END, EVOLVE_BLOCK_START
 from sigmaevolve.models import CANDIDATE_KIND_STRATEGY_V1, DatasetManifest, GenerationResult, TrackRecord, TrialSummary
 
 
@@ -141,48 +142,44 @@ class OpenRouterGenerationBackend:
 
     def _build_system_prompt_text(self) -> str:
         static_task_contract = {
-            "candidate module": "strategy.py",
-            "required exports": {
-                "initialize(ctx)": "Return a dict state object used across training windows.",
-                "train_window(ctx, state)": "Perform one bounded unit of training and mutate state in place.",
-                "predict_validation(ctx, state)": "Return validation class ids or logits for every validation example.",
+            "candidate module": "train.py",
+            "immutable shell": [
+                "All text outside evolve blocks is immutable and must remain byte-for-byte identical to the parent.",
+                "Dataset loading, CLI/config handling, evaluation cadence, prediction normalization, and artifact bookkeeping already exist in the script and must not change.",
+                "The post-generation validator rejects any mutation outside evolve blocks.",
+            ],
+            "mutation boundaries": {
+                "start marker": EVOLVE_BLOCK_START,
+                "end marker": EVOLVE_BLOCK_END,
+                "rule": "Only change code between matching evolve block markers. Preserve marker count and order exactly.",
             },
-            "strategy context fields": {
-                "train_features": "Training features array from the harness.",
-                "train_labels": "Training labels array from the harness.",
-                "validation_features": "Validation features array from the harness.",
-                "dataset_metadata": "Dataset metadata object from the harness.",
-                "random_seed": "Deterministic seed chosen by the harness.",
-                "device": "Device string chosen by the harness.",
-                "budget_sec": "Total wall-clock budget in seconds.",
-                "remaining_budget_sec": "Remaining wall-clock budget at the start of the callback.",
-                "max_eval_gap_sec": "Maximum allowed duration of one train_window call.",
-                "window_index": "Zero-based train window index.",
-            },
-            "train split format": "npz with arrays: features, labels",
-            "validation split format": "npz with arrays: features",
             "allowed packages": ["numpy", "torch"],
+            "expected evolvable functions": {
+                "build_state(...)": "Construct and return the mutable training state dict.",
+                "train_epoch(state, *, epoch_index, num_epochs)": "Run exactly one epoch of training.",
+                "predict_validation(state, validation_features)": "Return validation class ids or logits.",
+            },
             "writing rules": [
-                "Return only Python source for strategy.py, with no markdown fences or commentary.",
-                "Do not parse CLI args, read config files, write files, or manage progress/eval artifacts; the harness owns all protocol and bookkeeping.",
+                "Return only Python source for the full train.py file, with no markdown fences or commentary.",
+                "Keep every non-evolve line identical to the parent source.",
                 "Features may be multi-dimensional tensors rather than pre-flattened vectors; if you use linear layers, flatten both train and validation batches consistently or start the model with nn.Flatten().",
-                "train_window must return promptly enough to stay within max_eval_gap_sec.",
+                "The immutable script evaluates automatically after every epoch, so train_epoch should only do one epoch of training work.",
                 "predict_validation must return one prediction per validation example as class ids or logits.",
-                "Augmentation is allowed inside train_window and may evolve without explicit prompting.",
+                "Augmentation is allowed inside train_epoch and may evolve without explicit prompting.",
             ],
             "mutation rules": [
-                "Preserve the parent's working harness integration unless a change is required.",
-                "Produce a mutated descendant of the parent strategy, not a fresh rewrite.",
-                "Make exactly one substantive improvement likely to improve validation accuracy within the time budget.",
+                "Preserve the parent's working train.py integration unless a change inside an evolve block is required.",
+                "Produce a mutated descendant of the parent block implementation, not a fresh rewrite of the file.",
+                "Make exactly one substantive improvement likely to improve validation accuracy within the fixed epoch budget.",
                 "Avoid cosmetic refactors or rename-only changes.",
             ],
         }
         lines = [
             dedent(
                 """
-                You are generating a self-contained Python strategy.py module for a classification harness.
+                You are generating a self-contained Python train.py module for a classification system.
                 Treat this as an evolutionary mutation task, not a rewrite from scratch.
-                Optimize for best validation accuracy while letting the harness control evaluation cadence, timing, and scoring.
+                Optimize for best validation accuracy while preserving the immutable shell outside evolve blocks.
                 Follow this contract exactly:
                 """
             ).strip()
@@ -200,7 +197,7 @@ class OpenRouterGenerationBackend:
     ) -> str:
         primary_parent = context_trials[0] if context_trials else None
         lines = [
-            f"Write a complete Python strategy.py module for dataset {track.dataset_id}.",
+            f"Write a complete Python train.py module for dataset {track.dataset_id}.",
             "",
             "Use the dataset metadata below when choosing the model, augmentation, and loss setup:",
         ]
@@ -217,8 +214,7 @@ class OpenRouterGenerationBackend:
         lines.extend(
             self._format_mapping(
                 {
-                    "budget_sec": track.policy_json["budget_sec"],
-                    "max_eval_gap_sec": track.policy_json.get("max_eval_gap_sec", 15),
+                    "epochs": track.policy_json["epochs"],
                 },
                 indent=0,
             )

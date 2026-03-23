@@ -105,8 +105,7 @@ class DatasetManifest:
 
 @dataclass(frozen=True)
 class TrackPolicy:
-    budget_sec: int = 60
-    max_eval_gap_sec: int = 15
+    epochs: int = 5
     max_parallelism: int = 1
     ready_queue_threshold: int = 1
     dispatch_ttl_sec: int = 300
@@ -134,8 +133,7 @@ class TrackPolicy:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "budget_sec": self.budget_sec,
-            "max_eval_gap_sec": self.max_eval_gap_sec,
+            "epochs": self.epochs,
             "max_parallelism": self.max_parallelism,
             "ready_queue_threshold": self.ready_queue_threshold,
             "dispatch_ttl_sec": self.dispatch_ttl_sec,
@@ -153,8 +151,7 @@ class TrackPolicy:
         merged = base.to_dict()
         merged = _deep_merge_dict(merged, raw or {})
         return cls(
-            budget_sec=int(merged["budget_sec"]),
-            max_eval_gap_sec=int(merged["max_eval_gap_sec"]),
+            epochs=int(merged["epochs"]),
             max_parallelism=int(merged["max_parallelism"]),
             ready_queue_threshold=int(merged["ready_queue_threshold"]),
             dispatch_ttl_sec=int(merged["dispatch_ttl_sec"]),

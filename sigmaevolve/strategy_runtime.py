@@ -26,6 +26,9 @@ class StrategyContext:
     dataset_metadata: dict[str, Any]
     random_seed: int
     device: str
+    epoch_index: int
+    num_epochs: int
+    epochs_remaining: int
     budget_sec: float
     remaining_budget_sec: float
     max_eval_gap_sec: float
@@ -160,13 +163,13 @@ def _build_context(
     dataset_metadata: dict[str, Any],
     random_seed: int,
     device: str,
-    budget_sec: float,
+    num_epochs: int,
+    epoch_index: int,
+    hard_timeout_sec: float,
     start_time: float,
-    max_eval_gap_sec: float,
-    window_index: int,
 ) -> StrategyContext:
     elapsed = time.monotonic() - start_time
-    remaining = max(0.0, float(budget_sec) - float(elapsed))
+    remaining = max(0.0, float(hard_timeout_sec) - float(elapsed))
     return StrategyContext(
         train_features=train_features,
         train_labels=train_labels,
@@ -174,10 +177,13 @@ def _build_context(
         dataset_metadata=dict(dataset_metadata),
         random_seed=int(random_seed),
         device=device,
-        budget_sec=float(budget_sec),
+        epoch_index=epoch_index,
+        num_epochs=int(num_epochs),
+        epochs_remaining=max(0, int(num_epochs) - int(epoch_index)),
+        budget_sec=float(hard_timeout_sec),
         remaining_budget_sec=remaining,
-        max_eval_gap_sec=float(max_eval_gap_sec),
-        window_index=window_index,
+        max_eval_gap_sec=float(hard_timeout_sec),
+        window_index=epoch_index,
     )
 
 
@@ -188,7 +194,7 @@ def _write_progress(
     elapsed_time_sec: float,
     last_completed_eval_sec: float | None,
     eval_index: int,
-    window_index: int,
+    epoch_index: int,
 ) -> None:
     write_json_atomic(
         progress_path,
@@ -197,7 +203,7 @@ def _write_progress(
             "elapsed_time_sec": float(elapsed_time_sec),
             "last_completed_eval_sec": last_completed_eval_sec,
             "eval_index": eval_index,
-            "window_index": window_index,
+            "epoch_index": epoch_index,
         },
     )
 
@@ -207,8 +213,8 @@ def _run_harness(config: dict[str, Any]) -> int:
     progress_path = Path(config["progress_path"])
     eval_dir = Path(config["eval_dir"])
     debug_output_path = Path(config["debug_output_path"])
-    budget_sec = float(config["budget_sec"])
-    max_eval_gap_sec = float(config["max_eval_gap_sec"])
+    num_epochs = int(config["epochs"])
+    hard_timeout_sec = float(config["hard_timeout_sec"])
     random_seed = int(config["random_seed"])
     dataset_metadata = dict(config.get("dataset_metadata") or {})
 
@@ -234,42 +240,37 @@ def _run_harness(config: dict[str, Any]) -> int:
             dataset_metadata=dataset_metadata,
             random_seed=random_seed,
             device=device,
-            budget_sec=budget_sec,
+            num_epochs=num_epochs,
+            epoch_index=0,
+            hard_timeout_sec=hard_timeout_sec,
             start_time=start_time,
-            max_eval_gap_sec=max_eval_gap_sec,
-            window_index=0,
         )
         state = initialize(init_ctx)
         if not isinstance(state, dict):
             raise StrategyContractError("initialize must return a dict state object.")
 
-        window_index = 0
         _write_progress(
             progress_path,
             phase="train",
             elapsed_time_sec=0.0,
             last_completed_eval_sec=None,
             eval_index=eval_index,
-            window_index=window_index,
+            epoch_index=0,
         )
 
-        while True:
+        for epoch_index in range(num_epochs):
             elapsed_before = time.monotonic() - start_time
-            if elapsed_before >= budget_sec:
-                debug_payload["timed_out"] = True
-                break
-
-            window_ctx = _build_context(
+            train_ctx = _build_context(
                 train_features=train_features,
                 train_labels=train_labels,
                 validation_features=validation_features,
                 dataset_metadata=dataset_metadata,
                 random_seed=random_seed,
                 device=device,
-                budget_sec=budget_sec,
+                num_epochs=num_epochs,
+                epoch_index=epoch_index,
+                hard_timeout_sec=hard_timeout_sec,
                 start_time=start_time,
-                max_eval_gap_sec=max_eval_gap_sec,
-                window_index=window_index,
             )
             _write_progress(
                 progress_path,
@@ -277,21 +278,11 @@ def _run_harness(config: dict[str, Any]) -> int:
                 elapsed_time_sec=elapsed_before,
                 last_completed_eval_sec=last_completed_eval_sec,
                 eval_index=eval_index,
-                window_index=window_index,
+                epoch_index=epoch_index,
             )
 
-            window_started = time.monotonic()
-            train_window(window_ctx, state)
-            window_elapsed = time.monotonic() - window_started
-            if window_elapsed > max_eval_gap_sec:
-                raise StrategyContractError(
-                    f"train_window exceeded max_eval_gap_sec ({window_elapsed:.3f}s > {max_eval_gap_sec:.3f}s)."
-                )
-
+            train_window(train_ctx, state)
             elapsed_after_train = time.monotonic() - start_time
-            if elapsed_after_train > budget_sec:
-                debug_payload["timed_out"] = True
-                break
 
             predict_ctx = _build_context(
                 train_features=train_features,
@@ -300,18 +291,18 @@ def _run_harness(config: dict[str, Any]) -> int:
                 dataset_metadata=dataset_metadata,
                 random_seed=random_seed,
                 device=device,
-                budget_sec=budget_sec,
+                num_epochs=num_epochs,
+                epoch_index=epoch_index,
+                hard_timeout_sec=hard_timeout_sec,
                 start_time=start_time,
-                max_eval_gap_sec=max_eval_gap_sec,
-                window_index=window_index,
             )
             _write_progress(
                 progress_path,
                 phase="eval",
-                elapsed_time_sec=elapsed_after_train,
+                elapsed_time_sec=time.monotonic() - start_time,
                 last_completed_eval_sec=last_completed_eval_sec,
                 eval_index=eval_index,
-                window_index=window_index,
+                epoch_index=epoch_index,
             )
             raw_predictions = predict_validation(predict_ctx, state)
             predictions = _normalize_predictions(
@@ -326,7 +317,7 @@ def _run_harness(config: dict[str, Any]) -> int:
                 eval_index=eval_index,
                 predictions=predictions,
                 elapsed_time_sec=elapsed_after_eval,
-                epoch=window_index,
+                epoch=epoch_index + 1,
             )
             last_completed_eval_sec = elapsed_after_eval
             debug_payload["eval_count"] = eval_index
@@ -336,25 +327,16 @@ def _run_harness(config: dict[str, Any]) -> int:
                 elapsed_time_sec=elapsed_after_eval,
                 last_completed_eval_sec=last_completed_eval_sec,
                 eval_index=eval_index,
-                window_index=window_index,
+                epoch_index=epoch_index + 1,
             )
-
-            if state.get("done"):
-                break
-
-            if elapsed_after_eval >= budget_sec:
-                debug_payload["timed_out"] = True
-                break
-
-            window_index += 1
 
         _write_progress(
             progress_path,
-            phase="finished" if not debug_payload["timed_out"] else "train",
+            phase="finished",
             elapsed_time_sec=time.monotonic() - start_time,
             last_completed_eval_sec=last_completed_eval_sec,
             eval_index=eval_index,
-            window_index=window_index,
+            epoch_index=num_epochs,
         )
         write_json_atomic(debug_output_path, debug_payload)
         return 0
@@ -362,7 +344,7 @@ def _run_harness(config: dict[str, Any]) -> int:
         debug_payload.update(
             {
                 "failure_outcome": "eval_failed",
-                "failure_reason": "eval_window_missed" if "max_eval_gap_sec" in str(exc) else "strategy_contract_violation",
+                "failure_reason": "strategy_contract_violation",
                 "detail": str(exc),
             }
         )

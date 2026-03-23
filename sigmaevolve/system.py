@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from sigmaevolve.baseline import build_baseline_linear_classifier
+from sigmaevolve.baseline import build_baseline_train_script
 from sigmaevolve.datasets import DatasetManager, TorchvisionClassificationProvider
 from sigmaevolve.generation import OpenRouterGenerationBackend
 from sigmaevolve.models import (
@@ -45,7 +45,7 @@ class EvolutionSystem:
             raise KeyError(f"Dataset must be prepared before track creation: {dataset_id}")
         policy = TrackPolicy.from_dict(policy_json)
         track = self.repository.create_track(name=name, dataset_id=dataset_id, policy_json=policy.to_dict())
-        baseline_source = build_baseline_linear_classifier()
+        baseline_source = build_baseline_train_script()
         self.repository.create_queued_trial_if_absent(
             track_id=track.track_id,
             source=baseline_source,

@@ -12,6 +12,7 @@ from typing import Any
 import numpy as np
 
 from sigmaevolve.models import OUTCOME_CRASHED, OUTCOME_EVAL_FAILED, OUTCOME_SUCCEEDED, OUTCOME_TIMEOUT
+from sigmaevolve.runtime_config import DEFAULT_TRIAL_HARD_TIMEOUT_SEC
 from sigmaevolve.scoring import compute_classification_metrics, compute_score
 
 
@@ -39,10 +40,17 @@ def _coerce_text(value: Any) -> str | None:
 
 
 class RunnerService:
-    def __init__(self, repository, dataset_manager, python_executable: str | None = None) -> None:
+    def __init__(
+        self,
+        repository,
+        dataset_manager,
+        python_executable: str | None = None,
+        hard_timeout_sec: float = DEFAULT_TRIAL_HARD_TIMEOUT_SEC,
+    ) -> None:
         self.repository = repository
         self.dataset_manager = dataset_manager
         self.python_executable = python_executable or sys.executable
+        self.hard_timeout_sec = float(hard_timeout_sec)
 
     def _start_heartbeat(self, trial_id: str, runner_id: str, interval_sec: int) -> tuple[threading.Event, threading.Thread]:
         stop_event = threading.Event()
@@ -205,21 +213,20 @@ class RunnerService:
         try:
             with tempfile.TemporaryDirectory(prefix=f"sigmaevolve_{trial.trial_id}_") as temp_dir:
                 temp_path = Path(temp_dir)
-                strategy_path = temp_path / "strategy.py"
+                train_script_path = temp_path / "train.py"
                 config_path = temp_path / "run_config.json"
                 progress_path = temp_path / "progress.json"
                 eval_dir = temp_path / "evals"
                 debug_path = temp_path / "debug.json"
                 eval_dir.mkdir(parents=True, exist_ok=True)
-                strategy_path.write_text(trial.source)
+                train_script_path.write_text(trial.source)
                 config_path.write_text(
                     json.dumps(
                         {
-                            "strategy_path": str(strategy_path),
                             "train_split_path": manifest.train_split_path,
                             "validation_split_path": manifest.validation_split_path,
-                            "budget_sec": int(policy["budget_sec"]),
-                            "max_eval_gap_sec": int(policy["max_eval_gap_sec"]),
+                            "epochs": int(policy["epochs"]),
+                            "hard_timeout_sec": self.hard_timeout_sec,
                             "random_seed": 1234,
                             "progress_path": str(progress_path),
                             "eval_dir": str(eval_dir),
@@ -229,7 +236,7 @@ class RunnerService:
                         sort_keys=True,
                     )
                 )
-                command = [self.python_executable, "-m", "sigmaevolve.strategy_runtime", "--config", str(config_path)]
+                command = [self.python_executable, str(train_script_path), "--config", str(config_path)]
                 timed_out = False
                 completed: subprocess.CompletedProcess[str] | None = None
                 stdout: str | None = None
@@ -240,7 +247,7 @@ class RunnerService:
                         command,
                         capture_output=True,
                         text=True,
-                        timeout=float(policy["budget_sec"]) + float(policy["max_eval_gap_sec"]) + 1.0,
+                        timeout=self.hard_timeout_sec,
                         check=False,
                     )
                     stdout = _coerce_text(completed.stdout)
@@ -264,7 +271,7 @@ class RunnerService:
                             metrics=None,
                             score=0.0,
                             error_info={
-                                "reason": (debug_payload or {}).get("failure_reason") or "strategy_contract_violation",
+                                "reason": (debug_payload or {}).get("failure_reason") or "train_script_contract_violation",
                                 "detail": (debug_payload or {}).get("detail"),
                                 "stdout": stdout,
                                 "stderr": stderr,

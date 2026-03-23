@@ -4,6 +4,8 @@ import json
 
 import pytest
 
+from sigmaevolve.baseline import build_baseline_train_script
+from sigmaevolve.evolve_blocks import replace_evolve_block_payloads
 from sigmaevolve.generation import OpenRouterGenerationBackend
 from sigmaevolve.models import DatasetManifest, TrackRecord, TrialSummary, now_utc
 
@@ -14,7 +16,7 @@ def _track_with_pool():
         name="pool",
         dataset_id="mnist:v1",
         policy_json={
-            "budget_sec": 60,
+            "epochs": 5,
             "generation_backend": {
                 "backend": "openrouter",
                 "selection": "round_robin",
@@ -50,7 +52,7 @@ def _context():
             trial_id="trial_1",
             score=0.5,
             metrics_json={"accuracy": 0.5},
-            source="def initialize(ctx):\n    return {}\n",
+            source=_mutated_script("return model(val_x)\n"),
             provenance_json={"backend": "baseline", "candidate_kind": "strategy_v1"},
         )
     ]
@@ -62,7 +64,7 @@ def _negative_trials():
             trial_id="trial_failed",
             score=0.0,
             metrics_json=None,
-            source="print('bad candidate')\n",
+            source=_mutated_script("raise RuntimeError('bad candidate')\n"),
             provenance_json={"backend": "openrouter", "model": "test/model"},
             outcome_reason="crashed",
             error_json={
@@ -71,6 +73,38 @@ def _negative_trials():
             },
         )
     ]
+
+
+def _mutated_script(predict_body: str) -> str:
+    return replace_evolve_block_payloads(
+        build_baseline_train_script(),
+        [
+            (
+                "def build_state(*, train_features, train_labels, validation_features, dataset_metadata, random_seed, device):\n"
+                "    train_x = train_features.reshape(train_features.shape[0], -1)\n"
+                "    val_x = validation_features.reshape(validation_features.shape[0], -1)\n"
+                "    train_y = train_labels.astype(np.int64)\n"
+                "    num_classes = int(dataset_metadata.get(\"num_classes\") or (np.max(train_y) + 1))\n"
+                "    torch.manual_seed(int(random_seed))\n"
+                "    model = torch.nn.Linear(int(train_x.shape[1]), num_classes)\n"
+                "    optimizer = torch.optim.Adam(model.parameters(), lr=0.05)\n"
+                "    criterion = torch.nn.CrossEntropyLoss()\n"
+                "    return {\n"
+                "        \"model\": model,\n"
+                "        \"optimizer\": optimizer,\n"
+                "        \"criterion\": criterion,\n"
+                "        \"train_x\": torch.from_numpy(train_x),\n"
+                "        \"train_y\": torch.from_numpy(train_y),\n"
+                "        \"val_x\": torch.from_numpy(val_x),\n"
+                "        \"steps_per_epoch\": 5,\n"
+                "    }\n\n"
+                "def train_epoch(state, *, epoch_index, num_epochs):\n"
+                "    return None\n\n"
+                "def predict_validation(state, validation_features):\n"
+                f"    {predict_body.strip()}\n"
+            )
+        ],
+    )
 
 
 def test_openrouter_generation_uses_model_pool_round_robin(monkeypatch):
@@ -88,7 +122,7 @@ def test_openrouter_generation_uses_model_pool_round_robin(monkeypatch):
             return json.dumps(
                 {
                     "id": "resp_1",
-                    "choices": [{"message": {"content": "print('new candidate')"}}],
+                    "choices": [{"message": {"content": _mutated_script("return model(val_x) + 0.1\n")}}],
                 }
             ).encode("utf-8")
 
@@ -111,15 +145,15 @@ def test_openrouter_generation_uses_model_pool_round_robin(monkeypatch):
 
     system_prompt = payloads[0]["messages"][0]["content"]
     first_prompt = payloads[0]["messages"][1]["content"]
-    assert "candidate module: strategy.py" in system_prompt
+    assert "candidate module: train.py" in system_prompt
     assert "Treat this as an evolutionary mutation task, not a rewrite from scratch." in system_prompt
     assert "Follow this contract exactly:" in system_prompt
-    assert "- validation_features: Validation features array from the harness." in system_prompt
-    assert "Do not parse CLI args, read config files, write files, or manage progress/eval artifacts" in system_prompt
-    assert "Produce a mutated descendant of the parent strategy, not a fresh rewrite." in system_prompt
+    assert "Only change code between matching evolve block markers." in system_prompt
+    assert "Keep every non-evolve line identical to the parent source." in system_prompt
+    assert "Produce a mutated descendant of the parent block implementation, not a fresh rewrite of the file." in system_prompt
     assert not first_prompt.lstrip().startswith("{")
-    assert "Write a complete Python strategy.py module for dataset mnist:v1." in first_prompt
-    assert "- max_eval_gap_sec: 15" in first_prompt
+    assert "Write a complete Python train.py module for dataset mnist:v1." in first_prompt
+    assert "- epochs: 5" in first_prompt
     assert "Use this parent trial as the base candidate:" in first_prompt
     assert "No recent negative trials are available." in first_prompt
 
@@ -139,7 +173,7 @@ def test_openrouter_generation_bumps_temperature_on_duplicate_retry(monkeypatch)
             return json.dumps(
                 {
                     "id": "resp_1",
-                    "choices": [{"message": {"content": "print('new candidate')"}}],
+                    "choices": [{"message": {"content": _mutated_script("return model(val_x)\n")}}],
                 }
             ).encode("utf-8")
 
@@ -171,7 +205,7 @@ def test_openrouter_generation_prompt_includes_failure_feedback(monkeypatch):
             return json.dumps(
                 {
                     "id": "resp_1",
-                    "choices": [{"message": {"content": "print('new candidate')"}}],
+                    "choices": [{"message": {"content": _mutated_script("return model(val_x)\n")}}],
                 }
             ).encode("utf-8")
 
@@ -186,7 +220,7 @@ def test_openrouter_generation_prompt_includes_failure_feedback(monkeypatch):
     system_prompt = payloads[0]["messages"][0]["content"]
     prompt = payloads[0]["messages"][1]["content"]
     assert "if you use linear layers, flatten both train and validation batches consistently" in system_prompt
-    assert "Make exactly one substantive improvement likely to improve validation accuracy within the time budget." in system_prompt
+    assert "Make exactly one substantive improvement likely to improve validation accuracy within the fixed epoch budget." in system_prompt
     assert "Trial trial_failed:" in prompt
     assert "- returncode: 1" in prompt
     assert "mat1 and mat2 shapes cannot be multiplied" in prompt

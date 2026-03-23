@@ -11,6 +11,7 @@ from sigmaevolve.modal_support import (
     DEFAULT_MODAL_DATASET_VOLUME,
     DEFAULT_MODAL_FUNCTION_NAME,
 )
+from sigmaevolve.runtime_config import DEFAULT_TRIAL_HARD_TIMEOUT_SEC
 
 
 app = modal.App(DEFAULT_MODAL_APP_NAME)
@@ -26,7 +27,7 @@ dataset_volume = modal.Volume.from_name(DEFAULT_MODAL_DATASET_VOLUME, create_if_
     name=DEFAULT_MODAL_FUNCTION_NAME,
     image=image,
     volumes={DEFAULT_MODAL_DATASET_MOUNT: dataset_volume},
-    timeout=15 * 60,
+    timeout=DEFAULT_TRIAL_HARD_TIMEOUT_SEC,
 )
 def run_trial(trial_id: str, dispatch_token: str, database_url: str, dataset_root: str = DEFAULT_MODAL_DATASET_MOUNT) -> None:
     from sigmaevolve.datasets import DatasetManager

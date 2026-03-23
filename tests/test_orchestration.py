@@ -5,12 +5,20 @@ import time
 
 import pytest
 
-from sigmaevolve.baseline import build_baseline_linear_classifier
+from sigmaevolve.baseline import build_baseline_linear_classifier, build_baseline_train_script
+from sigmaevolve.evolve_blocks import replace_evolve_block_payloads
 from sigmaevolve.generation import FixedGenerationBackend
 from sigmaevolve.models import CANDIDATE_KIND_STRATEGY_V1
 from sigmaevolve.orchestrator import InlineRunnerLauncher, RecordingLauncher
 from sigmaevolve.runner import RunnerService
 from sigmaevolve.system import EvolutionSystem
+
+
+def build_candidate_train_script(block_payload: str) -> str:
+    return replace_evolve_block_payloads(
+        build_baseline_train_script(),
+        [block_payload.strip("\n") + "\n"],
+    )
 
 
 def test_create_track_seeds_one_baseline_candidate(system):
@@ -27,7 +35,20 @@ def test_same_source_is_deduped_within_track_and_allowed_across_tracks(system):
     system.prepare_dataset("mnist:v1")
     first = system.create_track("a", "mnist:v1", {})
     second = system.create_track("b", "mnist:v1", {})
-    duplicate_source = "def initialize(ctx):\n    return {}\n"
+    duplicate_source = build_candidate_train_script(
+        """
+def build_state(*, train_features, train_labels, validation_features, dataset_metadata, random_seed, device):
+    return {}
+
+
+def train_epoch(state, *, epoch_index, num_epochs):
+    return None
+
+
+def predict_validation(state, validation_features):
+    return [0] * validation_features.shape[0]
+"""
+    )
     provenance = {"backend": "test", "candidate_kind": CANDIDATE_KIND_STRATEGY_V1}
 
     original, created = system.repository.create_queued_trial_if_absent(first.track_id, duplicate_source, provenance)
@@ -96,7 +117,7 @@ def test_reconcile_generates_duplicates_without_dispatching_more_work(repository
         InlineRunnerLauncher(runner),
         runner,
     )
-    track = system.create_track("dup", "mnist:v1", {"ready_queue_threshold": 2, "dispatch_ttl_sec": 1, "budget_sec": 2})
+    track = system.create_track("dup", "mnist:v1", {"ready_queue_threshold": 2, "dispatch_ttl_sec": 1, "epochs": 2})
     baseline = system.repository.list_trials(track.track_id)[0]
     system.repository.finalize_trial(
         trial_id=baseline.trial_id,
@@ -153,7 +174,9 @@ def test_reconcile_retries_duplicate_generation_with_incremented_retry_count(rep
         InlineRunnerLauncher(runner),
         runner,
     )
-    track = system.create_track("dup-retries", "mnist:v1", {"ready_queue_threshold": 2, "dispatch_ttl_sec": 1, "budget_sec": 2})
+    track = system.create_track(
+        "dup-retries", "mnist:v1", {"ready_queue_threshold": 2, "dispatch_ttl_sec": 1, "epochs": 2}
+    )
     baseline = system.repository.list_trials(track.track_id)[0]
     system.repository.finalize_trial(
         trial_id=baseline.trial_id,
@@ -214,7 +237,20 @@ def test_reconcile_persists_successful_retry_generation_params(repository, datas
     repository.register_dataset("mnist:v1", str(dataset_manager.manifest_path_for("mnist:v1")))
     runner = RunnerService(repository=repository, dataset_manager=dataset_manager)
     duplicate_source = build_baseline_linear_classifier()
-    unique_source = "def initialize(ctx):\n    return {'unique': True}\n"
+    unique_source = build_candidate_train_script(
+        """
+def build_state(*, train_features, train_labels, validation_features, dataset_metadata, random_seed, device):
+    return {"unique": True}
+
+
+def train_epoch(state, *, epoch_index, num_epochs):
+    state["epoch_index"] = epoch_index
+
+
+def predict_validation(state, validation_features):
+    return (validation_features.sum(axis=1) > 0).astype(int)
+"""
+    )
     generator = DuplicateThenUniqueGenerator(duplicate_source=duplicate_source, unique_source=unique_source)
     system = EvolutionSystem(
         repository,
@@ -223,7 +259,9 @@ def test_reconcile_persists_successful_retry_generation_params(repository, datas
         RecordingLauncher(),
         runner,
     )
-    track = system.create_track("dup-success", "mnist:v1", {"ready_queue_threshold": 2, "dispatch_ttl_sec": 1, "budget_sec": 2})
+    track = system.create_track(
+        "dup-success", "mnist:v1", {"ready_queue_threshold": 2, "dispatch_ttl_sec": 1, "epochs": 2}
+    )
     baseline = system.repository.list_trials(track.track_id)[0]
     system.repository.finalize_trial(
         trial_id=baseline.trial_id,
@@ -285,12 +323,38 @@ def test_weighted_successful_sampling_favors_higher_scores(repository, dataset_m
     baseline = trials[0]
     mid, _ = repository.create_queued_trial_if_absent(
         track.track_id,
-        "print('mid')\n",
+        build_candidate_train_script(
+            """
+def build_state(*, train_features, train_labels, validation_features, dataset_metadata, random_seed, device):
+    return {"bias": 1}
+
+
+def train_epoch(state, *, epoch_index, num_epochs):
+    return None
+
+
+def predict_validation(state, validation_features):
+    return [1] * validation_features.shape[0]
+"""
+        ),
         {"backend": "test", "model": "mid", "candidate_kind": CANDIDATE_KIND_STRATEGY_V1},
     )
     low, _ = repository.create_queued_trial_if_absent(
         track.track_id,
-        "print('low')\n",
+        build_candidate_train_script(
+            """
+def build_state(*, train_features, train_labels, validation_features, dataset_metadata, random_seed, device):
+    return {"bias": 0}
+
+
+def train_epoch(state, *, epoch_index, num_epochs):
+    return None
+
+
+def predict_validation(state, validation_features):
+    return [0] * validation_features.shape[0]
+"""
+        ),
         {"backend": "test", "model": "low", "candidate_kind": CANDIDATE_KIND_STRATEGY_V1},
     )
     assert mid is not None and low is not None
@@ -353,7 +417,20 @@ def test_reconcile_never_passes_failed_trials_as_generation_context(repository, 
                 "Generated",
                 (),
                 {
-                    "source": "def initialize(ctx):\n    return {'capture': True}\n",
+                    "source": build_candidate_train_script(
+                        """
+def build_state(*, train_features, train_labels, validation_features, dataset_metadata, random_seed, device):
+    return {"capture": True}
+
+
+def train_epoch(state, *, epoch_index, num_epochs):
+    return None
+
+
+def predict_validation(state, validation_features):
+    return (validation_features.sum(axis=1) > 0).astype(int)
+"""
+                    ),
                     "provenance_json": {
                         "backend": "fixed",
                         "model": "capture",
@@ -381,7 +458,20 @@ def test_reconcile_never_passes_failed_trials_as_generation_context(repository, 
     )
     failed, _ = repository.create_queued_trial_if_absent(
         track.track_id,
-        "def initialize(ctx):\n    raise RuntimeError('broken')\n",
+        build_candidate_train_script(
+            """
+def build_state(*, train_features, train_labels, validation_features, dataset_metadata, random_seed, device):
+    raise RuntimeError("broken")
+
+
+def train_epoch(state, *, epoch_index, num_epochs):
+    return None
+
+
+def predict_validation(state, validation_features):
+    return [0] * validation_features.shape[0]
+"""
+        ),
         {"backend": "openrouter", "model": "test/model", "candidate_kind": CANDIDATE_KIND_STRATEGY_V1},
     )
     assert failed is not None
@@ -421,7 +511,16 @@ def test_reconcile_does_not_mutate_legacy_successes(repository, dataset_manager)
                 "Generated",
                 (),
                 {
-                    "source": "def initialize(ctx):\n    return {}\n",
+                    "source": build_candidate_train_script(
+                        """
+def build_state(*, train_features, train_labels, validation_features, dataset_metadata, random_seed, device):
+    return {}
+
+
+def train_epoch(state, *, epoch_index, num_epochs):
+    return None
+"""
+                    ),
                     "provenance_json": {
                         "backend": "fixed",
                         "model": "capture",
@@ -466,3 +565,51 @@ def test_reconcile_does_not_mutate_legacy_successes(repository, dataset_manager)
 
     assert generator.called is False
     assert result.generated_trial_ids == []
+
+
+def test_reconcile_rejects_mutations_outside_evolve_blocks(repository, dataset_manager):
+    class InvalidGenerator:
+        def generate(
+            self,
+            track,
+            dataset_manifest,
+            context_trials,
+            negative_trials=None,
+            generation_index=0,
+            duplicate_retry_count=0,
+        ):
+            invalid_source = context_trials[0].source.replace("import json\n", "import json\nIMMUTABLE_BREAK = True\n", 1)
+            return type(
+                "Generated",
+                (),
+                {
+                    "source": invalid_source,
+                    "provenance_json": {
+                        "backend": "fixed",
+                        "model": "invalid",
+                        "candidate_kind": CANDIDATE_KIND_STRATEGY_V1,
+                    },
+                },
+            )()
+
+    dataset_manager.prepare("mnist:v1")
+    repository.register_dataset("mnist:v1", str(dataset_manager.manifest_path_for("mnist:v1")))
+    runner = RunnerService(repository=repository, dataset_manager=dataset_manager)
+    system = EvolutionSystem(repository, dataset_manager, InvalidGenerator(), RecordingLauncher(), runner)
+    track = system.create_track("invalid-mutation", "mnist:v1", {"ready_queue_threshold": 1})
+
+    baseline = repository.list_trials(track.track_id)[0]
+    repository.finalize_trial(
+        trial_id=baseline.trial_id,
+        runner_id=None,
+        outcome_reason="succeeded",
+        metrics={"accuracy": 0.5},
+        score=0.5,
+        error_info=None,
+    )
+
+    result = system.reconcile_track(track.track_id)
+
+    assert result.generated_trial_ids == []
+    assert result.errors
+    assert result.errors[0].startswith("invalid_mutation:")

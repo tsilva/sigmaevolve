@@ -1,8 +1,8 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { IBM_Plex_Mono, Space_Grotesk } from "next/font/google";
 
 import { getSiteUrl } from "@/lib/site";
-import { createMetadata } from "@/web-seo-metadata";
+import { APP_THEME_COLOR, createMetadata } from "@/web-seo-metadata";
 
 import "./globals.css";
 
@@ -18,6 +18,10 @@ const mono = IBM_Plex_Mono({
 });
 
 export const metadata: Metadata = createMetadata(getSiteUrl());
+
+export const viewport: Viewport = {
+  themeColor: APP_THEME_COLOR,
+};
 
 export default function RootLayout({
   children,
