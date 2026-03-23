@@ -4,7 +4,7 @@ import random
 from dataclasses import replace
 from typing import Any, Protocol
 
-from sigmaevolve.evolve_blocks import EvolveBlockError, assert_only_evolve_blocks_changed
+from sigmaevolve.evolve_blocks import EvolveBlockError, assert_only_evolve_blocks_changed, materialize_candidate_source
 from sigmaevolve.models import CANDIDATE_KIND_STRATEGY_V1, ReconcileResult, TrialSummary
 
 
@@ -125,13 +125,14 @@ class Orchestrator:
                             duplicate_retry_count=duplicate_retry_count,
                         )
                         try:
-                            assert_only_evolve_blocks_changed(context_trials[0].source, generated.source)
+                            candidate_source = materialize_candidate_source(context_trials[0].source, generated.source)
+                            assert_only_evolve_blocks_changed(context_trials[0].source, candidate_source)
                         except EvolveBlockError as exc:
                             result.errors.append(f"invalid_mutation:{exc}")
                             continue
                         trial, created = self.repository.create_queued_trial_if_absent(
                             track_id=track_id,
-                            source=generated.source,
+                            source=candidate_source,
                             provenance_json=generated.provenance_json,
                         )
                         if created and trial is not None:

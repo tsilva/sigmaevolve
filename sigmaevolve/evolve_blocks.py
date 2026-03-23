@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 
 from sigmaevolve.hashing import normalize_source
 
@@ -15,6 +16,12 @@ _EVOLVE_BLOCK_PATTERN = re.compile(
 
 class EvolveBlockError(ValueError):
     pass
+
+
+@dataclass(frozen=True)
+class SearchReplaceBlock:
+    search: str
+    replace: str
 
 
 def split_evolve_blocks(source: str) -> tuple[list[str], list[str]]:
@@ -52,6 +59,71 @@ def replace_evolve_block_payloads(template_source: str, block_payloads: list[str
         merged.append(block_payload)
     merged.append(immutable_parts[-1])
     return normalize_source("".join(merged))
+
+
+def parse_search_replace_blocks(response_text: str) -> list[SearchReplaceBlock]:
+    normalized = normalize_source(response_text)
+    if normalized.strip() == "NO_CHANGES":
+        return []
+
+    lines = normalized.splitlines(keepends=True)
+    blocks: list[SearchReplaceBlock] = []
+    cursor = 0
+
+    while cursor < len(lines):
+        if lines[cursor].strip() == "":
+            cursor += 1
+            continue
+        if lines[cursor] != "<<<<<<< SEARCH\n":
+            raise EvolveBlockError("generated response must contain SEARCH/REPLACE blocks or NO_CHANGES")
+        cursor += 1
+
+        search_lines: list[str] = []
+        while cursor < len(lines) and lines[cursor] != "=======\n":
+            search_lines.append(lines[cursor])
+            cursor += 1
+        if cursor >= len(lines):
+            raise EvolveBlockError("SEARCH/REPLACE block is missing ======= separator")
+        cursor += 1
+
+        replace_lines: list[str] = []
+        while cursor < len(lines) and lines[cursor] != ">>>>>>> REPLACE\n":
+            replace_lines.append(lines[cursor])
+            cursor += 1
+        if cursor >= len(lines):
+            raise EvolveBlockError("SEARCH/REPLACE block is missing >>>>>>> REPLACE terminator")
+        cursor += 1
+
+        search = "".join(search_lines)
+        if not search:
+            raise EvolveBlockError("SEARCH/REPLACE block must include non-empty SEARCH text")
+        blocks.append(SearchReplaceBlock(search=search, replace="".join(replace_lines)))
+
+    if not blocks:
+        raise EvolveBlockError("generated response must contain SEARCH/REPLACE blocks or NO_CHANGES")
+    return blocks
+
+
+def apply_search_replace_blocks(current_source: str, blocks: list[SearchReplaceBlock]) -> str:
+    updated = normalize_source(current_source)
+    for index, block in enumerate(blocks, start=1):
+        start = updated.find(block.search)
+        if start < 0:
+            raise EvolveBlockError(f"SEARCH block {index} did not match the current program")
+        if updated.find(block.search, start + 1) != -1:
+            raise EvolveBlockError(f"SEARCH block {index} matched multiple locations in the current program")
+        updated = updated[:start] + block.replace + updated[start + len(block.search) :]
+    return normalize_source(updated)
+
+
+def materialize_candidate_source(current_source: str, generated_source: str) -> str:
+    normalized_generated = normalize_source(generated_source)
+    stripped_generated = normalized_generated.strip()
+    if stripped_generated == "NO_CHANGES" or stripped_generated.startswith("<<<<<<< SEARCH"):
+        return apply_search_replace_blocks(current_source, parse_search_replace_blocks(normalized_generated))
+    if EVOLVE_BLOCK_START in normalized_generated and EVOLVE_BLOCK_END in normalized_generated:
+        return normalized_generated
+    raise EvolveBlockError("generated response must be SEARCH/REPLACE blocks, NO_CHANGES, or a full program")
 
 
 def assert_only_evolve_blocks_changed(parent_source: str, candidate_source: str) -> None:

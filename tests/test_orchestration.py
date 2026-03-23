@@ -586,6 +586,111 @@ def test_reconcile_rejects_mutations_outside_evolve_blocks(repository, dataset_m
     assert result.errors[0].startswith("invalid_mutation:")
 
 
+def test_reconcile_applies_search_replace_response_before_queueing(repository, dataset_manager):
+    class PatchGenerator:
+        def generate(
+            self,
+            track,
+            dataset_manifest,
+            context_trials,
+            negative_trials=None,
+            generation_index=0,
+            duplicate_retry_count=0,
+        ):
+            return type(
+                "Generated",
+                (),
+                {
+                    "source": """<<<<<<< SEARCH
+    def forward(self, x):
+        return self.network(x)
+=======
+    def forward(self, x):
+        return self.network(x) * 0.5
+>>>>>>> REPLACE
+""",
+                    "provenance_json": {
+                        **make_llm_provenance(model="patch-generator"),
+                    },
+                },
+            )()
+
+    dataset_manager.prepare("mnist:v1")
+    repository.register_dataset("mnist:v1", str(dataset_manager.manifest_path_for("mnist:v1")))
+    runner = RunnerService(repository=repository, dataset_manager=dataset_manager)
+    system = EvolutionSystem(repository, dataset_manager, PatchGenerator(), RecordingLauncher(), runner)
+    track = system.create_track("patch-mutation", "mnist:v1", {"ready_queue_threshold": 1})
+
+    baseline = repository.list_trials(track.track_id)[0]
+    repository.finalize_trial(
+        trial_id=baseline.trial_id,
+        runner_id=None,
+        outcome_reason="succeeded",
+        metrics={"accuracy": 0.5},
+        score=0.5,
+        error_info=None,
+    )
+
+    result = system.reconcile_track(track.track_id)
+    created_trial = repository.get_trial(result.generated_trial_ids[0])
+
+    assert result.errors == []
+    assert len(result.generated_trial_ids) == 1
+    assert created_trial is not None
+    assert "return self.network(x) * 0.5" in created_trial.source
+
+
+def test_reconcile_rejects_search_replace_mutations_outside_evolve_blocks(repository, dataset_manager):
+    class InvalidPatchGenerator:
+        def generate(
+            self,
+            track,
+            dataset_manifest,
+            context_trials,
+            negative_trials=None,
+            generation_index=0,
+            duplicate_retry_count=0,
+        ):
+            return type(
+                "Generated",
+                (),
+                {
+                    "source": """<<<<<<< SEARCH
+import json
+=======
+import json
+IMMUTABLE_BREAK = True
+>>>>>>> REPLACE
+""",
+                    "provenance_json": {
+                        **make_llm_provenance(model="invalid-patch"),
+                    },
+                },
+            )()
+
+    dataset_manager.prepare("mnist:v1")
+    repository.register_dataset("mnist:v1", str(dataset_manager.manifest_path_for("mnist:v1")))
+    runner = RunnerService(repository=repository, dataset_manager=dataset_manager)
+    system = EvolutionSystem(repository, dataset_manager, InvalidPatchGenerator(), RecordingLauncher(), runner)
+    track = system.create_track("invalid-patch-mutation", "mnist:v1", {"ready_queue_threshold": 1})
+
+    baseline = repository.list_trials(track.track_id)[0]
+    repository.finalize_trial(
+        trial_id=baseline.trial_id,
+        runner_id=None,
+        outcome_reason="succeeded",
+        metrics={"accuracy": 0.5},
+        score=0.5,
+        error_info=None,
+    )
+
+    result = system.reconcile_track(track.track_id)
+
+    assert result.generated_trial_ids == []
+    assert result.errors
+    assert result.errors[0].startswith("invalid_mutation:")
+
+
 def test_reconcile_persists_launcher_metadata_for_launched_trials(repository, dataset_manager):
     class MetadataLauncher:
         def launch_trial(self, trial_id: str, dispatch_token: str):
