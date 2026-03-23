@@ -58,8 +58,8 @@ class EvolutionSystem:
         )
         return track
 
-    def reconcile_track(self, track_id: str):
-        return self.orchestrator.reconcile_track(track_id)
+    def reconcile_track(self, track_id: str, reporter=None):
+        return self.orchestrator.reconcile_track(track_id, reporter=reporter)
 
     def sample_trial_context(self, track_id: str, limit: int) -> list[TrialSummary]:
         return self.repository.sample_trial_context(track_id=track_id, limit=limit)

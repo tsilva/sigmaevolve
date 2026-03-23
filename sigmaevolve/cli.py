@@ -4,8 +4,9 @@ import argparse
 import json
 import os
 import sys
+import time
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 
 from sigmaevolve import build_system
 from sigmaevolve.env import load_env_file
@@ -58,7 +59,7 @@ def _make_system(args) -> Any:
         runner = RunnerService(system.repository, system.dataset_manager)
         launcher = InlineRunnerLauncher(runner)
     elif args.launcher == "modal":
-        if args.database_url.startswith("sqlite"):
+        if args.command == "reconcile" and args.database_url.startswith("sqlite"):
             raise RuntimeError("Modal launcher requires a network-accessible database URL; sqlite is not supported.")
         launcher = create_modal_launcher(
             app_name=args.modal_app_name,
@@ -76,6 +77,149 @@ def _make_system(args) -> Any:
 
 def _print_json(payload: Any) -> None:
     print(json.dumps(payload, indent=2, sort_keys=True, default=str))
+
+
+class _CliReconcileReporter:
+    def __init__(self, stream: TextIO) -> None:
+        self.stream = stream
+        self.started_at = time.monotonic()
+        self.requested = 0
+        self.max_failures = 0
+
+    def _elapsed(self) -> str:
+        seconds = time.monotonic() - self.started_at
+        return f"{seconds:5.1f}s"
+
+    def _log(self, message: str) -> None:
+        print(f"[{self._elapsed()}] {message}", file=self.stream, flush=True)
+
+    def _progress_line(self, completed: int, requested: int, failures: int, max_failures: int, in_flight: int) -> str:
+        if requested <= 0:
+            return "Queue fill: nothing to generate."
+        width = 20
+        filled = int(width * completed / requested)
+        bar = "#" * filled + "-" * (width - filled)
+        return (
+            f"Queue fill [{bar}] {completed}/{requested} accepted"
+            f" | failures {failures}/{max_failures}"
+            f" | in flight {in_flight}"
+        )
+
+    def __call__(self, event: str, payload: dict[str, Any]) -> None:
+        if event == "reconcile_started":
+            self._log(f"Reconciling {payload['track_id']} with launcher={payload['launcher']}.")
+            return
+        if event == "sweep_completed":
+            self._log(
+                f"Sweep complete: requeued={payload['requeued_count']}, stale={payload['stale_count']}."
+            )
+            return
+        if event == "queue_fill_started":
+            self.requested = int(payload["requested_generations"])
+            self.max_failures = int(payload["max_failures"])
+            self._log(
+                f"Queue below target: queued={payload['queued_count']} target={payload['target_queue_count']}."
+            )
+            self._log(self._progress_line(0, self.requested, 0, self.max_failures, 0))
+            return
+        if event == "queue_fill_skipped":
+            self._log(
+                f"Queue already full: queued={payload['queued_count']} target={payload['target_queue_count']}."
+            )
+            return
+        if event == "generation_scheduled":
+            self._log(
+                "Scheduled generation slot "
+                f"{payload['slot_index'] + 1}/{max(self.requested, 1)} "
+                f"(attempt {payload['duplicate_retry_count']}, generation_index={payload['generation_index']})."
+            )
+            return
+        if event == "generation_accepted":
+            self._log(
+                f"Accepted candidate for slot {payload['slot_index'] + 1}: {payload['trial_id']}."
+            )
+            self._log(
+                self._progress_line(
+                    int(payload["completed"]),
+                    int(payload["requested"]),
+                    int(payload["failures"]),
+                    int(payload["max_failures"]),
+                    int(payload["in_flight"]),
+                )
+            )
+            return
+        if event == "generation_duplicate":
+            self._log(
+                "Duplicate candidate for slot "
+                f"{payload['slot_index'] + 1} "
+                f"(existing={payload['existing_trial_id']}, attempt={payload['duplicate_retry_count']})."
+            )
+            self._log(
+                self._progress_line(
+                    int(payload["completed"]),
+                    int(payload["requested"]),
+                    int(payload["failures"]),
+                    int(payload["max_failures"]),
+                    int(payload["in_flight"]),
+                )
+            )
+            return
+        if event == "generation_failed":
+            detail = f": {payload['detail']}" if payload.get("detail") else ""
+            self._log(
+                "Generation failed for slot "
+                f"{payload['slot_index'] + 1} "
+                f"(reason={payload['reason']}, attempt={payload['duplicate_retry_count']}){detail}"
+            )
+            self._log(
+                self._progress_line(
+                    int(payload["completed"]),
+                    int(payload["requested"]),
+                    int(payload["failures"]),
+                    int(payload["max_failures"]),
+                    int(payload["in_flight"]),
+                )
+            )
+            return
+        if event == "queue_fill_completed":
+            self._log(
+                f"Queue fill complete: accepted={payload['completed']}/{payload['requested']} "
+                f"with failures={payload['failures']}/{payload['max_failures']}."
+            )
+            return
+        if event == "queue_fill_stopped":
+            self._log(
+                f"Queue fill stopped at {payload['completed']}/{payload['requested']} "
+                f"after reaching failure budget {payload['failures']}/{payload['max_failures']}."
+            )
+            return
+        if event == "launch_batch_started":
+            self._log(
+                f"Launching reserved trials: count={payload['reserved_count']} max_parallelism={payload['max_parallelism']}."
+            )
+            return
+        if event == "trial_launch_started":
+            self._log(f"Launching trial {payload['trial_id']}...")
+            return
+        if event == "trial_launched":
+            launch_metadata = payload.get("launch_metadata") or {}
+            run_url = launch_metadata.get("run_url")
+            suffix = f" ({run_url})" if isinstance(run_url, str) and run_url else ""
+            self._log(f"Launched trial {payload['trial_id']}{suffix}.")
+            return
+        if event == "trial_launch_failed":
+            self._log(f"Launch failed for {payload['trial_id']}: {payload['detail']}")
+            return
+        if event == "reconcile_finished":
+            self._log(
+                "Reconcile finished: "
+                f"generated={payload['generated_count']} "
+                f"launched={payload['launched_count']} "
+                f"duplicates={payload['duplicate_count']} "
+                f"generation_failures={payload['failed_generation_count']} "
+                f"errors={payload['error_count']}."
+            )
+            return
 
 
 def _trial_diagnostics(metrics_json: dict[str, Any] | None) -> dict[str, Any]:
@@ -123,7 +267,8 @@ def cmd_create_track(args) -> int:
 
 def cmd_reconcile(args) -> int:
     system = _make_system(args)
-    result = system.reconcile_track(args.track_id)
+    reporter = _CliReconcileReporter(sys.stderr)
+    result = system.reconcile_track(args.track_id, reporter=reporter)
     _print_json(
         {
             "generated_trial_ids": result.generated_trial_ids,
@@ -242,8 +387,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--launcher",
         choices=["recording", "inline", "modal"],
-        default="recording",
-        help="Use recording to reserve only, inline to execute locally, or modal to spawn remote runner jobs.",
+        default="modal",
+        help="Use modal to spawn remote runner jobs by default, inline to execute locally, or recording to reserve only.",
     )
     parser.add_argument(
         "--modal-app-name",

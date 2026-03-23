@@ -254,6 +254,71 @@ def test_cli_modal_commands_call_support_helpers(tmp_path, monkeypatch):
     assert synced["dataset_id"] == "mnist:v1"
 
 
+def test_cli_reconcile_reports_progress_to_stderr(tmp_path, monkeypatch):
+    db_url = f"sqlite:///{tmp_path / 'cli-reconcile-progress.sqlite'}"
+    dataset_root = tmp_path / "datasets"
+
+    from sigmaevolve.datasets import ArrayDatasetProvider
+    import numpy as np
+    from sigmaevolve import cli as cli_module
+    from sigmaevolve.system import build_system
+
+    provider = ArrayDatasetProvider(
+        train_features=np.ones((4, 2), dtype=np.float32),
+        train_labels=np.array([0, 1, 0, 1], dtype=np.int64),
+        validation_features=np.ones((2, 2), dtype=np.float32),
+        validation_labels=np.array([0, 1], dtype=np.int64),
+        test_features=np.ones((2, 2), dtype=np.float32),
+        test_labels=np.array([0, 1], dtype=np.int64),
+        metadata={"num_classes": 2},
+    )
+
+    def fake_make_system(args):
+        return build_system(
+            database_url=args.database_url,
+            dataset_root=args.dataset_root,
+            providers={"mnist:v1": provider, "fashion_mnist:v1": provider},
+        )
+
+    monkeypatch.setattr(cli_module, "_make_system", fake_make_system)
+
+    assert main(["--database-url", db_url, "--dataset-root", str(dataset_root), "prepare-dataset", "mnist:v1"]) == 0
+
+    from io import StringIO
+    import contextlib
+
+    create_out = StringIO()
+    with contextlib.redirect_stdout(create_out):
+        assert (
+            main(
+                [
+                    "--database-url",
+                    db_url,
+                    "--dataset-root",
+                    str(dataset_root),
+                    "create-track",
+                    "mnist:v1",
+                    "--policy-json",
+                    '{"ready_queue_threshold":0}',
+                ]
+            )
+            == 0
+        )
+    track_id = json.loads(create_out.getvalue())["track_id"]
+
+    reconcile_out = StringIO()
+    reconcile_err = StringIO()
+    with contextlib.redirect_stdout(reconcile_out), contextlib.redirect_stderr(reconcile_err):
+        assert main(["--database-url", db_url, "--dataset-root", str(dataset_root), "reconcile", track_id]) == 0
+
+    payload = json.loads(reconcile_out.getvalue())
+    assert "launched_trial_ids" in payload
+    stderr = reconcile_err.getvalue()
+    assert "Reconciling" in stderr
+    assert "Launching reserved trials" in stderr
+    assert "Reconcile finished" in stderr
+
+
 def test_make_system_with_modal_launcher_uses_modal_proxy(monkeypatch, tmp_path):
     from sigmaevolve import cli as cli_module
 

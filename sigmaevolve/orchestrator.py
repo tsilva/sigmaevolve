@@ -3,7 +3,7 @@ from __future__ import annotations
 import random
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, replace
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 from sigmaevolve.evolve_blocks import EvolveBlockError, assert_only_evolve_blocks_changed, materialize_candidate_source
 from sigmaevolve.hashing import compute_script_hash
@@ -81,6 +81,10 @@ class Orchestrator:
         self.dataset_manager = dataset_manager
         self.generator = generator
         self.launcher = launcher
+
+    def _emit(self, reporter: Callable[[str, dict[str, Any]], None] | None, event: str, **payload: Any) -> None:
+        if reporter is not None:
+            reporter(event, payload)
 
     def _sample_successful_context_trials(self, track_id: str, sampling_settings: dict, generation_index: int) -> list[TrialSummary]:
         candidates = self.repository.sample_trial_context(
@@ -290,12 +294,22 @@ class Orchestrator:
         result.duplicate_trial_ids.append(duplicate_trial.trial_id)
         return result
 
-    def reconcile_track(self, track_id: str) -> ReconcileResult:
+    def reconcile_track(
+        self,
+        track_id: str,
+        reporter: Callable[[str, dict[str, Any]], None] | None = None,
+    ) -> ReconcileResult:
         track = self.repository.get_track(track_id)
         if track is None:
             raise KeyError(f"Track not found: {track_id}")
         policy = track.policy_json
         result = ReconcileResult()
+        self._emit(
+            reporter,
+            "reconcile_started",
+            track_id=track_id,
+            launcher=self.launcher.__class__.__name__,
+        )
 
         requeued, stale_dispatch = self.repository.sweep_expired_dispatches(
             track_id=track_id,
@@ -310,6 +324,12 @@ class Orchestrator:
             requeued_trial_ids=requeued,
             stale_trial_ids=stale_dispatch + stale_active,
         )
+        self._emit(
+            reporter,
+            "sweep_completed",
+            requeued_count=len(requeued),
+            stale_count=len(stale_dispatch) + len(stale_active),
+        )
 
         queue_count = self.repository.count_trials(track_id, statuses={"queued"})
         if queue_count < int(policy["ready_queue_threshold"]):
@@ -321,6 +341,14 @@ class Orchestrator:
             failures = 0
             completed_slots: set[int] = set()
             pending: dict[Future[Any], GenerationAttempt] = {}
+            self._emit(
+                reporter,
+                "queue_fill_started",
+                queued_count=queue_count,
+                target_queue_count=int(policy["ready_queue_threshold"]),
+                requested_generations=requested_generations,
+                max_failures=max_failures,
+            )
 
             with ThreadPoolExecutor(max_workers=requested_generations) as executor:
                 for slot_index in range(requested_generations):
@@ -336,6 +364,14 @@ class Orchestrator:
                     if scheduled is not None:
                         future, attempt = scheduled
                         pending[future] = attempt
+                        self._emit(
+                            reporter,
+                            "generation_scheduled",
+                            slot_index=attempt.slot_index,
+                            generation_index=attempt.generation_index,
+                            duplicate_retry_count=attempt.duplicate_retry_count,
+                            in_flight=len(pending),
+                        )
 
                 while pending and len(completed_slots) < requested_generations:
                     done, _ = wait(tuple(pending), return_when=FIRST_COMPLETED)
@@ -361,6 +397,20 @@ class Orchestrator:
                                 extra_error_json={"exception_type": type(exc).__name__},
                                 result_error=str(exc),
                             )
+                            self._emit(
+                                reporter,
+                                "generation_failed",
+                                slot_index=attempt.slot_index,
+                                generation_index=attempt.generation_index,
+                                duplicate_retry_count=attempt.duplicate_retry_count,
+                                reason="generator_exception",
+                                detail=str(exc),
+                                failures=failures,
+                                max_failures=max_failures,
+                                completed=len(completed_slots),
+                                requested=requested_generations,
+                                in_flight=len(pending),
+                            )
                             retry_needed = True
                         else:
                             generated = self._normalize_generation_result(raw_generated)
@@ -374,6 +424,20 @@ class Orchestrator:
                                     reason=str(error_info.get("reason") or "generation_failed"),
                                     detail=str(error_info["detail"]) if error_info.get("detail") is not None else None,
                                     extra_error_json=error_info,
+                                )
+                                self._emit(
+                                    reporter,
+                                    "generation_failed",
+                                    slot_index=attempt.slot_index,
+                                    generation_index=attempt.generation_index,
+                                    duplicate_retry_count=attempt.duplicate_retry_count,
+                                    reason=str(error_info.get("reason") or "generation_failed"),
+                                    detail=str(error_info.get("detail") or ""),
+                                    failures=failures,
+                                    max_failures=max_failures,
+                                    completed=len(completed_slots),
+                                    requested=requested_generations,
+                                    in_flight=len(pending),
                                 )
                                 retry_needed = True
                             else:
@@ -392,6 +456,20 @@ class Orchestrator:
                                         reason="candidate_materialization_failed",
                                         detail=str(exc),
                                         result_error=f"invalid_mutation:{exc}",
+                                    )
+                                    self._emit(
+                                        reporter,
+                                        "generation_failed",
+                                        slot_index=attempt.slot_index,
+                                        generation_index=attempt.generation_index,
+                                        duplicate_retry_count=attempt.duplicate_retry_count,
+                                        reason="candidate_materialization_failed",
+                                        detail=str(exc),
+                                        failures=failures,
+                                        max_failures=max_failures,
+                                        completed=len(completed_slots),
+                                        requested=requested_generations,
+                                        in_flight=len(pending),
                                     )
                                     retry_needed = True
                                 else:
@@ -413,6 +491,20 @@ class Orchestrator:
                                             candidate_hash=candidate_hash,
                                             result_error=f"invalid_mutation:{exc}",
                                         )
+                                        self._emit(
+                                            reporter,
+                                            "generation_failed",
+                                            slot_index=attempt.slot_index,
+                                            generation_index=attempt.generation_index,
+                                            duplicate_retry_count=attempt.duplicate_retry_count,
+                                            reason="generation_assertion_failed",
+                                            detail=str(exc),
+                                            failures=failures,
+                                            max_failures=max_failures,
+                                            completed=len(completed_slots),
+                                            requested=requested_generations,
+                                            in_flight=len(pending),
+                                        )
                                         retry_needed = True
                                     else:
                                         final_provenance = self._with_generation_trace(
@@ -430,6 +522,19 @@ class Orchestrator:
                                         if created and trial is not None:
                                             result.generated_trial_ids.append(trial.trial_id)
                                             completed_slots.add(attempt.slot_index)
+                                            self._emit(
+                                                reporter,
+                                                "generation_accepted",
+                                                slot_index=attempt.slot_index,
+                                                generation_index=attempt.generation_index,
+                                                duplicate_retry_count=attempt.duplicate_retry_count,
+                                                trial_id=trial.trial_id,
+                                                completed=len(completed_slots),
+                                                requested=requested_generations,
+                                                failures=failures,
+                                                max_failures=max_failures,
+                                                in_flight=len(pending),
+                                            )
                                         elif trial is not None:
                                             failures += 1
                                             result = self._record_duplicate_generation_attempt(
@@ -438,6 +543,19 @@ class Orchestrator:
                                                 provenance_json=final_provenance,
                                                 candidate_hash=candidate_hash,
                                                 trial_id=trial.trial_id,
+                                            )
+                                            self._emit(
+                                                reporter,
+                                                "generation_duplicate",
+                                                slot_index=attempt.slot_index,
+                                                generation_index=attempt.generation_index,
+                                                duplicate_retry_count=attempt.duplicate_retry_count,
+                                                existing_trial_id=trial.trial_id,
+                                                failures=failures,
+                                                max_failures=max_failures,
+                                                completed=len(completed_slots),
+                                                requested=requested_generations,
+                                                in_flight=len(pending),
                                             )
                                             retry_needed = True
 
@@ -454,6 +572,39 @@ class Orchestrator:
                             if scheduled is not None:
                                 next_future, next_attempt = scheduled
                                 pending[next_future] = next_attempt
+                                self._emit(
+                                    reporter,
+                                    "generation_scheduled",
+                                    slot_index=next_attempt.slot_index,
+                                    generation_index=next_attempt.generation_index,
+                                    duplicate_retry_count=next_attempt.duplicate_retry_count,
+                                    in_flight=len(pending),
+                                )
+                if len(completed_slots) < requested_generations and failures >= max_failures:
+                    self._emit(
+                        reporter,
+                        "queue_fill_stopped",
+                        completed=len(completed_slots),
+                        requested=requested_generations,
+                        failures=failures,
+                        max_failures=max_failures,
+                    )
+                else:
+                    self._emit(
+                        reporter,
+                        "queue_fill_completed",
+                        completed=len(completed_slots),
+                        requested=requested_generations,
+                        failures=failures,
+                        max_failures=max_failures,
+                    )
+        else:
+            self._emit(
+                reporter,
+                "queue_fill_skipped",
+                queued_count=queue_count,
+                target_queue_count=int(policy["ready_queue_threshold"]),
+            )
 
         reserved = self.repository.reserve_trials(
             track_id=track_id,
@@ -461,12 +612,44 @@ class Orchestrator:
             dispatch_ttl_sec=int(policy["dispatch_ttl_sec"]),
             limit=int(policy["max_parallelism"]),
         )
+        self._emit(
+            reporter,
+            "launch_batch_started",
+            reserved_count=len(reserved),
+            max_parallelism=int(policy["max_parallelism"]),
+        )
         for trial in reserved:
             try:
+                self._emit(
+                    reporter,
+                    "trial_launch_started",
+                    trial_id=trial.trial_id,
+                )
                 launch_metadata = self.launcher.launch_trial(trial.trial_id, trial.dispatch_token or "")
                 if launch_metadata:
                     self.repository.record_trial_launcher_metadata(trial.trial_id, launch_metadata)
                 result.launched_trial_ids.append(trial.trial_id)
+                self._emit(
+                    reporter,
+                    "trial_launched",
+                    trial_id=trial.trial_id,
+                    launch_metadata=launch_metadata or {},
+                )
             except Exception as exc:
                 result.errors.append(f"launch_failed:{trial.trial_id}:{exc}")
+                self._emit(
+                    reporter,
+                    "trial_launch_failed",
+                    trial_id=trial.trial_id,
+                    detail=str(exc),
+                )
+        self._emit(
+            reporter,
+            "reconcile_finished",
+            generated_count=len(result.generated_trial_ids),
+            launched_count=len(result.launched_trial_ids),
+            duplicate_count=len(result.duplicate_trial_ids),
+            failed_generation_count=len(result.failed_generation_trial_ids),
+            error_count=len(result.errors),
+        )
         return result
