@@ -43,12 +43,26 @@ class FixedGenerationBackend:
         return GenerationResult(
             source=self.source,
             provenance_json={
-                "backend": "fixed",
+                "backend": "openrouter",
                 "model": self.model_name,
                 "candidate_kind": CANDIDATE_KIND_STRATEGY_V1,
                 "generation_index": generation_index,
                 "duplicate_retry_count": duplicate_retry_count,
-                "request_messages": [],
+                "generation_config": {
+                    "model": self.model_name,
+                    "temperature": 0.0,
+                    "max_tokens": 0,
+                },
+                "request_messages": [
+                    {
+                        "role": "system",
+                        "content": "Test-only fixed generator stub for a recorded LLM prompt.",
+                    },
+                    {
+                        "role": "user",
+                        "content": "Use this parent trial as the base candidate:\n```python\n# fixed backend stub\n```",
+                    },
+                ],
                 "context_trial_ids": [trial.trial_id for trial in context_trials],
             },
         )

@@ -156,6 +156,7 @@ class RunnerService:
         progress_payload: dict[str, Any] | None,
         process_elapsed_sec: float,
         timed_out: bool,
+        debug_payload: dict[str, Any] | None,
     ) -> dict[str, Any]:
         best_artifact = self._select_best_eval(artifacts)
         last_artifact = self._select_last_completed_eval(artifacts)
@@ -194,6 +195,17 @@ class RunnerService:
                 "process_elapsed_sec": float(process_elapsed_sec),
             }
         )
+        if debug_payload:
+            for key in (
+                "early_stopped",
+                "early_stop_epoch",
+                "early_stopping_patience",
+                "epochs_completed",
+                "best_validation_accuracy_seen",
+                "epochs_without_improvement",
+            ):
+                if key in debug_payload:
+                    metrics[key] = debug_payload[key]
         return metrics
 
     def run_reserved_trial(self, trial_id: str, dispatch_token: str, runner_id: str) -> None:
@@ -225,6 +237,7 @@ class RunnerService:
                         {
                             "train_split_path": manifest.train_split_path,
                             "validation_split_path": manifest.validation_split_path,
+                            "validation_labels_path": manifest.validation_labels_path,
                             "epochs": int(policy["epochs"]),
                             "hard_timeout_sec": self.hard_timeout_sec,
                             "random_seed": 1234,
@@ -347,6 +360,7 @@ class RunnerService:
                     progress_payload=progress_payload,
                     process_elapsed_sec=process_elapsed_sec,
                     timed_out=timed_out,
+                    debug_payload=debug_payload,
                 )
                 outcome_reason = OUTCOME_TIMEOUT if timed_out else OUTCOME_SUCCEEDED
                 score = compute_score(metrics, outcome_reason, policy["scorer_settings"])

@@ -9,3 +9,10 @@
 ## Modal Runs
 
 - For remote Modal execution, verify the database URL is network-accessible and loaded from `/Users/tsilva/.config/sigmaevolve/.env` before reporting that Modal runs are blocked on configuration.
+
+## Experiment Provenance
+
+- All non-baseline trials must come from the configured LLM prompting pipeline and retain recorded prompt provenance.
+- Do not invent, hand-author, manually curate, or otherwise submit your own experiment variants as queued trials.
+- Do not enqueue or persist ad hoc provenance labels such as `manual-curated`, `manual-variant`, `legacy`, `test`, or similar stand-ins for generated candidates.
+- The only allowed non-prompt exception is the system-seeded baseline trial. Any new candidate must include recorded prompt messages from the LLM request path.

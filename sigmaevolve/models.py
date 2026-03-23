@@ -30,6 +30,7 @@ TERMINAL_OUTCOMES = {
 }
 
 CANDIDATE_KIND_STRATEGY_V1 = "strategy_v1"
+DEFAULT_GENERATION_MODEL = "google/gemini-3.1-flash-lite-preview"
 
 
 def now_utc() -> datetime:
@@ -122,7 +123,7 @@ class TrackPolicy:
             "selection": "round_robin",
             "model_pool": [
                 {
-                    "model": "openai/gpt-4o-mini",
+                    "model": DEFAULT_GENERATION_MODEL,
                     "temperature": 0.2,
                     "max_tokens": 2500,
                     "retry_count": 2,

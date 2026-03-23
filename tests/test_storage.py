@@ -3,7 +3,10 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
+import pytest
+
 from sigmaevolve.storage import trials_table
+from tests.support import make_llm_provenance
 
 
 class _RecordingConnection:
@@ -42,7 +45,7 @@ def test_track_and_trial_mutations_publish_dashboard_notifications(repository):
     trial, created = repository.create_queued_trial_if_absent(
         track_id=track.track_id,
         source="print('candidate')\n",
-        provenance_json={"backend": "test", "model": "worker"},
+        provenance_json=make_llm_provenance(model="worker"),
     )
     assert created is True
     assert trial is not None
@@ -80,7 +83,7 @@ def test_record_trial_launcher_metadata_merges_into_provenance_and_notifies(repo
     trial, created = repository.create_queued_trial_if_absent(
         track_id=track.track_id,
         source="print('candidate')\n",
-        provenance_json={"backend": "test", "model": "worker"},
+        provenance_json=make_llm_provenance(model="worker"),
     )
     assert created is True
     assert trial is not None
@@ -96,7 +99,7 @@ def test_record_trial_launcher_metadata_merges_into_provenance_and_notifies(repo
     updated = repository.get_trial(trial.trial_id)
 
     assert updated is not None
-    assert updated.provenance_json["backend"] == "test"
+    assert updated.provenance_json["backend"] == "openrouter"
     assert updated.provenance_json["launcher"] == {
         "kind": "modal",
         "run_id": "fc-123",
@@ -125,12 +128,12 @@ def test_sample_trial_context_includes_scored_timeouts_and_uses_time_to_best_eva
     fast_timeout, _ = repository.create_queued_trial_if_absent(
         track.track_id,
         "print('fast timeout')\n",
-        {"backend": "test", "model": "fast"},
+        make_llm_provenance(model="fast"),
     )
     slow_success, _ = repository.create_queued_trial_if_absent(
         track.track_id,
         "print('slow success')\n",
-        {"backend": "test", "model": "slow"},
+        make_llm_provenance(model="slow"),
     )
     assert fast_timeout is not None and slow_success is not None
 
@@ -154,3 +157,15 @@ def test_sample_trial_context_includes_scored_timeouts_and_uses_time_to_best_eva
     context = repository.sample_trial_context(track.track_id, limit=2)
     assert [trial.trial_id for trial in context] == [fast_timeout.trial_id, slow_success.trial_id]
     assert context[0].outcome_reason == "timeout"
+
+
+def test_create_queued_trial_rejects_non_llm_candidate_provenance(repository):
+    repository.register_dataset("mnist:v1", "/tmp/manifest.json")
+    track = repository.create_track(name="guardrail", dataset_id="mnist:v1", policy_json={})
+
+    with pytest.raises(ValueError, match="recorded LLM prompting pipeline"):
+        repository.create_queued_trial_if_absent(
+            track_id=track.track_id,
+            source="print('candidate')\n",
+            provenance_json={"backend": "manual-curated", "model": "cnn-residual-ish"},
+        )

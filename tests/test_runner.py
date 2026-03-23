@@ -7,6 +7,7 @@ from sigmaevolve.orchestrator import InlineRunnerLauncher
 from sigmaevolve.runner import RunnerService
 from sigmaevolve.system import EvolutionSystem
 from sigmaevolve.train_script_blocks import build_candidate_train_script, build_model_block
+from tests.support import make_llm_provenance
 
 
 SUCCESS_BLOCK = build_model_block(
@@ -72,6 +73,14 @@ def forward(self, x):
     imports="import time\nimport torch",
 )
 
+EARLY_STOP_BLOCK = build_model_block(
+    """
+def forward(self, x):
+    return torch.zeros((x.shape[0], 2), dtype=torch.float32)
+""",
+    imports="import torch",
+)
+
 CRASH_BLOCK = build_model_block(
     """
 def __init__(self):
@@ -107,7 +116,7 @@ def _run_trial(system, track_id, source):
     _, created = system.repository.create_queued_trial_if_absent(
         track_id,
         build_candidate_train_script(source),
-        {"backend": "test", "candidate_kind": CANDIDATE_KIND_STRATEGY_V1},
+        make_llm_provenance(candidate_kind=CANDIDATE_KIND_STRATEGY_V1),
     )
     assert created is True
     reserved = system.repository.reserve_trials(track_id, max_parallelism=1, dispatch_ttl_sec=60, limit=1)[0]
@@ -166,6 +175,20 @@ def test_equal_accuracy_uses_lower_time_to_best_eval_as_tiebreaker(repository, d
     assert finished.metrics_json["time_to_best_eval_sec"] == pytest.approx(0.05, abs=0.08)
     assert finished.metrics_json["best_eval_index"] == 1
     assert finished.metrics_json["last_completed_eval_index"] == 2
+
+
+def test_run_stops_early_when_validation_accuracy_plateaus(repository, dataset_manager):
+    system = build_inline_system(repository, dataset_manager)
+    system.prepare_dataset("mnist:v1")
+    track = system.create_track("early-stop", "mnist:v1", {"epochs": 5})
+    finalize_baseline(system, track.track_id)
+    finished = _run_trial(system, track.track_id, EARLY_STOP_BLOCK)
+    assert finished.outcome_reason == "succeeded"
+    assert finished.metrics_json["early_stopped"] is True
+    assert finished.metrics_json["early_stopping_patience"] == 2
+    assert finished.metrics_json["early_stop_epoch"] == 3
+    assert finished.metrics_json["epochs_completed"] == 3
+    assert finished.metrics_json["eval_count"] == 3
 
 
 def test_crash_finalizes_with_zero_score(repository, dataset_manager):

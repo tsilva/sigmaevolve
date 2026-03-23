@@ -39,6 +39,51 @@ def normalize_database_url(database_url: str) -> str:
         database_url = "postgresql+psycopg://" + database_url[len("postgresql://") :]
     return database_url
 
+
+ALLOWED_GENERATION_BACKENDS = frozenset({"openrouter"})
+
+
+def _is_prompt_message(entry: object) -> bool:
+    if not isinstance(entry, dict):
+        return False
+    role = entry.get("role")
+    content = entry.get("content")
+    return isinstance(role, str) and bool(role.strip()) and isinstance(content, str) and bool(content.strip())
+
+
+def _validate_trial_provenance(provenance_json: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(provenance_json or {})
+    backend = payload.get("backend")
+    if not isinstance(backend, str) or not backend.strip():
+        raise ValueError("Queued trials require provenance_json.backend.")
+    if backend == "baseline":
+        return payload
+    if backend not in ALLOWED_GENERATION_BACKENDS:
+        raise ValueError(
+            "Queued non-baseline trials must come from the recorded LLM prompting pipeline; "
+            f"unsupported backend {backend!r}."
+        )
+    model = payload.get("model")
+    if not isinstance(model, str) or not model.strip():
+        raise ValueError("LLM-generated trials require provenance_json.model.")
+    generation_config = payload.get("generation_config")
+    if not isinstance(generation_config, dict):
+        raise ValueError("LLM-generated trials require provenance_json.generation_config.")
+    request_messages = payload.get("request_messages")
+    if not isinstance(request_messages, list) or not request_messages:
+        raise ValueError("LLM-generated trials require non-empty provenance_json.request_messages.")
+    if not all(_is_prompt_message(entry) for entry in request_messages):
+        raise ValueError(
+            "LLM-generated trials require provenance_json.request_messages entries with string role and content."
+        )
+    context_trial_ids = payload.get("context_trial_ids")
+    if not isinstance(context_trial_ids, list):
+        raise ValueError("LLM-generated trials require provenance_json.context_trial_ids.")
+    candidate_kind = payload.get("candidate_kind")
+    if not isinstance(candidate_kind, str) or not candidate_kind.strip():
+        raise ValueError("LLM-generated trials require provenance_json.candidate_kind.")
+    return payload
+
 datasets_table = sa.Table(
     "datasets",
     metadata,
@@ -258,6 +303,7 @@ class SQLAlchemyRepository:
         source: str,
         provenance_json: dict[str, Any],
     ) -> tuple[TrialRecord | None, bool]:
+        validated_provenance = _validate_trial_provenance(provenance_json)
         normalized_source = normalize_source(source)
         script_hash = compute_script_hash(normalized_source)
         created_at = now_utc()
@@ -279,7 +325,7 @@ class SQLAlchemyRepository:
                     track_id=track_id,
                     source=normalized_source,
                     script_hash=script_hash,
-                    provenance_json=provenance_json,
+                    provenance_json=validated_provenance,
                     status=TRIAL_STATUS_QUEUED,
                     outcome_reason=None,
                     dispatch_token=None,

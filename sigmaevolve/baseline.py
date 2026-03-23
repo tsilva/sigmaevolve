@@ -64,6 +64,10 @@ def read_split(path: str) -> tuple[np.ndarray, np.ndarray] | np.ndarray:
     return features
 
 
+def read_labels(path: str) -> np.ndarray:
+    return np.load(path).astype(np.int64)
+
+
 def infer_input_shape(features: np.ndarray) -> tuple[int, ...]:
     shape = tuple(int(dim) for dim in features.shape[1:])
     if not shape:
@@ -242,15 +246,28 @@ def main(argv: list[str] | None = None) -> int:
 
     train_features, train_labels = read_split(config["train_split_path"])
     validation_features = read_split(config["validation_split_path"])
+    validation_labels = read_labels(config["validation_labels_path"])
     if not isinstance(train_features, np.ndarray) or not isinstance(train_labels, np.ndarray):
         raise RuntimeError("Training split is invalid.")
     if not isinstance(validation_features, np.ndarray):
         raise RuntimeError("Validation split is invalid.")
+    if not isinstance(validation_labels, np.ndarray):
+        raise RuntimeError("Validation labels are invalid.")
 
     start_time = time.monotonic()
     eval_index = 0
     last_completed_eval_sec: float | None = None
-    debug_payload: dict[str, object] = {"timed_out": False, "eval_count": 0}
+    early_stopping_patience = 2 if num_epochs > 2 else 0
+    best_validation_accuracy = -1.0
+    epochs_without_improvement = 0
+    epochs_completed = 0
+    debug_payload: dict[str, object] = {
+        "timed_out": False,
+        "eval_count": 0,
+        "early_stopped": False,
+        "early_stopping_patience": early_stopping_patience,
+        "epochs_completed": 0,
+    }
 
     try:
         _ = seed_everything(random_seed)
@@ -342,8 +359,18 @@ def main(argv: list[str] | None = None) -> int:
                 elapsed_time_sec=elapsed_after_eval,
                 epoch=epoch_index + 1,
             )
+            validation_accuracy = float((predictions == validation_labels).mean())
+            if validation_accuracy > best_validation_accuracy + 1e-9:
+                best_validation_accuracy = validation_accuracy
+                epochs_without_improvement = 0
+            else:
+                epochs_without_improvement += 1
             last_completed_eval_sec = elapsed_after_eval
+            epochs_completed = epoch_index + 1
             debug_payload["eval_count"] = eval_index
+            debug_payload["epochs_completed"] = epochs_completed
+            debug_payload["best_validation_accuracy_seen"] = best_validation_accuracy
+            debug_payload["epochs_without_improvement"] = epochs_without_improvement
             write_progress(
                 progress_path,
                 phase="train",
@@ -352,6 +379,14 @@ def main(argv: list[str] | None = None) -> int:
                 eval_index=eval_index,
                 epoch_index=epoch_index + 1,
             )
+            if (
+                early_stopping_patience > 0
+                and epochs_without_improvement >= early_stopping_patience
+                and (epoch_index + 1) < num_epochs
+            ):
+                debug_payload["early_stopped"] = True
+                debug_payload["early_stop_epoch"] = epoch_index + 1
+                break
 
         write_progress(
             progress_path,
@@ -359,7 +394,7 @@ def main(argv: list[str] | None = None) -> int:
             elapsed_time_sec=time.monotonic() - start_time,
             last_completed_eval_sec=last_completed_eval_sec,
             eval_index=eval_index,
-            epoch_index=num_epochs,
+            epoch_index=epochs_completed,
         )
         write_json_atomic(debug_output_path, debug_payload)
         return 0

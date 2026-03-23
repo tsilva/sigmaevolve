@@ -5,6 +5,7 @@ import os
 from types import SimpleNamespace
 
 from sigmaevolve.cli import main
+from sigmaevolve.models import DEFAULT_GENERATION_MODEL
 from sigmaevolve.storage import normalize_database_url
 
 
@@ -69,6 +70,60 @@ def test_cli_create_track_and_list_trials(tmp_path, monkeypatch):
     assert len(trials) == 1
     assert trials[0]["status"] == "queued"
     assert trials[0]["time_to_best_eval_sec"] is None
+
+
+def test_cli_create_track_uses_default_generation_model(tmp_path, monkeypatch):
+    db_url = f"sqlite:///{tmp_path / 'cli-default-policy.sqlite'}"
+    dataset_root = tmp_path / "datasets"
+
+    from sigmaevolve.datasets import ArrayDatasetProvider
+    import numpy as np
+
+    provider = ArrayDatasetProvider(
+        train_features=np.ones((4, 2), dtype=np.float32),
+        train_labels=np.array([0, 1, 0, 1], dtype=np.int64),
+        validation_features=np.ones((2, 2), dtype=np.float32),
+        validation_labels=np.array([0, 1], dtype=np.int64),
+        test_features=np.ones((2, 2), dtype=np.float32),
+        test_labels=np.array([0, 1], dtype=np.int64),
+        metadata={"num_classes": 2},
+    )
+
+    from sigmaevolve import cli as cli_module
+    from sigmaevolve.system import build_system
+
+    def fake_make_system(args):
+        return build_system(
+            database_url=args.database_url,
+            dataset_root=args.dataset_root,
+            providers={"mnist:v1": provider, "fashion_mnist:v1": provider},
+        )
+
+    monkeypatch.setattr(cli_module, "_make_system", fake_make_system)
+
+    assert main(["--database-url", db_url, "--dataset-root", str(dataset_root), "prepare-dataset", "mnist:v1"]) == 0
+
+    from io import StringIO
+    import contextlib
+
+    create_out = StringIO()
+    with contextlib.redirect_stdout(create_out):
+        assert (
+            main(
+                [
+                    "--database-url",
+                    db_url,
+                    "--dataset-root",
+                    str(dataset_root),
+                    "create-track",
+                    "mnist:v1",
+                ]
+            )
+            == 0
+        )
+    track = json.loads(create_out.getvalue())
+    pool = track["policy_json"]["generation_backend"]["model_pool"]
+    assert pool[0]["model"] == DEFAULT_GENERATION_MODEL
 
 
 def test_cli_create_track_from_policy_file(tmp_path, monkeypatch):

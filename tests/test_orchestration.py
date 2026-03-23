@@ -7,11 +7,14 @@ import pytest
 
 from sigmaevolve.baseline import build_baseline_linear_classifier
 from sigmaevolve.generation import FixedGenerationBackend
+from sigmaevolve.hashing import compute_script_hash, normalize_source
 from sigmaevolve.models import CANDIDATE_KIND_STRATEGY_V1
 from sigmaevolve.orchestrator import InlineRunnerLauncher, RecordingLauncher
 from sigmaevolve.runner import RunnerService
+from sigmaevolve.storage import trials_table
 from sigmaevolve.system import EvolutionSystem
 from sigmaevolve.train_script_blocks import build_candidate_train_script, build_model_block
+from tests.support import make_llm_provenance
 
 
 def test_create_track_seeds_one_baseline_candidate(system):
@@ -36,7 +39,7 @@ def forward(self, x):
 """
         )
     )
-    provenance = {"backend": "test", "candidate_kind": CANDIDATE_KIND_STRATEGY_V1}
+    provenance = make_llm_provenance(candidate_kind=CANDIDATE_KIND_STRATEGY_V1)
 
     original, created = system.repository.create_queued_trial_if_absent(first.track_id, duplicate_source, provenance)
     again, created_again = system.repository.create_queued_trial_if_absent(first.track_id, duplicate_source, provenance)
@@ -142,9 +145,7 @@ def test_reconcile_retries_duplicate_generation_with_incremented_retry_count(rep
                 {
                     "source": self.source,
                     "provenance_json": {
-                        "backend": "fixed",
-                        "model": "retry-capture",
-                        "candidate_kind": CANDIDATE_KIND_STRATEGY_V1,
+                        **make_llm_provenance(model="retry-capture"),
                         "duplicate_retry_count": duplicate_retry_count,
                     },
                 },
@@ -206,9 +207,7 @@ def test_reconcile_persists_successful_retry_generation_params(repository, datas
                 {
                     "source": source,
                     "provenance_json": {
-                        "backend": "openrouter",
-                        "model": "retry-capture",
-                        "candidate_kind": CANDIDATE_KIND_STRATEGY_V1,
+                        **make_llm_provenance(model="retry-capture"),
                         "generation_index": generation_index,
                         "duplicate_retry_count": duplicate_retry_count,
                         "generation_config": {
@@ -314,7 +313,7 @@ def forward(self, x):
 """
             )
         ),
-        {"backend": "test", "model": "mid", "candidate_kind": CANDIDATE_KIND_STRATEGY_V1},
+        make_llm_provenance(model="mid", candidate_kind=CANDIDATE_KIND_STRATEGY_V1),
     )
     low, _ = repository.create_queued_trial_if_absent(
         track.track_id,
@@ -326,7 +325,7 @@ def forward(self, x):
 """
             )
         ),
-        {"backend": "test", "model": "low", "candidate_kind": CANDIDATE_KIND_STRATEGY_V1},
+        make_llm_provenance(model="low", candidate_kind=CANDIDATE_KIND_STRATEGY_V1),
     )
     assert mid is not None and low is not None
 
@@ -399,9 +398,7 @@ def forward(self, x):
                         )
                     ),
                     "provenance_json": {
-                        "backend": "fixed",
-                        "model": "capture",
-                        "candidate_kind": CANDIDATE_KIND_STRATEGY_V1,
+                        **make_llm_provenance(model="capture"),
                     },
                 },
             )()
@@ -437,7 +434,7 @@ def forward(self, x):
 """
             )
         ),
-        {"backend": "openrouter", "model": "test/model", "candidate_kind": CANDIDATE_KIND_STRATEGY_V1},
+        make_llm_provenance(model="test/model", candidate_kind=CANDIDATE_KIND_STRATEGY_V1),
     )
     assert failed is not None
     repository.finalize_trial(
@@ -480,9 +477,7 @@ def test_reconcile_does_not_mutate_legacy_successes(repository, dataset_manager)
                         "import torch\n"
                     ),
                     "provenance_json": {
-                        "backend": "fixed",
-                        "model": "capture",
-                        "candidate_kind": CANDIDATE_KIND_STRATEGY_V1,
+                        **make_llm_provenance(model="capture"),
                     },
                 },
             )()
@@ -503,12 +498,32 @@ def test_reconcile_does_not_mutate_legacy_successes(repository, dataset_manager)
         score=0.0,
         error_info={"reason": "test_setup"},
     )
-    legacy, created = repository.create_queued_trial_if_absent(
-        track.track_id,
-        "print('legacy train script')\n",
-        {"backend": "legacy"},
-    )
-    assert created is True
+    legacy_source = normalize_source("print('legacy train script')\n")
+    legacy_trial_id = "trial_legacy_success"
+    with repository.transaction() as conn:
+        conn.execute(
+            trials_table.insert().values(
+                trial_id=legacy_trial_id,
+                track_id=track.track_id,
+                source=legacy_source,
+                script_hash=compute_script_hash(legacy_source),
+                provenance_json={"backend": "legacy"},
+                status="queued",
+                outcome_reason=None,
+                dispatch_token=None,
+                dispatch_deadline_at=None,
+                runner_id=None,
+                heartbeat_at=None,
+                started_at=None,
+                finished_at=None,
+                metrics_json=None,
+                score=0.0,
+                error_json=None,
+                dispatch_attempts=0,
+                created_at=baseline.created_at,
+            )
+        )
+    legacy = repository.get_trial(legacy_trial_id)
     assert legacy is not None
     repository.finalize_trial(
         trial_id=legacy.trial_id,
@@ -543,9 +558,7 @@ def test_reconcile_rejects_mutations_outside_evolve_blocks(repository, dataset_m
                 {
                     "source": invalid_source,
                     "provenance_json": {
-                        "backend": "fixed",
-                        "model": "invalid",
-                        "candidate_kind": CANDIDATE_KIND_STRATEGY_V1,
+                        **make_llm_provenance(model="invalid"),
                     },
                 },
             )()
