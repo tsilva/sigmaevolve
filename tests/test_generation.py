@@ -260,14 +260,17 @@ def test_openrouter_generation_prompt_lists_prior_programs_before_current_progra
         selected_config={"model": "test/model"},
     )
 
-    assert prompt.startswith("PRIOR PROGRAMS:\n---\nscore: 0.998")
-    assert "val_acc: 0.998" in prompt
-    assert "val_loss: 0.023" in prompt
-    assert "CURRENT PROGRAM:\nHere is the current program we are trying to improve" in prompt
-    assert "score: 0.992" in prompt
-    assert "val_acc: 0.992" in prompt
-    assert "val_loss: 0.1" in prompt
     prior_section, current_section = prompt.split("CURRENT PROGRAM:\n", maxsplit=1)
+    assert prior_section.startswith("PRIOR PROGRAMS:\n---\nscore: 0.998")
+    assert "val_acc: 0.998" in prior_section
+    assert "val_loss: 0.023" in prior_section
+    assert "[...]" in prior_section
+    assert "return torch.zeros((x.shape[0], 10), dtype=torch.float32) + 0.3" in prior_section
+    assert "return torch.zeros((x.shape[0], 10), dtype=torch.float32) + 0.2" not in prior_section
+    assert "CURRENT PROGRAM:\nHere is the current program we are trying to improve" in prompt
+    assert "score: 0.992" in current_section
+    assert "val_acc: 0.992" in current_section
+    assert "val_loss: 0.1" in current_section
     assert "# EVOLVE-BLOCK-START" not in prior_section
     assert "# EVOLVE-BLOCK-END" not in prior_section
     assert "# EVOLVE-BLOCK-START" in current_section

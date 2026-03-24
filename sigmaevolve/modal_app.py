@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from uuid import uuid4
 
@@ -12,6 +13,13 @@ from sigmaevolve.modal_support import (
     DEFAULT_MODAL_FUNCTION_NAME,
 )
 from sigmaevolve.runtime_config import DEFAULT_TRIAL_HARD_TIMEOUT_SEC
+
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    force=True,
+)
 
 
 app = modal.App(DEFAULT_MODAL_APP_NAME)

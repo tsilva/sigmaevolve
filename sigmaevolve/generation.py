@@ -4,6 +4,7 @@ import json
 import os
 import random
 import re
+from difflib import SequenceMatcher
 from functools import lru_cache
 from importlib import resources
 from dataclasses import dataclass
@@ -214,10 +215,36 @@ class OpenRouterGenerationBackend:
         filtered_lines = [line for line in lines if line not in {EVOLVE_BLOCK_START, EVOLVE_BLOCK_END}]
         return "\n".join(filtered_lines) + ("\n" if source.endswith("\n") else "")
 
-    def _render_trial_prompt_block(self, trial: TrialSummary, *, strip_evolve_block_tags: bool = False) -> list[str]:
+    def _collapse_matching_source(self, source: str, reference_source: str) -> str:
+        source_lines = source.splitlines()
+        reference_lines = reference_source.splitlines()
+        summarized_lines: list[str] = []
+        matcher = SequenceMatcher(a=source_lines, b=reference_lines, autojunk=False)
+        for tag, source_start, source_end, _, _ in matcher.get_opcodes():
+            if tag == "equal":
+                if source_start == source_end:
+                    continue
+                if not summarized_lines or summarized_lines[-1] != "[...]":
+                    summarized_lines.append("[...]")
+                continue
+            if tag in {"replace", "delete"}:
+                summarized_lines.extend(source_lines[source_start:source_end])
+        if not summarized_lines:
+            summarized_lines.append("[...]")
+        return "\n".join(summarized_lines) + ("\n" if source.endswith("\n") else "")
+
+    def _render_trial_prompt_block(
+        self,
+        trial: TrialSummary,
+        *,
+        strip_evolve_block_tags: bool = False,
+        collapse_matching_against: str | None = None,
+    ) -> list[str]:
         source = trial.source
         if strip_evolve_block_tags:
             source = self._strip_evolve_block_tags(source)
+        if collapse_matching_against is not None:
+            source = self._collapse_matching_source(source, collapse_matching_against)
         rendered = _render_prompt_template(
             "trial.md",
             score=self._format_scalar(trial.score),
@@ -245,9 +272,18 @@ class OpenRouterGenerationBackend:
         del track, dataset_manifest, negative_trials, selected_config
         current_program = context_trials[0] if context_trials else None
         prior_programs = context_trials[1:] if len(context_trials) > 1 else []
+        current_program_stripped_source = None
+        if current_program is not None:
+            current_program_stripped_source = self._strip_evolve_block_tags(current_program.source)
         if prior_programs:
             prior_programs_text = "\n".join(
-                "\n".join(self._render_trial_prompt_block(trial, strip_evolve_block_tags=True))
+                "\n".join(
+                    self._render_trial_prompt_block(
+                        trial,
+                        strip_evolve_block_tags=True,
+                        collapse_matching_against=current_program_stripped_source,
+                    )
+                )
                 for trial in prior_programs
             )
         else:
