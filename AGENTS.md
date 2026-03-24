@@ -16,3 +16,8 @@
 - Do not invent, hand-author, manually curate, or otherwise submit your own experiment variants as queued trials.
 - Do not enqueue or persist ad hoc provenance labels such as `manual-curated`, `manual-variant`, `legacy`, `test`, or similar stand-ins for generated candidates.
 - The only allowed non-prompt exception is the system-seeded baseline trial. Any new candidate must include recorded prompt messages from the LLM request path.
+
+## Documentation
+
+- Keep `docs/DB.md` in sync with the live schema at all times.
+- Whenever tables, columns, constraints, or the expected contents of persisted JSON fields change, update `docs/DB.md` in the same change.
