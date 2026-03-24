@@ -105,6 +105,11 @@ type ProgressSegment = {
   label: string;
 };
 
+type TrackProgressBarProps = {
+  className?: string;
+  track: TrackListItem;
+};
+
 function toPropertyLabel(value: string): string {
   return value
     .replace(/_/g, " ")
@@ -455,6 +460,35 @@ function buildProgressSegments(track: TrackListItem): ProgressSegment[] {
   ];
 }
 
+function isBestTrial(track: TrackListItem, trialId: string): boolean {
+  return track.bestTrialId === trialId;
+}
+
+function TrackProgressBar({ className, track }: TrackProgressBarProps) {
+  const progressSegments = buildProgressSegments(track);
+
+  return (
+    <div className={className ? `${className} progress-strip` : "progress-strip"} aria-label="Track progress">
+      {progressSegments.map((segment) => {
+        const tooltip = `${segment.label}: ${segment.count}`;
+        return (
+          <span
+            key={segment.key}
+            className={`progress-segment ${segment.key}`}
+            style={{
+              width: `${track.totalTrials === 0 ? 0 : (segment.count / track.totalTrials) * 100}%`,
+            }}
+            title={tooltip}
+            data-tooltip={tooltip}
+            aria-label={tooltip}
+            tabIndex={0}
+          />
+        );
+      })}
+    </div>
+  );
+}
+
 function getTrialTone(trial: TrialListItem): "success" | "warning" | "danger" | "neutral" {
   if (trial.status === "error") {
     return "danger";
@@ -548,6 +582,7 @@ type ActiveWorkspace = "explorer" | "inspector";
 type ScoreChartPoint = {
   backend: string | null;
   createdAt: string;
+  isBest: boolean;
   isClippedLow: boolean;
   lastPhase: string | null;
   model: string | null;
@@ -650,7 +685,7 @@ function buildTrialsUrl(trackId: string, status: TrialStatusFilter, cursor?: str
   return `/api/tracks/${trackId}/trials?${params.toString()}`;
 }
 
-function buildScoreChart(trials: TrialListItem[]): {
+function buildScoreChart(trials: TrialListItem[], bestTrialId: string | null): {
   bestScore: number | null;
   clippedLowCount: number;
   clippedLowThreshold: number | null;
@@ -703,6 +738,7 @@ function buildScoreChart(trials: TrialListItem[]): {
     return {
       backend: trial.backend,
       createdAt: trial.createdAt,
+      isBest: trial.trialId === bestTrialId,
       isClippedLow,
       lastPhase: trial.lastPhase,
       model: trial.model,
@@ -740,6 +776,7 @@ function buildScoreChart(trials: TrialListItem[]): {
 function summarizeScorePoint(point: ScoreChartPoint): string[] {
   return [
     point.trialId,
+    point.isBest ? "Best trial so far" : null,
     `Status: ${formatStatusLabel(point.status)}`,
     point.score === null ? "Score: pending" : `Score: ${formatNumber(point.score, 4)}`,
     point.isClippedLow ? "Display: pinned below the zoomed score range" : null,
@@ -831,12 +868,13 @@ export function DashboardShell({
   const progressPercent = getProgressPercent(detail.track);
   const coveragePercent = getCoveragePercent(detail.track);
   const attentionCount = getAttentionCount(detail.track);
-  const progressSegments = buildProgressSegments(detail.track);
-  const scoreChart = buildScoreChart(visibleTrials);
-  const bestTrial =
-    detail.trials.length === 0
+  const scoreChart = buildScoreChart(visibleTrials, detail.track.bestTrialId);
+  const bestTrialId =
+    detail.track.bestTrialId ??
+    (detail.trials.length === 0
       ? null
-      : detail.trials.reduce((best, trial) => (trial.score > best.score ? trial : best), detail.trials[0]);
+      : detail.trials.reduce((best, trial) => (trial.score > best.score ? trial : best), detail.trials[0]).trialId);
+  const selectedIsBestTrial = selectedTrial ? isBestTrial(detail.track, selectedTrial.trialId) : false;
 
   const updateTrialUrl = useEffectEvent((nextTrialId: string | null) => {
     const nextUrl = nextTrialId
@@ -1018,9 +1056,7 @@ export function DashboardShell({
                     </div>
                     <div className="track-score">{formatNumber(track.bestScore, 4)}</div>
                   </div>
-                  <div className="track-card-bar">
-                    <span style={{ width: `${getProgressPercent(track)}%` }} />
-                  </div>
+                  <TrackProgressBar className="track-card-bar" track={track} />
                   <div className="track-card-meta">
                     <span>{getCompletedCount(track)}/{track.totalTrials} completed</span>
                     <span>{track.activeTrials} running</span>
@@ -1079,7 +1115,7 @@ export function DashboardShell({
                       <span className="metric-label">Best Score</span>
                       <strong className="metric-value">{formatNumber(detail.track.bestScore, 4)}</strong>
                       <span className="metric-note">
-                        {bestTrial ? `${compactIdentifier(bestTrial.trialId)} leads the visible sample.` : "Waiting for scored trials."}
+                        {bestTrialId ? `${compactIdentifier(bestTrialId)} is the best trial so far.` : "Waiting for scored trials."}
                       </span>
                     </article>
                     <article className="metric-tile">
@@ -1117,24 +1153,7 @@ export function DashboardShell({
                       <h3>Progress breakdown</h3>
                     </div>
                     <div className="progress-strip-shell">
-                      <div className="progress-strip" aria-label="Track progress">
-                        {progressSegments.map((segment) => {
-                          const tooltip = `${segment.label}: ${segment.count}`;
-                          return (
-                            <span
-                              key={segment.key}
-                              className={`progress-segment ${segment.key}`}
-                              style={{
-                                width: `${detail.track.totalTrials === 0 ? 0 : (segment.count / detail.track.totalTrials) * 100}%`,
-                              }}
-                              title={tooltip}
-                              data-tooltip={tooltip}
-                              aria-label={tooltip}
-                              tabIndex={0}
-                            />
-                          );
-                        })}
-                      </div>
+                      <TrackProgressBar track={detail.track} />
                     </div>
                   </section>
                 </div>
@@ -1215,10 +1234,10 @@ export function DashboardShell({
                       {scoreChart.points.map((point, index) => (
                         <g key={point.trialId}>
                           <circle
-                            className={`score-point tone-${point.tone} ${point.score === null ? "pending" : "scored"}`}
+                            className={`score-point tone-${point.tone} ${point.score === null ? "pending" : "scored"} ${point.isBest ? "best-point" : ""}`}
                             cx={point.x}
                             cy={point.y}
-                            r={point.score === null ? 3.5 : 4.5}
+                            r={point.score === null ? 3.5 : point.isBest ? 6 : 4.5}
                             tabIndex={0}
                             aria-label={summarizeScorePoint(point).join(" • ")}
                             onMouseEnter={() => setHoveredScorePoint(point)}
@@ -1332,12 +1351,15 @@ export function DashboardShell({
                         role="button"
                         tabIndex={0}
                         aria-label={`Open trial ${trial.trialId}`}
-                        className={`trial-row tone-${getTrialTone(trial)} ${selectedTrial?.trialId === trial.trialId ? "active" : ""}`}
+                        className={`trial-row tone-${getTrialTone(trial)} ${selectedTrial?.trialId === trial.trialId ? "active" : ""} ${isBestTrial(detail.track, trial.trialId) ? "best-trial" : ""}`}
                         onClick={() => openInspector(trial.trialId)}
                         onKeyDown={(event) => handleTrialKeyDown(event, trial.trialId)}
                       >
                         <td>
-                          <div className="trial-cell-primary">{trial.trialId}</div>
+                          <div className="trial-cell-title-row">
+                            <div className="trial-cell-primary">{trial.trialId}</div>
+                            {isBestTrial(detail.track, trial.trialId) ? <span className="flag-chip flag-best">best so far</span> : null}
+                          </div>
                           <div className="trial-cell-secondary">{getTrialNarrative(trial)}</div>
                         </td>
                         <td>
@@ -1417,6 +1439,7 @@ export function DashboardShell({
                         <span className={`status-indicator ${selectedTrial.status}`} />
                         {formatStatusLabel(selectedTrial.status)}
                       </span>
+                      {selectedIsBestTrial ? <span className="flag-chip flag-best">best so far</span> : null}
                       {selectedTrialRank ? <span className="meta-chip">Rank #{selectedTrialRank} by score</span> : null}
                       {renderModalRunLink(selectedTrial)}
                     </div>

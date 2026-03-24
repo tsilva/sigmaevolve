@@ -47,6 +47,7 @@ class _ModalClassProxy:
         database_url: str,
         dataset_root: str,
         environment_name: str | None = None,
+        wandb_env: dict[str, str] | None = None,
     ) -> None:
         self.app_name = app_name
         self.class_name = class_name
@@ -54,6 +55,7 @@ class _ModalClassProxy:
         self.database_url = database_url
         self.dataset_root = dataset_root
         self.environment_name = environment_name
+        self.wandb_env = dict(wandb_env or {})
 
     def spawn(self, trial_id: str, dispatch_token: str, gpu: str | None = None):
         modal = require_modal()
@@ -71,6 +73,7 @@ class _ModalClassProxy:
                 dispatch_token=dispatch_token,
                 database_url=self.database_url,
                 dataset_root=self.dataset_root,
+                wandb_env=self.wandb_env or None,
             ),
             effective_gpu=gpu,
         )
@@ -88,12 +91,14 @@ class _ModalFunctionProxy:
         database_url: str,
         dataset_root: str,
         environment_name: str | None = None,
+        wandb_env: dict[str, str] | None = None,
     ) -> None:
         self.app_name = app_name
         self.function_name = function_name
         self.database_url = database_url
         self.dataset_root = dataset_root
         self.environment_name = environment_name
+        self.wandb_env = dict(wandb_env or {})
 
     def spawn(self, trial_id: str, dispatch_token: str, gpu: str | None = None):
         del gpu
@@ -109,6 +114,7 @@ class _ModalFunctionProxy:
                 dispatch_token=dispatch_token,
                 database_url=self.database_url,
                 dataset_root=self.dataset_root,
+                wandb_env=self.wandb_env or None,
             ),
             effective_gpu=None,
         )
@@ -141,6 +147,7 @@ def create_modal_launcher(
     database_url: str,
     dataset_root: str = DEFAULT_MODAL_DATASET_MOUNT,
     environment_name: str | None = None,
+    wandb_env: dict[str, str] | None = None,
 ) -> ModalRemoteLauncher:
     class_proxy = _ModalClassProxy(
         app_name=app_name,
@@ -149,6 +156,7 @@ def create_modal_launcher(
         database_url=database_url,
         dataset_root=dataset_root,
         environment_name=environment_name,
+        wandb_env=wandb_env,
     )
     function_proxy = _ModalFunctionProxy(
         app_name=app_name,
@@ -156,6 +164,7 @@ def create_modal_launcher(
         database_url=database_url,
         dataset_root=dataset_root,
         environment_name=environment_name,
+        wandb_env=wandb_env,
     )
     proxy = _ModalCompatProxy(class_proxy, function_proxy)
     return ModalRemoteLauncher(proxy)

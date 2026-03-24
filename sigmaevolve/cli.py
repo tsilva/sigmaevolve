@@ -24,6 +24,7 @@ from sigmaevolve.modal_support import (
 )
 from sigmaevolve.orchestrator import InlineRunnerLauncher, RecordingLauncher
 from sigmaevolve.runner import RunnerService
+from sigmaevolve.wandb_support import collect_wandb_env
 
 
 def _json_arg(value: str | None) -> dict[str, Any]:
@@ -111,6 +112,7 @@ def _make_system(args) -> Any:
             database_url=args.database_url,
             dataset_root=args.modal_dataset_mount,
             environment_name=args.modal_environment_name,
+            wandb_env=collect_wandb_env(),
         )
     else:
         launcher = RecordingLauncher()

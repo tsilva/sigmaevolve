@@ -15,6 +15,7 @@ export type TrackListItem = {
   errorTrials: number;
   succeededTrials: number;
   bestScore: number | null;
+  bestTrialId: string | null;
   lastActivityAt: string;
 };
 

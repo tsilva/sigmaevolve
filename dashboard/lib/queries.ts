@@ -67,27 +67,47 @@ export async function listTrackSummaries(): Promise<TrackListItem[]> {
         t.name,
         t.dataset_id as "datasetId",
         t.created_at as "createdAt",
-        count(r.trial_id)::int as "totalTrials",
-        count(*) filter (where r.status = 'queued')::int as "queuedTrials",
-        count(*) filter (where r.status = 'dispatching')::int as "dispatchingTrials",
-        count(*) filter (where r.status = 'active')::int as "activeTrials",
-        count(*) filter (where r.status = 'finished')::int as "finishedTrials",
-        count(*) filter (where r.status = 'error')::int as "errorTrials",
-        count(*) filter (
-          where r.status = 'finished'
-            and r.metrics_json is not null
-        )::int as "succeededTrials",
-        max(r.score) filter (
-          where r.status = 'finished'
-            and r.metrics_json is not null
-        ) as "bestScore",
+        coalesce(stats.total_trials, 0)::int as "totalTrials",
+        coalesce(stats.queued_trials, 0)::int as "queuedTrials",
+        coalesce(stats.dispatching_trials, 0)::int as "dispatchingTrials",
+        coalesce(stats.active_trials, 0)::int as "activeTrials",
+        coalesce(stats.finished_trials, 0)::int as "finishedTrials",
+        coalesce(stats.error_trials, 0)::int as "errorTrials",
+        coalesce(stats.succeeded_trials, 0)::int as "succeededTrials",
+        best.best_score as "bestScore",
+        best.best_trial_id as "bestTrialId",
         greatest(
           t.created_at,
-          coalesce(max(coalesce(r.finished_at, r.started_at, r.created_at)), t.created_at)
+          coalesce(stats.last_activity_at, t.created_at)
         ) as "lastActivityAt"
       from tracks t
-      left join trials r on r.track_id = t.track_id
-      group by t.track_id, t.name, t.dataset_id, t.created_at
+      left join lateral (
+        select
+          count(*)::int as total_trials,
+          count(*) filter (where status = 'queued')::int as queued_trials,
+          count(*) filter (where status = 'dispatching')::int as dispatching_trials,
+          count(*) filter (where status = 'active')::int as active_trials,
+          count(*) filter (where status = 'finished')::int as finished_trials,
+          count(*) filter (where status = 'error')::int as error_trials,
+          count(*) filter (
+            where status = 'finished'
+              and metrics_json is not null
+          )::int as succeeded_trials,
+          max(coalesce(finished_at, started_at, created_at)) as last_activity_at
+        from trials
+        where track_id = t.track_id
+      ) stats on true
+      left join lateral (
+        select
+          trial_id as best_trial_id,
+          score as best_score
+        from trials
+        where track_id = t.track_id
+          and status = 'finished'
+          and metrics_json is not null
+        order by score desc, finished_at desc nulls last, created_at desc, trial_id desc
+        limit 1
+      ) best on true
       order by "lastActivityAt" desc, t.created_at desc
     `,
   );

@@ -282,6 +282,56 @@ def test_record_trial_launcher_metadata_merges_into_provenance_and_notifies(repo
     }
 
 
+def test_record_trial_wandb_metadata_merges_into_provenance_and_notifies(repository):
+    repository.register_dataset("mnist:v1", "/tmp/manifest.json")
+
+    notifications: list[tuple[str, str]] = []
+    repository._notify_dashboard = lambda conn, track_id, reason: notifications.append((track_id, reason))  # type: ignore[method-assign]
+
+    track = repository.create_track(name="wandb", dataset_id="mnist:v1", policy_json={})
+    trial, created = repository.create_queued_trial_if_absent(
+        track_id=track.track_id,
+        source="print('candidate')\n",
+        provenance_json=make_llm_provenance(model="worker"),
+    )
+    assert created is True
+    assert trial is not None
+
+    repository.record_trial_wandb_metadata(
+        trial.trial_id,
+        {
+            "project": "sigmaevolve",
+            "run_id": "wandb-run-1",
+            "run_url": "https://wandb.example/sigmaevolve/wandb-run-1",
+        },
+    )
+    updated = repository.get_trial(trial.trial_id)
+
+    assert updated is not None
+    assert updated.provenance_json["wandb"] == {
+        "project": "sigmaevolve",
+        "run_id": "wandb-run-1",
+        "run_url": "https://wandb.example/sigmaevolve/wandb-run-1",
+    }
+    assert notifications[-1] == (track.track_id, "trial_changed")
+
+    repository.record_trial_wandb_metadata(
+        trial.trial_id,
+        {
+            "run_name": "track_1:trial_1",
+        },
+    )
+    updated = repository.get_trial(trial.trial_id)
+
+    assert updated is not None
+    assert updated.provenance_json["wandb"] == {
+        "project": "sigmaevolve",
+        "run_id": "wandb-run-1",
+        "run_url": "https://wandb.example/sigmaevolve/wandb-run-1",
+        "run_name": "track_1:trial_1",
+    }
+
+
 def test_trial_indexes_exist():
     index_names = {index.name for index in trials_table.indexes}
 

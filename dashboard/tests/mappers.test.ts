@@ -15,6 +15,7 @@ describe("dashboard row mappers", () => {
       errorTrials: "1",
       succeededTrials: "2",
       bestScore: "0.9321",
+      bestTrialId: "trial_4",
       lastActivityAt: "2026-03-20T15:10:00.000Z",
     });
 
@@ -31,6 +32,7 @@ describe("dashboard row mappers", () => {
       errorTrials: 1,
       succeededTrials: 2,
       bestScore: 0.9321,
+      bestTrialId: "trial_4",
       lastActivityAt: "2026-03-20T15:10:00.000Z",
     });
   });

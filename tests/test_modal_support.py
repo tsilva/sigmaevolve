@@ -59,6 +59,7 @@ def test_modal_launcher_spawns_named_method_without_gpu_override(monkeypatch):
         database_url="postgresql://example/db",
         dataset_root="/mnt/datasets",
         environment_name="main",
+        wandb_env={"WANDB_API_KEY": "wandb-test-key", "WANDB_PROJECT": "sigmaevolve"},
     )
     metadata = launcher.launch_trial("trial_1", "dispatch_1")
 
@@ -68,6 +69,7 @@ def test_modal_launcher_spawns_named_method_without_gpu_override(monkeypatch):
     assert captured["spawn"]["dispatch_token"] == "dispatch_1"
     assert captured["spawn"]["database_url"] == "postgresql://example/db"
     assert captured["spawn"]["dataset_root"] == "/mnt/datasets"
+    assert captured["spawn"]["wandb_env"] == {"WANDB_API_KEY": "wandb-test-key", "WANDB_PROJECT": "sigmaevolve"}
     assert captured["spawn"]["gpu"] is None
     assert "with_options" not in captured
     assert metadata == {
@@ -132,6 +134,7 @@ def test_modal_launcher_retries_gpu_preferences_in_order(monkeypatch):
         database_url="postgresql://example/db",
         dataset_root="/mnt/datasets",
         environment_name="main",
+        wandb_env={"WANDB_API_KEY": "wandb-test-key"},
     )
     metadata = launcher.launch_trial(
         "trial_1",
@@ -189,6 +192,7 @@ def test_modal_launcher_surfaces_combined_gpu_failures(monkeypatch):
         database_url="postgresql://example/db",
         dataset_root="/mnt/datasets",
         environment_name="main",
+        wandb_env={"WANDB_API_KEY": "wandb-test-key"},
     )
 
     with pytest.raises(RuntimeError, match="T4: .*L4: .*A10:"):
@@ -226,6 +230,7 @@ def test_modal_launcher_cancels_function_call_by_run_id(monkeypatch):
         database_url="postgresql://example/db",
         dataset_root="/mnt/datasets",
         environment_name="main",
+        wandb_env={"WANDB_API_KEY": "wandb-test-key"},
     )
 
     launcher.cancel_run({"kind": "modal", "run_id": "fc-789"})
@@ -285,6 +290,7 @@ def test_modal_launcher_falls_back_to_legacy_function_when_class_lookup_is_missi
         database_url="postgresql://example/db",
         dataset_root="/mnt/datasets",
         environment_name="main",
+        wandb_env={"WANDB_API_KEY": "wandb-test-key"},
     )
     metadata = launcher.launch_trial(
         "trial_1",
@@ -307,6 +313,7 @@ def test_modal_launcher_falls_back_to_legacy_function_when_class_lookup_is_missi
         "dispatch_token": "dispatch_1",
         "database_url": "postgresql://example/db",
         "dataset_root": "/mnt/datasets",
+        "wandb_env": {"WANDB_API_KEY": "wandb-test-key"},
     }
     assert metadata == {
         "kind": "modal",
@@ -366,6 +373,7 @@ def test_modal_launcher_does_not_fallback_to_legacy_function_for_non_lookup_erro
         database_url="postgresql://example/db",
         dataset_root="/mnt/datasets",
         environment_name="main",
+        wandb_env={"WANDB_API_KEY": "wandb-test-key"},
     )
 
     with pytest.raises(RuntimeError, match="T4: .*L4: .*A10:"):

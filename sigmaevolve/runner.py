@@ -14,9 +14,11 @@ from typing import Any
 
 import numpy as np
 
+from sigmaevolve.env import load_env_file
 from sigmaevolve.models import OUTCOME_CRASHED, OUTCOME_EVAL_FAILED, OUTCOME_SUCCEEDED, OUTCOME_TIMEOUT
 from sigmaevolve.runtime_config import DEFAULT_TRIAL_HARD_TIMEOUT_SEC
 from sigmaevolve.scoring import compute_classification_metrics, compute_score
+from sigmaevolve.wandb_support import WandbRunLogger
 
 
 logger = logging.getLogger(__name__)
@@ -388,6 +390,7 @@ class RunnerService:
         eval_dir: Path,
         labels_path: str,
         started_at: float,
+        wandb_run_logger: WandbRunLogger | None = None,
         interval_sec: float = ACTIVE_METRICS_INTERVAL_SEC,
     ) -> tuple[threading.Event, threading.Thread]:
         stop_event = threading.Event()
@@ -403,6 +406,7 @@ class RunnerService:
             if metrics is None or metrics == last_metrics:
                 return last_metrics
             self.repository.update_active_trial_metrics(trial_id=trial_id, runner_id=runner_id, metrics=metrics)
+            self._log_wandb_metrics(wandb_run_logger, metrics, state="active")
             return metrics
 
         def loop() -> None:
@@ -425,6 +429,55 @@ class RunnerService:
         thread.start()
         return stop_event, thread
 
+    def _log_wandb_metrics(
+        self,
+        wandb_run_logger: WandbRunLogger | None,
+        metrics: dict[str, Any] | None,
+        *,
+        state: str,
+    ) -> None:
+        if wandb_run_logger is None or metrics is None:
+            return
+        try:
+            wandb_run_logger.log_metrics(metrics, state=state)
+        except Exception:
+            logger.warning(
+                "W&B metrics update failed for trial %s.",
+                wandb_run_logger.trial.trial_id,
+                exc_info=True,
+            )
+
+    def _finalize_trial(
+        self,
+        *,
+        trial_id: str,
+        runner_id: str | None,
+        outcome_reason: str,
+        metrics: dict[str, Any] | None,
+        score: float,
+        error_info: dict[str, Any] | None,
+        wandb_run_logger: WandbRunLogger | None,
+    ) -> None:
+        self.repository.finalize_trial(
+            trial_id=trial_id,
+            runner_id=runner_id,
+            outcome_reason=outcome_reason,
+            metrics=metrics,
+            score=score,
+            error_info=error_info,
+        )
+        if wandb_run_logger is None:
+            return
+        try:
+            wandb_run_logger.finish(
+                outcome_reason=outcome_reason,
+                metrics=metrics,
+                score=score,
+                error_info=error_info,
+            )
+        except Exception:
+            logger.warning("W&B run finalization failed for trial %s.", trial_id, exc_info=True)
+
     def run_reserved_trial(self, trial_id: str, dispatch_token: str, runner_id: str) -> None:
         logger.info("Claiming reserved trial %s with runner %s.", trial_id, runner_id)
         trial = self.repository.claim_trial(trial_id, dispatch_token, runner_id)
@@ -437,6 +490,7 @@ class RunnerService:
             raise RuntimeError(f"Track not found for trial {trial.trial_id}")
         policy = track.policy_json
         manifest = self.dataset_manager.verify(track.dataset_id)
+        load_env_file()
         logger.info("Verified dataset %s for trial %s.", track.dataset_id, trial.trial_id)
         try:
             with tempfile.TemporaryDirectory(prefix=f"sigmaevolve_{trial.trial_id}_") as temp_dir:
@@ -465,6 +519,29 @@ class RunnerService:
                         sort_keys=True,
                     )
                 )
+                try:
+                    wandb_run_logger = WandbRunLogger(
+                        repository=self.repository,
+                        trial=trial,
+                        track=track,
+                        manifest=manifest,
+                        runner_id=runner_id,
+                    )
+                except Exception as exc:
+                    self._finalize_trial(
+                        trial_id=trial.trial_id,
+                        runner_id=runner_id,
+                        outcome_reason=OUTCOME_CRASHED,
+                        metrics=None,
+                        score=0.0,
+                        error_info={
+                            "reason": "wandb_init_failed",
+                            "detail": str(exc),
+                        },
+                        wandb_run_logger=None,
+                    )
+                    logger.info("Finalized trial %s with outcome=%s.", trial.trial_id, OUTCOME_CRASHED)
+                    return
                 heartbeat_stop, heartbeat_thread = self._start_heartbeat(
                     trial_id=trial.trial_id,
                     runner_id=runner_id,
@@ -486,6 +563,7 @@ class RunnerService:
                     eval_dir=eval_dir,
                     labels_path=manifest.validation_labels_path,
                     started_at=started_at,
+                    wandb_run_logger=wandb_run_logger,
                 )
                 completed = _run_streamed_subprocess(command, timeout=self.hard_timeout_sec)
                 metrics_stop.set()
@@ -509,37 +587,41 @@ class RunnerService:
                 if completed.returncode != 0 and not timed_out:
                     failure_outcome = (debug_payload or {}).get("failure_outcome")
                     if failure_outcome == OUTCOME_EVAL_FAILED:
-                        self.repository.finalize_trial(
-                            trial_id=trial.trial_id,
-                            runner_id=runner_id,
-                            outcome_reason=OUTCOME_EVAL_FAILED,
-                            metrics=None,
-                            score=0.0,
-                            error_info={
-                                "reason": (debug_payload or {}).get("failure_reason") or "train_script_contract_violation",
-                                "detail": (debug_payload or {}).get("detail"),
-                                "stdout": stdout,
-                                "stderr": stderr,
-                                "returncode": completed.returncode,
-                                "timed_out": timed_out,
-                                "progress": progress_payload,
-                            },
-                        )
-                        logger.info("Finalized trial %s with outcome=%s.", trial.trial_id, OUTCOME_EVAL_FAILED)
-                        return
-                    self.repository.finalize_trial(
-                        trial_id=trial.trial_id,
-                        runner_id=runner_id,
-                        outcome_reason=OUTCOME_CRASHED,
-                        metrics=None,
-                        score=0.0,
-                        error_info={
+                        error_info = {
+                            "reason": (debug_payload or {}).get("failure_reason") or "train_script_contract_violation",
+                            "detail": (debug_payload or {}).get("detail"),
                             "stdout": stdout,
                             "stderr": stderr,
                             "returncode": completed.returncode,
                             "timed_out": timed_out,
                             "progress": progress_payload,
-                        },
+                        }
+                        self._finalize_trial(
+                            trial_id=trial.trial_id,
+                            runner_id=runner_id,
+                            outcome_reason=OUTCOME_EVAL_FAILED,
+                            metrics=None,
+                            score=0.0,
+                            error_info=error_info,
+                            wandb_run_logger=wandb_run_logger,
+                        )
+                        logger.info("Finalized trial %s with outcome=%s.", trial.trial_id, OUTCOME_EVAL_FAILED)
+                        return
+                    error_info = {
+                        "stdout": stdout,
+                        "stderr": stderr,
+                        "returncode": completed.returncode,
+                        "timed_out": timed_out,
+                        "progress": progress_payload,
+                    }
+                    self._finalize_trial(
+                        trial_id=trial.trial_id,
+                        runner_id=runner_id,
+                        outcome_reason=OUTCOME_CRASHED,
+                        metrics=None,
+                        score=0.0,
+                        error_info=error_info,
+                        wandb_run_logger=wandb_run_logger,
                     )
                     logger.info("Finalized trial %s with outcome=%s.", trial.trial_id, OUTCOME_CRASHED)
                     return
@@ -552,20 +634,22 @@ class RunnerService:
                         fallback_elapsed_time_sec=process_elapsed_sec,
                     )
                 except Exception as exc:
-                    self.repository.finalize_trial(
+                    error_info = {
+                        "reason": "prediction_load_failed",
+                        "detail": str(exc),
+                        "timed_out": timed_out,
+                        "stdout": stdout,
+                        "stderr": stderr,
+                        "progress": progress_payload,
+                    }
+                    self._finalize_trial(
                         trial_id=trial.trial_id,
                         runner_id=runner_id,
                         outcome_reason=OUTCOME_EVAL_FAILED,
                         metrics=None,
                         score=0.0,
-                        error_info={
-                            "reason": "prediction_load_failed",
-                            "detail": str(exc),
-                            "timed_out": timed_out,
-                            "stdout": stdout,
-                            "stderr": stderr,
-                            "progress": progress_payload,
-                        },
+                        error_info=error_info,
+                        wandb_run_logger=wandb_run_logger,
                     )
                     logger.info("Finalized trial %s with outcome=%s.", trial.trial_id, OUTCOME_EVAL_FAILED)
                     return
@@ -580,13 +664,14 @@ class RunnerService:
                         "progress": progress_payload,
                         "eval_dir": str(eval_dir),
                     }
-                    self.repository.finalize_trial(
+                    self._finalize_trial(
                         trial_id=trial.trial_id,
                         runner_id=runner_id,
                         outcome_reason=outcome_reason,
                         metrics=None,
                         score=0.0,
                         error_info=error_info,
+                        wandb_run_logger=wandb_run_logger,
                     )
                     logger.info("Finalized trial %s with outcome=%s.", trial.trial_id, outcome_reason)
                     return
@@ -600,22 +685,25 @@ class RunnerService:
                 )
                 outcome_reason = OUTCOME_TIMEOUT if timed_out else OUTCOME_SUCCEEDED
                 score = compute_score(metrics, outcome_reason, policy["scorer_settings"])
-                self.repository.finalize_trial(
+                error_info = {
+                    "stdout": stdout,
+                    "stderr": stderr,
+                    "debug": debug_payload,
+                    "debug_output_path": str(debug_path),
+                    "progress": progress_payload,
+                    "eval_dir": str(eval_dir),
+                    "eval_artifacts": [artifact["path"] for artifact in artifacts],
+                    "timed_out": timed_out,
+                }
+                self._log_wandb_metrics(wandb_run_logger, metrics, state="completed")
+                self._finalize_trial(
                     trial_id=trial.trial_id,
                     runner_id=runner_id,
                     outcome_reason=outcome_reason,
                     metrics=metrics,
                     score=score,
-                    error_info={
-                        "stdout": stdout,
-                        "stderr": stderr,
-                        "debug": debug_payload,
-                        "debug_output_path": str(debug_path),
-                        "progress": progress_payload,
-                        "eval_dir": str(eval_dir),
-                        "eval_artifacts": [artifact["path"] for artifact in artifacts],
-                        "timed_out": timed_out,
-                    },
+                    error_info=error_info,
+                    wandb_run_logger=wandb_run_logger,
                 )
                 logger.info(
                     "Finalized trial %s with outcome=%s score=%.6f accuracy=%s.",

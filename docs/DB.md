@@ -94,6 +94,7 @@ Common optional keys:
 | `duplicate_retry_count` | How many duplicate generations were retried before this candidate. |
 | `provider_response_id` | Provider-side response id when available. |
 | `launcher` | Launch metadata recorded after scheduling a remote or local run, such as Modal run identifiers and URLs. |
+| `wandb` | Weights & Biases run metadata recorded by the runner, including project, entity, run id, run name, and run URL for the latest execution attempt. |
 | `generation` | Generation trace payload including captured prompts, provider response text, provider finish metadata, generated source, assertion results, and candidate hash. |
 
 ### `trials.metrics_json`

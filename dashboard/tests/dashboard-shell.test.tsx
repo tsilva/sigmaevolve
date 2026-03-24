@@ -93,6 +93,7 @@ const tracks: TrackListItem[] = [
     errorTrials: 0,
     succeededTrials: 2,
     bestScore: 0.9342,
+    bestTrialId: "trial_2",
     lastActivityAt: "2026-03-20T15:10:00.000Z",
   },
 ];
@@ -205,6 +206,40 @@ describe("DashboardShell", () => {
     expect(activeSegment?.getAttribute("data-tooltip")).toBe("Running: 2");
     expect(activeSegment?.getAttribute("aria-label")).toBe("Running: 2");
     expect(activeSegment?.getAttribute("tabindex")).toBe("0");
+  });
+
+  it("renders the sidebar progress bar with the same segmented status breakdown", () => {
+    const customTrack: TrackListItem = {
+      ...tracks[0],
+      totalTrials: 6,
+      queuedTrials: 1,
+      dispatchingTrials: 1,
+      activeTrials: 2,
+      finishedTrials: 1,
+      errorTrials: 1,
+    };
+
+    const { container } = render(
+      <DashboardShell
+        initialDetail={{
+          track: customTrack,
+          trials: baseTrials,
+          nextCursor: null,
+        }}
+        initialTracks={[customTrack]}
+        initialSelectedTrialId={null}
+        selectedTrackId="track_1"
+      />,
+    );
+
+    const sidebarSegments = container.querySelectorAll(".track-card-bar .progress-segment");
+    expect(sidebarSegments).toHaveLength(5);
+
+    const dispatchingSegment = container.querySelector(".track-card-bar .progress-segment.dispatching");
+    expect(dispatchingSegment?.getAttribute("title")).toBe("Dispatching: 1");
+    expect(dispatchingSegment?.getAttribute("data-tooltip")).toBe("Dispatching: 1");
+    expect(dispatchingSegment?.getAttribute("aria-label")).toBe("Dispatching: 1");
+    expect(dispatchingSegment?.getAttribute("tabindex")).toBe("0");
   });
 
   it("respects a valid trial param on first render", () => {
@@ -556,6 +591,25 @@ describe("DashboardShell", () => {
     expect(screen.getByRole("img", { name: "Score history for the trials currently displayed in the table" })).toBeTruthy();
     expect(screen.getByText("Score History")).toBeTruthy();
     expect(container.querySelectorAll("circle.score-point").length).toBe(baseTrials.length);
+  });
+
+  it("highlights the best-so-far trial in the explorer and score chart", () => {
+    const { container } = renderShell();
+
+    const bestRow = screen.getByRole("button", { name: "Open trial trial_2" });
+    expect(bestRow.className).toContain("best-trial");
+    expect(container.querySelector('circle.score-point.best-point[aria-label^="trial_2"]')).toBeTruthy();
+    expect(screen.getByText(/trial_2 is the best trial so far\./i)).toBeTruthy();
+    expect(screen.getByText("best so far")).toBeTruthy();
+  });
+
+  it("highlights the best-so-far trial in the inspector", () => {
+    renderShell({
+      initialSelectedTrialId: "trial_2",
+    });
+
+    expect(screen.getByRole("heading", { name: "trial_2" })).toBeTruthy();
+    expect(screen.getByText("best so far")).toBeTruthy();
   });
 
   it("shows trial details when a score point is hovered", () => {
