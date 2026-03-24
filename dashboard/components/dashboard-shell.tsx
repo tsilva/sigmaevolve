@@ -91,6 +91,11 @@ type PropertyEntry = {
   mono?: boolean;
   values: string[];
 };
+type ProgressSegment = {
+  key: "queued" | "dispatching" | "active" | "finished" | "error";
+  count: number;
+  label: string;
+};
 
 function toPropertyLabel(value: string): string {
   return value
@@ -387,6 +392,16 @@ function getAttentionCount(track: TrackListItem): number {
   return Math.max(0, track.errorTrials + (track.finishedTrials - track.succeededTrials));
 }
 
+function buildProgressSegments(track: TrackListItem): ProgressSegment[] {
+  return [
+    { key: "queued", count: track.queuedTrials, label: "Queued" },
+    { key: "dispatching", count: track.dispatchingTrials, label: "Dispatching" },
+    { key: "active", count: track.activeTrials, label: "Active" },
+    { key: "finished", count: track.finishedTrials, label: "Finished" },
+    { key: "error", count: track.errorTrials, label: "Error" },
+  ];
+}
+
 function getTrialTone(trial: TrialListItem): "success" | "warning" | "danger" | "neutral" {
   if (trial.status === "error") {
     return "danger";
@@ -663,6 +678,7 @@ export function DashboardShell({
   const progressPercent = getProgressPercent(detail.track);
   const coveragePercent = getCoveragePercent(detail.track);
   const attentionCount = getAttentionCount(detail.track);
+  const progressSegments = buildProgressSegments(detail.track);
   const scoreChart = buildScoreChart(visibleTrials);
   const bestTrial =
     detail.trials.length === 0
@@ -944,35 +960,20 @@ export function DashboardShell({
                   </div>
 
                   <section className="overview-progress-panel">
-                    <div className="analysis-card-header">
+                        <div className="analysis-card-header">
                       <h3>Progress breakdown</h3>
                     </div>
                     <div className="progress-strip" aria-label="Track progress">
-                      <span
-                        className="queued"
-                        style={{ width: `${detail.track.totalTrials === 0 ? 0 : (detail.track.queuedTrials / detail.track.totalTrials) * 100}%` }}
-                        title={`Queued: ${detail.track.queuedTrials}`}
-                      />
-                      <span
-                        className="dispatching"
-                        style={{ width: `${detail.track.totalTrials === 0 ? 0 : (detail.track.dispatchingTrials / detail.track.totalTrials) * 100}%` }}
-                        title={`Dispatching: ${detail.track.dispatchingTrials}`}
-                      />
-                      <span
-                        className="active"
-                        style={{ width: `${detail.track.totalTrials === 0 ? 0 : (detail.track.activeTrials / detail.track.totalTrials) * 100}%` }}
-                        title={`Active: ${detail.track.activeTrials}`}
-                      />
-                      <span
-                        className="finished"
-                        style={{ width: `${detail.track.totalTrials === 0 ? 0 : (detail.track.finishedTrials / detail.track.totalTrials) * 100}%` }}
-                        title={`Finished: ${detail.track.finishedTrials}`}
-                      />
-                      <span
-                        className="error"
-                        style={{ width: `${detail.track.totalTrials === 0 ? 0 : (detail.track.errorTrials / detail.track.totalTrials) * 100}%` }}
-                        title={`Error: ${detail.track.errorTrials}`}
-                      />
+                      {progressSegments.map((segment) => (
+                        <span
+                          key={segment.key}
+                          className={segment.key}
+                          style={{
+                            width: `${detail.track.totalTrials === 0 ? 0 : (segment.count / detail.track.totalTrials) * 100}%`,
+                          }}
+                          title={`${segment.label}: ${segment.count}`}
+                        />
+                      ))}
                     </div>
                   </section>
                 </div>
@@ -1225,42 +1226,43 @@ export function DashboardShell({
                       <section className="trial-summary-panel">
                         <div className="trial-summary-section-label">Overview</div>
                         <div className="context-stack">
-                          <div className="context-row">
-                            <span>Trial ID</span>
-                            <strong className="trial-summary-mono" title={selectedTrial.trialId}>
-                              {selectedTrial.trialId}
-                            </strong>
-                          </div>
-                          <div className="context-row">
-                            <span>Model</span>
-                            <strong>{selectedTrial.model ?? "unknown model"}</strong>
-                          </div>
-                          <div className="context-row">
-                            <span>Backend</span>
-                            <strong>{selectedTrial.backend ?? "unknown backend"}</strong>
-                          </div>
-                          <div className="context-row">
-                            <span>Outcome</span>
-                            <strong>
-                              {selectedTrial.outcomeReason ? (
+                          {[
+                            {
+                              label: "Trial ID",
+                              mono: true,
+                              value: selectedTrial.trialId,
+                              title: selectedTrial.trialId,
+                            },
+                            { label: "Model", value: selectedTrial.model ?? "unknown model" },
+                            { label: "Backend", value: selectedTrial.backend ?? "unknown backend" },
+                            {
+                              label: "Outcome",
+                              value: selectedTrial.outcomeReason ? (
                                 <span className="flag-chip">{selectedTrial.outcomeReason}</span>
                               ) : (
                                 "Not reported"
-                              )}
-                            </strong>
-                          </div>
-                          <div className="context-row">
-                            <span>Error Type</span>
-                            <strong>
-                              {selectedTrial.errorType ? <span className="flag-chip flag-danger">{selectedTrial.errorType}</span> : "—"}
-                            </strong>
-                          </div>
-                          <div className="context-row">
-                            <span>Last Phase</span>
-                            <strong>
-                              {selectedTrial.lastPhase ? <span className="flag-chip">{selectedTrial.lastPhase}</span> : "—"}
-                            </strong>
-                          </div>
+                              ),
+                            },
+                            {
+                              label: "Error Type",
+                              value: selectedTrial.errorType ? (
+                                <span className="flag-chip flag-danger">{selectedTrial.errorType}</span>
+                              ) : (
+                                "—"
+                              ),
+                            },
+                            {
+                              label: "Last Phase",
+                              value: selectedTrial.lastPhase ? <span className="flag-chip">{selectedTrial.lastPhase}</span> : "—",
+                            },
+                          ].map((row) => (
+                            <div className="context-row" key={row.label}>
+                              <span>{row.label}</span>
+                              <strong className={row.mono ? "trial-summary-mono" : undefined} title={row.title}>
+                                {row.value}
+                              </strong>
+                            </div>
+                          ))}
                         </div>
                         <div className="flag-row trial-summary-flags">
                           {selectedTrial.timedOut ? <span className="flag-chip flag-warning">timed out</span> : null}
@@ -1274,30 +1276,19 @@ export function DashboardShell({
                       <section className="trial-summary-panel">
                         <div className="trial-summary-section-label">Metrics</div>
                         <div className="context-stack">
-                          <div className="context-row">
-                            <span>Score</span>
-                            <strong>{formatNumber(selectedTrial.score, 4)}</strong>
-                          </div>
-                          <div className="context-row">
-                            <span>Accuracy</span>
-                            <strong>{formatNumber(selectedTrial.accuracy, 4)}</strong>
-                          </div>
-                          <div className="context-row">
-                            <span>Time To Best Eval</span>
-                            <strong>{formatDuration(selectedTrial.timeToBestEvalSec)}</strong>
-                          </div>
-                          <div className="context-row">
-                            <span>Duration</span>
-                            <strong>{formatDuration(selectedTrial.durationSec)}</strong>
-                          </div>
-                          <div className="context-row">
-                            <span>Dispatch Attempts</span>
-                            <strong>{selectedTrial.dispatchAttempts}</strong>
-                          </div>
-                          <div className="context-row">
-                            <span>Idle Since Eval</span>
-                            <strong>{formatDuration(selectedTrial.timeSinceLastEvalSec)}</strong>
-                          </div>
+                          {[
+                            { label: "Score", value: formatNumber(selectedTrial.score, 4) },
+                            { label: "Accuracy", value: formatNumber(selectedTrial.accuracy, 4) },
+                            { label: "Time To Best Eval", value: formatDuration(selectedTrial.timeToBestEvalSec) },
+                            { label: "Duration", value: formatDuration(selectedTrial.durationSec) },
+                            { label: "Dispatch Attempts", value: selectedTrial.dispatchAttempts },
+                            { label: "Idle Since Eval", value: formatDuration(selectedTrial.timeSinceLastEvalSec) },
+                          ].map((row) => (
+                            <div className="context-row" key={row.label}>
+                              <span>{row.label}</span>
+                              <strong>{row.value}</strong>
+                            </div>
+                          ))}
                         </div>
                       </section>
                     </div>
@@ -1306,26 +1297,28 @@ export function DashboardShell({
                       <section className="trial-summary-panel">
                         <div className="trial-summary-section-label">Run timeline</div>
                         <div className="timeline-list">
-                          <div className="timeline-row">
-                            <span>Queued</span>
-                            <strong>{formatDate(selectedTrial.createdAt)}</strong>
-                          </div>
-                          <div className="timeline-row">
-                            <span>Started</span>
-                            <strong>{formatDate(selectedTrial.startedAt)}</strong>
-                          </div>
-                          <div className="timeline-row">
-                            <span>Finished</span>
-                            <strong>{formatDate(selectedTrial.finishedAt)}</strong>
-                          </div>
-                          <div className="timeline-row">
-                            <span>Crash detail</span>
-                            <strong title={selectedCrashDetails ?? undefined}>{selectedCrashSummary}</strong>
-                          </div>
-                          <div className="timeline-row">
-                            <span>Generation assertions</span>
-                            <strong>{renderGenerationAssertionSummary(selectedTrial.generationAssertionsPassed, selectedAssertionFailures)}</strong>
-                          </div>
+                          {[
+                            { label: "Queued", value: formatDate(selectedTrial.createdAt) },
+                            { label: "Started", value: formatDate(selectedTrial.startedAt) },
+                            { label: "Finished", value: formatDate(selectedTrial.finishedAt) },
+                            {
+                              label: "Crash detail",
+                              title: selectedCrashDetails ?? undefined,
+                              value: selectedCrashSummary,
+                            },
+                            {
+                              label: "Generation assertions",
+                              value: renderGenerationAssertionSummary(
+                                selectedTrial.generationAssertionsPassed,
+                                selectedAssertionFailures,
+                              ),
+                            },
+                          ].map((row) => (
+                            <div className="timeline-row" key={row.label}>
+                              <span>{row.label}</span>
+                              <strong title={row.title}>{row.value}</strong>
+                            </div>
+                          ))}
                         </div>
                       </section>
 
