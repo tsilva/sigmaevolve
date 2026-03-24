@@ -317,8 +317,15 @@ class Orchestrator:
             candidate_hash=candidate_hash,
         )
         error_payload: dict[str, Any] = {"reason": reason}
+        generation_payload = dict(final_provenance.get("generation") or {})
         if detail:
             error_payload["detail"] = detail
+        finish_reason = generation_payload.get("finish_reason")
+        if isinstance(finish_reason, str) and finish_reason:
+            error_payload["finish_reason"] = finish_reason
+        native_finish_reason = generation_payload.get("native_finish_reason")
+        if isinstance(native_finish_reason, str) and native_finish_reason:
+            error_payload["native_finish_reason"] = native_finish_reason
         if extra_error_json:
             error_payload.update(extra_error_json)
         trial = self.repository.create_generation_attempt_trial(

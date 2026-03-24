@@ -94,7 +94,7 @@ Common optional keys:
 | `duplicate_retry_count` | How many duplicate generations were retried before this candidate. |
 | `provider_response_id` | Provider-side response id when available. |
 | `launcher` | Launch metadata recorded after scheduling a remote or local run, such as Modal run identifiers and URLs. |
-| `generation` | Generation trace payload including captured prompts, provider response text, generated source, assertion results, and candidate hash. |
+| `generation` | Generation trace payload including captured prompts, provider response text, provider finish metadata, generated source, assertion results, and candidate hash. |
 
 ### `trials.metrics_json`
 
@@ -130,6 +130,8 @@ Common keys observed in persisted error payloads:
 | `stderr` | Captured stderr text for process failures when available. |
 | `returncode` | Process exit code when a subprocess failed. |
 | `error_type` | Normalized error classification derived from `outcome_reason` and raw failure details. |
+| `finish_reason` | Provider-reported completion stop reason when preserved for generation failures, such as `length` for output truncated by the token limit. |
+| `native_finish_reason` | Provider-native stop reason when surfaced alongside `finish_reason`. |
 
 Additional backend-specific keys may be present for generation failures or launcher exceptions.
 

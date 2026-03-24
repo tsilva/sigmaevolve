@@ -149,6 +149,10 @@ def test_cli_create_track_reports_progress_to_stderr(tmp_path, patched_cli_syste
     assert "Prepared dataset mnist:v1" in stderr
     assert "Creating track for dataset mnist:v1 and seeding the baseline trial." in stderr
     assert f"Created track {payload['track_id']}." in stderr
+    assert "Run it with:" in stderr
+    assert f"launch {payload['track_id']} 1" in stderr
+    assert "--dataset-root" in stderr
+    assert "--launcher" in stderr
 
 
 def test_cli_loads_env_file_for_defaults(tmp_path, monkeypatch):

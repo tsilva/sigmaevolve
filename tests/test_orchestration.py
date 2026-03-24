@@ -977,6 +977,57 @@ def test_reconcile_persists_generation_failed_trial_when_response_cannot_materia
     assert all(trial.error_json["reason"] == "candidate_materialization_failed" for trial in failed_trials if trial is not None)
 
 
+def test_reconcile_tags_length_limited_invalid_candidate_as_truncation(repository, dataset_manager):
+    class TruncatedGenerator:
+        def generate(
+            self,
+            track,
+            dataset_manifest,
+            context_trials,
+            negative_trials=None,
+            generation_index=0,
+            duplicate_retry_count=0,
+        ):
+            return GenerationResult(
+                source="<<<<<<< SEARCH\npartial patch",
+                provenance_json=make_llm_provenance(
+                    model="truncated-response",
+                    generation={
+                        "response_text": "<<<<<<< SEARCH\npartial patch",
+                        "finish_reason": "length",
+                        "native_finish_reason": "length",
+                    },
+                ),
+            )
+
+    dataset_manager.prepare("mnist:v1")
+    repository.register_dataset("mnist:v1", str(dataset_manager.manifest_path_for("mnist:v1")))
+    runner = RunnerService(repository=repository, dataset_manager=dataset_manager)
+    system = EvolutionSystem(repository, dataset_manager, TruncatedGenerator(), RecordingLauncher(), runner)
+    track = system.create_track("truncated-response", "mnist:v1", {})
+
+    baseline = repository.list_trials(track.track_id)[0]
+    repository.finalize_trial(
+        trial_id=baseline.trial_id,
+        runner_id=None,
+        outcome_reason="succeeded",
+        metrics={"accuracy": 0.5},
+        score=0.5,
+        error_info=None,
+    )
+
+    result = system.reconcile_track(track.track_id)
+
+    assert result.generated_trial_ids == []
+    assert len(result.failed_generation_trial_ids) == 2
+    failed_trials = [repository.get_trial(trial_id) for trial_id in result.failed_generation_trial_ids]
+    assert all(trial is not None for trial in failed_trials)
+    assert all(trial.outcome_reason == "generation_failed" for trial in failed_trials if trial is not None)
+    assert all(trial.error_json["reason"] == "candidate_materialization_failed" for trial in failed_trials if trial is not None)
+    assert all(trial.error_json["finish_reason"] == "length" for trial in failed_trials if trial is not None)
+    assert all(trial.error_json["error_type"] == "generation_output_truncated" for trial in failed_trials if trial is not None)
+
+
 def test_reconcile_persists_generation_failed_trial_when_api_key_missing(repository, dataset_manager, monkeypatch):
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     dataset_manager.prepare("mnist:v1")

@@ -375,6 +375,45 @@ def test_openrouter_generation_classifies_reasoning_budget_exhaustion(monkeypatc
     assert result.error_info["reasoning_present"] is True
 
 
+def test_openrouter_generation_persists_finish_reason_for_contentful_response(monkeypatch):
+    backend = OpenRouterGenerationBackend(api_key="test-key")
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps(
+                {
+                    "id": "resp_1",
+                    "provider": "OpenRouter",
+                    "model": "google/gemini-3.1-pro-preview",
+                    "choices": [
+                        {
+                            "finish_reason": "length",
+                            "native_finish_reason": "length",
+                            "message": {
+                                "content": "<<<<<<< SEARCH\npartial patch",
+                            },
+                        }
+                    ],
+                }
+            ).encode("utf-8")
+
+    monkeypatch.setattr("sigmaevolve.generation.request.urlopen", lambda req, timeout=0: FakeResponse())
+
+    result = backend.generate(_track_with_pool(), _manifest(), _context(), generation_index=0)
+
+    assert result.source == "<<<<<<< SEARCH\npartial patch\n"
+    assert result.provenance_json["generation"]["finish_reason"] == "length"
+    assert result.provenance_json["generation"]["native_finish_reason"] == "length"
+    assert result.provenance_json["generation"]["provider"] == "OpenRouter"
+    assert result.provenance_json["generation"]["provider_model"] == "google/gemini-3.1-pro-preview"
+
+
 def test_openrouter_generation_captures_transport_errors(monkeypatch):
     backend = OpenRouterGenerationBackend(api_key="test-key")
 

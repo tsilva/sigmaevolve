@@ -235,8 +235,16 @@ def _classify_error_type(outcome_reason: str, error_json: dict[str, Any] | None)
     reason = payload.get("reason")
     if not isinstance(reason, str):
         reason = None
+    finish_reason = payload.get("finish_reason")
+    native_finish_reason = payload.get("native_finish_reason")
+    reached_length_limit = (
+        (isinstance(finish_reason, str) and finish_reason == "length")
+        or (isinstance(native_finish_reason, str) and native_finish_reason == "length")
+    )
 
     if outcome_reason == OUTCOME_GENERATION_FAILED:
+        if reason in {"candidate_materialization_failed", "generation_assertion_failed"} and reached_length_limit:
+            return "generation_output_truncated"
         if reason in {"candidate_materialization_failed", "generation_assertion_failed"}:
             return "generation_invalid_candidate"
         if reason == "generator_exception":

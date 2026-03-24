@@ -278,9 +278,21 @@ class OpenRouterGenerationBackend:
         duplicate_retry_count: int,
         provider_response_id: str | None = None,
         response_text: str | None = None,
+        response_metadata: dict[str, object] | None = None,
     ) -> dict[str, object]:
         system_prompt = request_messages[0]["content"] if request_messages else ""
         user_prompt = request_messages[1]["content"] if len(request_messages) > 1 else ""
+        generation_payload: dict[str, object] = {
+            "system_prompt": system_prompt,
+            "user_prompt": user_prompt,
+            "response_text": response_text,
+            "generated_source": None,
+            "assertions_passed": False,
+            "assertion_failures": [],
+            "candidate_hash": None,
+        }
+        if response_metadata:
+            generation_payload.update(response_metadata)
         provenance_json: dict[str, object] = {
             "backend": "openrouter",
             "model": str(selected_config["model"]),
@@ -290,19 +302,31 @@ class OpenRouterGenerationBackend:
             "duplicate_retry_count": duplicate_retry_count,
             "request_messages": request_messages,
             "context_trial_ids": [trial.trial_id for trial in context_trials],
-            "generation": {
-                "system_prompt": system_prompt,
-                "user_prompt": user_prompt,
-                "response_text": response_text,
-                "generated_source": None,
-                "assertions_passed": False,
-                "assertion_failures": [],
-                "candidate_hash": None,
-            },
+            "generation": generation_payload,
         }
         if provider_response_id:
             provenance_json["provider_response_id"] = provider_response_id
         return provenance_json
+
+    def _extract_response_metadata(
+        self,
+        body: dict[str, object],
+        choice: dict[str, object],
+    ) -> dict[str, object]:
+        metadata: dict[str, object] = {}
+        finish_reason = choice.get("finish_reason")
+        if isinstance(finish_reason, str) and finish_reason:
+            metadata["finish_reason"] = finish_reason
+        native_finish_reason = choice.get("native_finish_reason")
+        if isinstance(native_finish_reason, str) and native_finish_reason:
+            metadata["native_finish_reason"] = native_finish_reason
+        provider = body.get("provider")
+        if isinstance(provider, str) and provider:
+            metadata["provider"] = provider
+        provider_model = body.get("model")
+        if isinstance(provider_model, str) and provider_model:
+            metadata["provider_model"] = provider_model
+        return metadata
 
     def _extract_source(self, raw_text: str) -> str:
         match = re.search(r"```(?:python)?\n(.*?)```", raw_text, flags=re.DOTALL)
@@ -405,6 +429,7 @@ class OpenRouterGenerationBackend:
         error_info: dict[str, object],
         provider_response_id: str | None = None,
         response_text: str | None = None,
+        response_metadata: dict[str, object] | None = None,
     ) -> GenerationResult:
         return GenerationResult(
             source=None,
@@ -416,6 +441,7 @@ class OpenRouterGenerationBackend:
                 duplicate_retry_count=duplicate_retry_count,
                 provider_response_id=provider_response_id,
                 response_text=response_text,
+                response_metadata=response_metadata,
             ),
             error_info=error_info,
         )
@@ -526,6 +552,8 @@ class OpenRouterGenerationBackend:
                 error_info={"reason": "provider_response_missing_choices", "response_body": raw_body},
             )
         message = choices[0].get("message") if isinstance(choices[0], dict) else None
+        choice = choices[0] if isinstance(choices[0], dict) else {}
+        response_metadata = self._extract_response_metadata(body, choice)
         content = self._extract_message_content(message)
         if not isinstance(content, str) or not content.strip():
             return self._error_result(
@@ -536,10 +564,11 @@ class OpenRouterGenerationBackend:
                 duplicate_retry_count=duplicate_retry_count,
                 provider_response_id=body.get("id"),
                 response_text=content if isinstance(content, str) else None,
+                response_metadata=response_metadata,
                 error_info=self._missing_content_error_info(
                     body,
                     raw_body,
-                    choices[0] if isinstance(choices[0], dict) else {},
+                    choice,
                     message if isinstance(message, dict) else None,
                 ),
             )
@@ -553,5 +582,6 @@ class OpenRouterGenerationBackend:
                 duplicate_retry_count=duplicate_retry_count,
                 provider_response_id=body.get("id"),
                 response_text=content,
+                response_metadata=response_metadata,
             ),
         )
