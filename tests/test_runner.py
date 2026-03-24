@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 import time
 
 import pytest
@@ -8,7 +9,12 @@ from sigmaevolve.models import CANDIDATE_KIND_STRATEGY_V1
 from sigmaevolve.orchestrator import InlineRunnerLauncher
 from sigmaevolve.runner import RunnerService
 from sigmaevolve.system import EvolutionSystem
-from sigmaevolve.train_script_blocks import build_candidate_train_script, build_model_block
+from sigmaevolve.train_script_blocks import (
+    build_candidate_train_script,
+    build_data_block,
+    build_model_block,
+    build_optimization_block,
+)
 from tests.support import make_llm_provenance
 
 
@@ -108,6 +114,57 @@ def forward(self, x):
     imports="import sys\nimport torch",
 )
 
+LIVE_METRICS_BLOCK = build_model_block(
+    """
+def __init__(self):
+    super().__init__()
+    self.epoch_index = 0
+
+def on_epoch_start(self, *, epoch_index, num_epochs):
+    self.epoch_index = epoch_index
+
+def forward(self, x):
+    if self.training and self.epoch_index >= 1:
+        time.sleep(1.3)
+    flat = x.reshape(x.shape[0], -1)
+    scores = flat.sum(dim=1)
+    return torch.stack((-scores, scores), dim=1)
+""",
+    imports="import time\nimport torch",
+)
+
+SMALL_BATCH_DATA_BLOCK = build_data_block(
+    """
+batch_size = 2
+return {
+    "batch_size": batch_size,
+    "train_loader": torch.utils.data.DataLoader(
+        torch.utils.data.TensorDataset(train_x, train_y),
+        batch_size=batch_size,
+        shuffle=False,
+    ),
+    "validation_loader": torch.utils.data.DataLoader(
+        torch.utils.data.TensorDataset(validation_x),
+        batch_size=1,
+        shuffle=False,
+    ),
+}
+""",
+    imports="import torch",
+)
+
+NOOP_OPTIMIZATION_BLOCK = build_optimization_block(
+    """
+return {
+    "trainable_parameters": [parameter for parameter in model.parameters() if parameter.requires_grad],
+    "optimizer": None,
+    "scheduler": None,
+    "label_smoothing": 0.0,
+    "grad_clip_norm": None,
+}
+"""
+)
+
 
 def build_inline_system(repository, dataset_manager, hard_timeout_sec=5.0):
     runner = RunnerService(repository=repository, dataset_manager=dataset_manager, hard_timeout_sec=hard_timeout_sec)
@@ -127,9 +184,10 @@ def finalize_baseline(system, track_id):
 
 
 def _run_trial(system, track_id, source):
+    trial_source = source if "# EVOLVE-BLOCK-START" in source else build_candidate_train_script(source)
     _, created = system.repository.create_queued_trial_if_absent(
         track_id,
-        build_candidate_train_script(source),
+        trial_source,
         make_llm_provenance(candidate_kind=CANDIDATE_KIND_STRATEGY_V1),
     )
     assert created is True
@@ -170,6 +228,36 @@ def test_successful_run_produces_metrics_and_score(repository, dataset_manager):
     assert finished.metrics_json["accuracy"] >= 0.0
     assert finished.metrics_json["eval_count"] == 2
     assert finished.score == finished.metrics_json["accuracy"]
+    assert finished.error_json is None
+
+
+def test_successful_run_with_custom_data_block(repository, dataset_manager):
+    system = build_inline_system(repository, dataset_manager)
+    system.prepare_dataset("mnist:v1")
+    track = system.create_track("data-block", "mnist:v1", {"epochs": 2})
+    finalize_baseline(system, track.track_id)
+    finished = _run_trial(
+        system,
+        track.track_id,
+        build_candidate_train_script(data_block_payload=SMALL_BATCH_DATA_BLOCK),
+    )
+    assert finished.outcome_reason == "succeeded"
+    assert finished.metrics_json["eval_count"] == 2
+    assert finished.error_json is None
+
+
+def test_successful_run_with_custom_optimization_block(repository, dataset_manager):
+    system = build_inline_system(repository, dataset_manager)
+    system.prepare_dataset("mnist:v1")
+    track = system.create_track("optimization-block", "mnist:v1", {"epochs": 2})
+    finalize_baseline(system, track.track_id)
+    finished = _run_trial(
+        system,
+        track.track_id,
+        build_candidate_train_script(optimization_block_payload=NOOP_OPTIMIZATION_BLOCK),
+    )
+    assert finished.outcome_reason == "succeeded"
+    assert finished.metrics_json["eval_count"] == 2
     assert finished.error_json is None
 
 
@@ -261,6 +349,54 @@ def test_run_streams_child_output_to_parent_logs(repository, dataset_manager, ca
     assert finished.outcome_reason == "succeeded"
     assert "stdout-marker" in captured.out
     assert "stderr-marker" in captured.err
+
+
+def test_active_run_persists_live_metrics_before_finalization(repository, dataset_manager):
+    system = build_inline_system(repository, dataset_manager)
+    system.prepare_dataset("mnist:v1")
+    track = system.create_track("live-metrics", "mnist:v1", {"epochs": 3})
+    finalize_baseline(system, track.track_id)
+    _, created = system.repository.create_queued_trial_if_absent(
+        track.track_id,
+        build_candidate_train_script(LIVE_METRICS_BLOCK),
+        make_llm_provenance(candidate_kind=CANDIDATE_KIND_STRATEGY_V1),
+    )
+    assert created is True
+
+    reserved = system.repository.reserve_trials(track.track_id, max_parallelism=1, dispatch_ttl_sec=60, limit=1)[0]
+    runner_id = "runner-live"
+    worker = threading.Thread(
+        target=system.runner_service.run_reserved_trial,
+        args=(reserved.trial_id, reserved.dispatch_token, runner_id),
+        daemon=True,
+    )
+    worker.start()
+
+    active_snapshot = None
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        current = system.repository.get_trial(reserved.trial_id)
+        if current is not None and current.status == "active" and current.metrics_json is not None:
+            active_snapshot = current
+            break
+        time.sleep(0.1)
+
+    worker.join(timeout=10.0)
+    assert worker.is_alive() is False
+    assert active_snapshot is not None
+    assert active_snapshot.finished_at is None
+    assert active_snapshot.metrics_json["accuracy"] == 1.0
+    assert active_snapshot.metrics_json["best_accuracy"] == 1.0
+    assert active_snapshot.metrics_json["eval_count"] >= 1
+    assert active_snapshot.metrics_json["last_phase"] in {"train", "eval", "finished"}
+    assert "timed_out" not in active_snapshot.metrics_json
+
+    finished = system.repository.get_trial(reserved.trial_id)
+    assert finished is not None
+    assert finished.status == "finished"
+    assert finished.metrics_json["timed_out"] is False
+    assert finished.metrics_json["accuracy"] == 1.0
+    assert finished.metrics_json != active_snapshot.metrics_json
 
 
 def test_rescore_updates_only_derived_score(repository, dataset_manager):

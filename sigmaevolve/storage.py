@@ -681,7 +681,7 @@ class SQLAlchemyRepository:
     def heartbeat_trial(self, trial_id: str, runner_id: str, meta: dict[str, Any] | None = None) -> None:
         payload = dict(meta or {})
         with self.transaction() as conn:
-            conn.execute(
+            result = conn.execute(
                 sa.update(trials_table)
                 .where(
                     sa.and_(
@@ -692,6 +692,37 @@ class SQLAlchemyRepository:
                 )
                 .values(heartbeat_at=now_utc(), error_json=payload if _has_error_signal(payload) else None)
             )
+
+    def update_active_trial_metrics(self, trial_id: str, runner_id: str, metrics: dict[str, Any]) -> None:
+        payload = dict(metrics or {})
+        with self.transaction() as conn:
+            row = conn.execute(
+                sa.select(trials_table.c.track_id, trials_table.c.metrics_json).where(
+                    sa.and_(
+                        trials_table.c.trial_id == trial_id,
+                        trials_table.c.status == TRIAL_STATUS_ACTIVE,
+                        trials_table.c.runner_id == runner_id,
+                    )
+                )
+            ).fetchone()
+            if row is None:
+                return
+            existing = dict(row.metrics_json) if row.metrics_json else None
+            if existing == payload:
+                return
+            result = conn.execute(
+                sa.update(trials_table)
+                .where(
+                    sa.and_(
+                        trials_table.c.trial_id == trial_id,
+                        trials_table.c.status == TRIAL_STATUS_ACTIVE,
+                        trials_table.c.runner_id == runner_id,
+                    )
+                )
+                .values(metrics_json=payload)
+            )
+            if result.rowcount:
+                self._notify_dashboard(conn, track_id=row.track_id, reason="trial_changed")
 
     def finalize_trial(
         self,

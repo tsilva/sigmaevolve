@@ -94,6 +94,24 @@ def _deep_merge_dict(base: dict[str, Any], override: dict[str, Any]) -> dict[str
     return merged
 
 
+def _normalize_modal_gpu_preferences(value: Any) -> list[str] | None:
+    if value is None:
+        return None
+    if not isinstance(value, list):
+        raise ValueError("Track policy modal_gpu_preferences must be a list of GPU names or null.")
+    if not value:
+        raise ValueError("Track policy modal_gpu_preferences must be null or a non-empty list.")
+    normalized: list[str] = []
+    for entry in value:
+        if not isinstance(entry, str):
+            raise ValueError("Track policy modal_gpu_preferences entries must be non-empty strings.")
+        candidate = entry.strip()
+        if not candidate:
+            raise ValueError("Track policy modal_gpu_preferences entries must be non-empty strings.")
+        normalized.append(candidate)
+    return normalized
+
+
 @dataclass(frozen=True)
 class DatasetRecord:
     dataset_id: str
@@ -154,6 +172,7 @@ class TrackPolicy:
     heartbeat_interval_sec: int = 15
     stale_ttl_sec: int = 120
     max_dispatch_retries: int = 2
+    modal_gpu_preferences: list[str] | None = None
     scorer_settings: dict[str, Any] = field(default_factory=lambda: {"primary_metric": "accuracy"})
     sampling_settings: dict[str, Any] = field(
         default_factory=lambda: {"strategy": "top_then_random", "top_k": 3, "seed": 0}
@@ -174,6 +193,7 @@ class TrackPolicy:
             "heartbeat_interval_sec": self.heartbeat_interval_sec,
             "stale_ttl_sec": self.stale_ttl_sec,
             "max_dispatch_retries": self.max_dispatch_retries,
+            "modal_gpu_preferences": list(self.modal_gpu_preferences) if self.modal_gpu_preferences is not None else None,
             "scorer_settings": dict(self.scorer_settings),
             "sampling_settings": dict(self.sampling_settings),
             "generation_backend": dict(self.generation_backend),
@@ -190,6 +210,7 @@ class TrackPolicy:
             heartbeat_interval_sec=int(merged["heartbeat_interval_sec"]),
             stale_ttl_sec=int(merged["stale_ttl_sec"]),
             max_dispatch_retries=int(merged["max_dispatch_retries"]),
+            modal_gpu_preferences=_normalize_modal_gpu_preferences(merged.get("modal_gpu_preferences")),
             scorer_settings=dict(merged["scorer_settings"]),
             sampling_settings=dict(merged["sampling_settings"]),
             generation_backend=dict(merged["generation_backend"]),

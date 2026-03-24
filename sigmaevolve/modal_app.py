@@ -23,19 +23,26 @@ image = (
 dataset_volume = modal.Volume.from_name(DEFAULT_MODAL_DATASET_VOLUME, create_if_missing=True)
 
 
-@app.function(
-    name=DEFAULT_MODAL_FUNCTION_NAME,
+@app.cls(
     image=image,
     volumes={DEFAULT_MODAL_DATASET_MOUNT: dataset_volume},
     timeout=DEFAULT_TRIAL_HARD_TIMEOUT_SEC,
 )
-def run_trial(trial_id: str, dispatch_token: str, database_url: str, dataset_root: str = DEFAULT_MODAL_DATASET_MOUNT) -> None:
-    from sigmaevolve.datasets import DatasetManager
-    from sigmaevolve.runner import RunnerService
-    from sigmaevolve.storage import SQLAlchemyRepository
+class TrialRunner:
+    @modal.method()
+    def run_trial(
+        self,
+        trial_id: str,
+        dispatch_token: str,
+        database_url: str,
+        dataset_root: str = DEFAULT_MODAL_DATASET_MOUNT,
+    ) -> None:
+        from sigmaevolve.datasets import DatasetManager
+        from sigmaevolve.runner import RunnerService
+        from sigmaevolve.storage import SQLAlchemyRepository
 
-    repository = SQLAlchemyRepository(database_url)
-    dataset_manager = DatasetManager(Path(dataset_root), providers={})
-    runner = RunnerService(repository=repository, dataset_manager=dataset_manager)
-    runner_id = f"modal_{uuid4().hex}"
-    runner.run_reserved_trial(trial_id=trial_id, dispatch_token=dispatch_token, runner_id=runner_id)
+        repository = SQLAlchemyRepository(database_url)
+        dataset_manager = DatasetManager(Path(dataset_root), providers={})
+        runner = RunnerService(repository=repository, dataset_manager=dataset_manager)
+        runner_id = f"modal_{uuid4().hex}"
+        runner.run_reserved_trial(trial_id=trial_id, dispatch_token=dispatch_token, runner_id=runner_id)

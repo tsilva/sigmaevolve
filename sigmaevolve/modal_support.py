@@ -9,6 +9,7 @@ from sigmaevolve.orchestrator import ModalRemoteLauncher
 
 DEFAULT_MODAL_APP_NAME = "sigmaevolve-runner"
 DEFAULT_MODAL_FUNCTION_NAME = "run_trial"
+DEFAULT_MODAL_CLASS_NAME = "TrialRunner"
 DEFAULT_MODAL_DATASET_VOLUME = "sigmaevolve-datasets"
 DEFAULT_MODAL_DATASET_MOUNT = "/mnt/datasets"
 
@@ -21,29 +22,34 @@ def require_modal():
     return modal
 
 
-class _ModalFunctionProxy:
+class _ModalClassProxy:
     def __init__(
         self,
         app_name: str,
-        function_name: str,
+        class_name: str,
+        method_name: str,
         database_url: str,
         dataset_root: str,
         environment_name: str | None = None,
     ) -> None:
         self.app_name = app_name
-        self.function_name = function_name
+        self.class_name = class_name
+        self.method_name = method_name
         self.database_url = database_url
         self.dataset_root = dataset_root
         self.environment_name = environment_name
 
-    def spawn(self, trial_id: str, dispatch_token: str):
+    def spawn(self, trial_id: str, dispatch_token: str, gpu: str | None = None):
         modal = require_modal()
-        function = modal.Function.from_name(
+        cls = modal.Cls.from_name(
             self.app_name,
-            self.function_name,
+            self.class_name,
             environment_name=self.environment_name,
         )
-        return function.spawn(
+        if gpu is not None:
+            cls = cls.with_options(gpu=gpu)
+        method = getattr(cls(), self.method_name)
+        return method.spawn(
             trial_id=trial_id,
             dispatch_token=dispatch_token,
             database_url=self.database_url,
@@ -58,9 +64,10 @@ def create_modal_launcher(
     dataset_root: str = DEFAULT_MODAL_DATASET_MOUNT,
     environment_name: str | None = None,
 ) -> ModalRemoteLauncher:
-    proxy = _ModalFunctionProxy(
+    proxy = _ModalClassProxy(
         app_name=app_name,
-        function_name=function_name,
+        class_name=DEFAULT_MODAL_CLASS_NAME,
+        method_name=function_name,
         database_url=database_url,
         dataset_root=dataset_root,
         environment_name=environment_name,
