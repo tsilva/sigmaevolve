@@ -95,6 +95,10 @@ type PropertyEntry = {
   mono?: boolean;
   values: string[];
 };
+type PropertyGroup = {
+  label: string;
+  entries: PropertyEntry[];
+};
 type ProgressSegment = {
   key: "queued" | "dispatching" | "active" | "finished" | "error";
   count: number;
@@ -176,6 +180,26 @@ function appendPropertyEntries(
     mono: options?.mono,
     values: [rendered],
   });
+}
+
+function isExternalUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+function renderPropertyValue(entry: PropertyEntry, value: string) {
+  if (isExternalUrl(value)) {
+    return (
+      <a className="external-link-chip" href={value} target="_blank" rel="noreferrer">
+        {value}
+      </a>
+    );
+  }
+  return value;
 }
 
 function extractCrashDetails(value: Record<string, unknown> | null): string | null {
@@ -274,24 +298,49 @@ function extractMixedSourceSnapshot(messages: PromptMessage[]): { snippetCount: 
   };
 }
 
-function getGenerationProperties(value: Record<string, unknown> | null): PropertyEntry[] {
+function getGenerationPropertyGroups(value: Record<string, unknown> | null): PropertyGroup[] {
   if (!value) {
     return [];
   }
 
-  const entries: PropertyEntry[] = [];
+  const {
+    backend,
+    model,
+    candidate_kind,
+    generation_index,
+    duplicate_retry_count,
+    provider_response_id,
+    context_trial_ids,
+    generation_config,
+    launcher,
+    request_messages: _requestMessages,
+    generation: _generation,
+    ...remaining
+  } = value;
 
-  appendPropertyEntries(entries, "Backend", value.backend);
-  appendPropertyEntries(entries, "Model", value.model);
-  appendPropertyEntries(entries, "Candidate Kind", value.candidate_kind);
-  appendPropertyEntries(entries, "Generation Index", value.generation_index);
-  appendPropertyEntries(entries, "Duplicate Retry Count", value.duplicate_retry_count);
-  appendPropertyEntries(entries, "Provider Response ID", value.provider_response_id, { mono: true });
-  appendPropertyEntries(entries, "Context Trials", value.context_trial_ids, { mono: true });
-  appendPropertyEntries(entries, "Config", value.generation_config);
-  appendPropertyEntries(entries, "Launcher", value.launcher);
+  const modelEntries: PropertyEntry[] = [];
+  appendPropertyEntries(modelEntries, "Backend", backend);
+  appendPropertyEntries(modelEntries, "Model", model);
+  appendPropertyEntries(modelEntries, "Candidate Kind", candidate_kind);
+  appendPropertyEntries(modelEntries, "Generation Index", generation_index);
+  appendPropertyEntries(modelEntries, "Duplicate Retry Count", duplicate_retry_count);
+  appendPropertyEntries(modelEntries, "Provider Response ID", provider_response_id, { mono: true });
+  appendPropertyEntries(modelEntries, "Context Trials", context_trial_ids, { mono: true });
+  appendPropertyEntries(modelEntries, "Config", generation_config);
 
-  return entries;
+  const launcherEntries: PropertyEntry[] = [];
+  appendPropertyEntries(launcherEntries, "Launcher", launcher);
+
+  const otherEntries: PropertyEntry[] = [];
+  for (const [key, nestedValue] of Object.entries(remaining)) {
+    appendPropertyEntries(otherEntries, toPropertyLabel(key), nestedValue);
+  }
+
+  return [
+    { label: "Model", entries: modelEntries },
+    { label: "Launcher", entries: launcherEntries },
+    { label: "Other", entries: otherEntries },
+  ].filter((group) => group.entries.length > 0);
 }
 
 function renderGenerationAssertionSummary(passed: boolean | null, failures: string[]) {
@@ -498,6 +547,8 @@ type DashboardShellProps = {
 type ActiveWorkspace = "explorer" | "inspector";
 type ScoreChartPoint = {
   backend: string | null;
+  createdAt: string;
+  lastPhase: string | null;
   model: string | null;
   outcomeReason: string | null;
   score: number | null;
@@ -508,13 +559,13 @@ type ScoreChartPoint = {
   y: number;
 };
 
-const SCORE_CHART_WIDTH = 760;
-const SCORE_CHART_HEIGHT = 184;
+const SCORE_CHART_WIDTH = 960;
+const SCORE_CHART_HEIGHT = 124;
 const SCORE_CHART_PADDING = {
-  top: 18,
-  right: 18,
-  bottom: 32,
-  left: 46,
+  top: 14,
+  right: 14,
+  bottom: 24,
+  left: 40,
 };
 
 function buildTrialsUrl(trackId: string, status: TrialStatusFilter, cursor?: string | null, limit = 50): string {
@@ -576,6 +627,8 @@ function buildScoreChart(trials: TrialListItem[]): {
     const score = trial.status === "finished" || trial.status === "error" ? trial.score : null;
     return {
       backend: trial.backend,
+      createdAt: trial.createdAt,
+      lastPhase: trial.lastPhase,
       model: trial.model,
       outcomeReason: trial.outcomeReason,
       score,
@@ -604,6 +657,19 @@ function buildScoreChart(trials: TrialListItem[]): {
   };
 }
 
+function summarizeScorePoint(point: ScoreChartPoint): string[] {
+  return [
+    point.trialId,
+    `Status: ${formatStatusLabel(point.status)}`,
+    point.score === null ? "Score: pending" : `Score: ${formatNumber(point.score, 4)}`,
+    point.model ? `Model: ${point.model}` : null,
+    point.backend ? `Backend: ${point.backend}` : null,
+    point.lastPhase ? `Phase: ${point.lastPhase}` : null,
+    point.outcomeReason ? `Outcome: ${point.outcomeReason}` : null,
+    `Created: ${formatDate(point.createdAt)}`,
+  ].filter((value): value is string => Boolean(value));
+}
+
 export function DashboardShell({
   initialDetail,
   initialTracks,
@@ -630,6 +696,7 @@ export function DashboardShell({
   );
   const [selectedTrialId, setSelectedTrialId] = useState<string | null>(initialSelectedTrialId);
   const [urlTrialId, setUrlTrialId] = useState<string | null>(initialSelectedTrialId);
+  const [hoveredScorePoint, setHoveredScorePoint] = useState<ScoreChartPoint | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
   const deferredSearchText = useDeferredValue(searchText.trim().toLowerCase());
@@ -643,6 +710,7 @@ export function DashboardShell({
     setActiveWorkspace(initialSelectedTrialId ? "inspector" : "explorer");
     setSelectedTrialId(initialSelectedTrialId);
     setUrlTrialId(initialSelectedTrialId);
+    setHoveredScorePoint(null);
     setError(null);
   }, [initialDetail, initialSelectedTrialId, initialTracks, selectedTrackId]);
 
@@ -668,7 +736,7 @@ export function DashboardShell({
   const selectedGeneratedSource = selectedTrial?.generatedSource ?? null;
   const selectedResponseText = selectedTrial?.responseText ?? null;
   const selectedAssertionFailures = selectedTrial?.generationAssertionFailures ?? [];
-  const selectedGenerationProperties = getGenerationProperties(selectedTrial?.provenanceJson ?? null);
+  const selectedGenerationPropertyGroups = getGenerationPropertyGroups(selectedTrial?.provenanceJson ?? null);
   const selectedIsGenerationFailure = selectedTrial?.outcomeReason === "generation_failed";
   const selectedGeneratedProgram = selectedIsGenerationFailure
     ? selectedGeneratedSource
@@ -964,20 +1032,28 @@ export function DashboardShell({
                   </div>
 
                   <section className="overview-progress-panel">
-                        <div className="analysis-card-header">
+                    <div className="analysis-card-header">
                       <h3>Progress breakdown</h3>
                     </div>
-                    <div className="progress-strip" aria-label="Track progress">
-                      {progressSegments.map((segment) => (
-                        <span
-                          key={segment.key}
-                          className={segment.key}
-                          style={{
-                            width: `${detail.track.totalTrials === 0 ? 0 : (segment.count / detail.track.totalTrials) * 100}%`,
-                          }}
-                          title={`${segment.label}: ${segment.count}`}
-                        />
-                      ))}
+                    <div className="progress-strip-shell">
+                      <div className="progress-strip" aria-label="Track progress">
+                        {progressSegments.map((segment) => {
+                          const tooltip = `${segment.label}: ${segment.count}`;
+                          return (
+                            <span
+                              key={segment.key}
+                              className={`progress-segment ${segment.key}`}
+                              style={{
+                                width: `${detail.track.totalTrials === 0 ? 0 : (segment.count / detail.track.totalTrials) * 100}%`,
+                              }}
+                              title={tooltip}
+                              data-tooltip={tooltip}
+                              aria-label={tooltip}
+                              tabIndex={0}
+                            />
+                          );
+                        })}
+                      </div>
                     </div>
                   </section>
                 </div>
@@ -1042,10 +1118,14 @@ export function DashboardShell({
                             cx={point.x}
                             cy={point.y}
                             r={point.score === null ? 3.5 : 4.5}
+                            tabIndex={0}
+                            aria-label={summarizeScorePoint(point).join(" • ")}
+                            onMouseEnter={() => setHoveredScorePoint(point)}
+                            onMouseLeave={() => setHoveredScorePoint((current) => (current?.trialId === point.trialId ? null : current))}
+                            onFocus={() => setHoveredScorePoint(point)}
+                            onBlur={() => setHoveredScorePoint((current) => (current?.trialId === point.trialId ? null : current))}
                           >
-                            <title>
-                              {`#${index + 1} ${point.trialId} • ${point.status}${point.score === null ? "" : ` • score ${formatNumber(point.score, 4)}`}${point.model ? ` • ${point.model}` : ""}`}
-                            </title>
+                            <title>{`#${index + 1} ${point.trialId}`}</title>
                           </circle>
                         </g>
                       ))}
@@ -1058,6 +1138,26 @@ export function DashboardShell({
                         Trial order
                       </text>
                     </svg>
+                    {hoveredScorePoint ? (
+                      <div
+                        className="score-point-tooltip"
+                        style={{
+                          left: `${(hoveredScorePoint.x / SCORE_CHART_WIDTH) * 100}%`,
+                          top: `${(hoveredScorePoint.y / SCORE_CHART_HEIGHT) * 100}%`,
+                        }}
+                        role="status"
+                        aria-live="polite"
+                      >
+                        {summarizeScorePoint(hoveredScorePoint).map((line, index) => (
+                          <div
+                            key={`${hoveredScorePoint.trialId}:${line}`}
+                            className={index === 0 ? "score-point-tooltip-title" : "score-point-tooltip-line"}
+                          >
+                            {line}
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
                   </div>
                 </div>
               </div>
@@ -1324,28 +1424,35 @@ export function DashboardShell({
 
                       <section className="trial-summary-panel">
                         <div className="trial-summary-section-label">Generation provenance</div>
-                        {selectedGenerationProperties.length > 0 ? (
-                          <div className="context-stack">
-                            {selectedGenerationProperties.map((entry) => (
-                              <div className="context-row" key={entry.label}>
-                                <span>{entry.label}</span>
-                                <strong className={entry.mono ? "trial-summary-mono" : undefined}>
-                                  {entry.values.length === 1 ? (
-                                    entry.values[0]
-                                  ) : (
-                                    <span className="property-chip-list">
-                                      {entry.values.map((item) => (
-                                        <span
-                                          key={`${entry.label}:${item}`}
-                                          className={`meta-chip ${entry.mono ? "meta-chip-mono" : ""}`.trim()}
-                                        >
-                                          {item}
-                                        </span>
-                                      ))}
-                                    </span>
-                                  )}
-                                </strong>
-                              </div>
+                        {selectedGenerationPropertyGroups.length > 0 ? (
+                          <div className="trial-summary-group-stack">
+                            {selectedGenerationPropertyGroups.map((group) => (
+                              <section className="trial-summary-subsection" key={group.label}>
+                                <div className="trial-summary-subsection-label">{group.label}</div>
+                                <div className="context-stack">
+                                  {group.entries.map((entry) => (
+                                    <div className="context-row" key={`${group.label}:${entry.label}`}>
+                                      <span>{entry.label}</span>
+                                      <strong className={entry.mono ? "trial-summary-mono" : undefined}>
+                                        {entry.values.length === 1 ? (
+                                          renderPropertyValue(entry, entry.values[0])
+                                        ) : (
+                                          <span className="property-chip-list">
+                                            {entry.values.map((item) => (
+                                              <span
+                                                key={`${group.label}:${entry.label}:${item}`}
+                                                className={`meta-chip ${entry.mono ? "meta-chip-mono" : ""}`.trim()}
+                                              >
+                                                {renderPropertyValue(entry, item)}
+                                              </span>
+                                            ))}
+                                          </span>
+                                        )}
+                                      </strong>
+                                    </div>
+                                  ))}
+                                </div>
+                              </section>
                             ))}
                           </div>
                         ) : (

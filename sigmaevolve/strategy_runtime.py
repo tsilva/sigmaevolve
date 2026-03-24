@@ -144,6 +144,7 @@ def _seed_everything(seed: int) -> str:
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
+        return "cuda"
     return "cpu"
 
 

@@ -952,9 +952,226 @@ def forward(self, x):
     assert generator.max_active == 2
 
 
+def test_reconcile_launches_first_ready_candidate_before_slower_generation_finishes(repository, dataset_manager):
+    class StaggeredGenerator:
+        def __init__(self):
+            self.finished_at: dict[int, float] = {}
+            self.fast_started = threading.Event()
+
+        def generate(
+            self,
+            track,
+            dataset_manifest,
+            context_trials,
+            negative_trials=None,
+            generation_index=0,
+            duplicate_retry_count=0,
+        ):
+            del track, dataset_manifest, context_trials, negative_trials, duplicate_retry_count
+            if generation_index == 1:
+                self.fast_started.set()
+                time.sleep(0.02)
+            else:
+                self.fast_started.wait(timeout=1.0)
+                time.sleep(0.20)
+            self.finished_at[generation_index] = time.monotonic()
+            return type(
+                "Generated",
+                (),
+                {
+                    "source": build_candidate_train_script(
+                        build_model_block(
+                            f"""
+def forward(self, x):
+    flat = x.reshape(x.shape[0], -1)
+    scores = flat.sum(dim=1) + {generation_index}
+    return torch.stack((-scores, scores), dim=1)
+"""
+                        )
+                    ),
+                    "provenance_json": make_llm_provenance(model="staggered-generator"),
+                },
+            )()
+
+    class TimedLauncher:
+        def __init__(self):
+            self.launch_times: dict[str, float] = {}
+
+        def launch_trial(self, trial_id: str, dispatch_token: str, launch_policy: dict[str, object] | None = None):
+            del dispatch_token, launch_policy
+            self.launch_times[trial_id] = time.monotonic()
+            return None
+
+    _prepare_repo_dataset(repository, dataset_manager)
+    generator = StaggeredGenerator()
+    launcher = TimedLauncher()
+    system, _ = _build_system(repository, dataset_manager, generator, launcher)
+    track = system.create_track("early-dispatch", "mnist:v1", {})
+    _finalize_baseline_success(repository, track.track_id)
+
+    result = system.reconcile_track(track.track_id, ready_queue_threshold=2, max_parallelism=1)
+
+    assert len(result.generated_trial_ids) == 2
+    assert len(result.launched_trial_ids) == 1
+    launched_at = launcher.launch_times[result.launched_trial_ids[0]]
+    assert launched_at < generator.finished_at[2]
+
+
+def test_controller_relaunches_requeued_dispatch_while_generation_is_still_running(repository, dataset_manager):
+    class BlockingGenerator:
+        def __init__(self):
+            self.started = threading.Event()
+            self.release = threading.Event()
+            self.finished = threading.Event()
+
+        def generate(
+            self,
+            track,
+            dataset_manifest,
+            context_trials,
+            negative_trials=None,
+            generation_index=0,
+            duplicate_retry_count=0,
+        ):
+            del track, dataset_manifest, context_trials, negative_trials, generation_index, duplicate_retry_count
+            self.started.set()
+            self.release.wait(timeout=2.0)
+            self.finished.set()
+            return type(
+                "Generated",
+                (),
+                {
+                    "source": build_candidate_train_script(
+                        build_model_block(
+                            """
+def forward(self, x):
+    flat = x.reshape(x.shape[0], -1)
+    scores = flat.sum(dim=1) + 5
+    return torch.stack((-scores, scores), dim=1)
+"""
+                        )
+                    ),
+                    "provenance_json": make_llm_provenance(model="blocking-generator"),
+                },
+            )()
+
+    class RelaunchRecordingLauncher:
+        def __init__(self):
+            self.launched: list[str] = []
+            self.relaunched = threading.Event()
+
+        def launch_trial(self, trial_id: str, dispatch_token: str, launch_policy: dict[str, object] | None = None):
+            del dispatch_token, launch_policy
+            self.launched.append(trial_id)
+            self.relaunched.set()
+            return None
+
+    _prepare_repo_dataset(repository, dataset_manager)
+    generator = BlockingGenerator()
+    launcher = RelaunchRecordingLauncher()
+    system, _ = _build_system(repository, dataset_manager, generator, launcher)
+    track = system.create_track("stale-relaunch", "mnist:v1", {"dispatch_ttl_sec": 0, "max_dispatch_retries": 2})
+    _finalize_baseline_success(repository, track.track_id)
+
+    queued_trial, created = repository.create_queued_trial_if_absent(
+        track.track_id,
+        build_candidate_train_script(
+            build_model_block(
+                """
+def forward(self, x):
+    flat = x.reshape(x.shape[0], -1)
+    scores = flat.sum(dim=1) + 9
+    return torch.stack((-scores, scores), dim=1)
+"""
+            )
+        ),
+        make_llm_provenance(model="queued-before-controller"),
+    )
+    assert created is True
+    assert queued_trial is not None
+    repository.reserve_trials(track.track_id, max_parallelism=1, dispatch_ttl_sec=0, limit=1)
+
+    controller = system.start_track_controller(track.track_id, max_parallelism=2)
+    try:
+        assert generator.started.wait(timeout=1.0)
+        assert launcher.relaunched.wait(timeout=1.0)
+        assert queued_trial.trial_id in launcher.launched
+        assert generator.finished.is_set() is False
+    finally:
+        generator.release.set()
+        controller.stop()
+
+
+def test_reconcile_uses_launch_executor_so_blocking_launches_do_not_block_other_launches(repository, dataset_manager):
+    class BlockingLauncher:
+        def __init__(self):
+            self.first_started = threading.Event()
+            self.second_started = threading.Event()
+            self.release_first = threading.Event()
+            self.lock = threading.Lock()
+            self.launch_order: list[str] = []
+
+        def launch_trial(self, trial_id: str, dispatch_token: str, launch_policy: dict[str, object] | None = None):
+            del dispatch_token, launch_policy
+            with self.lock:
+                self.launch_order.append(trial_id)
+                launch_number = len(self.launch_order)
+            if launch_number == 1:
+                self.first_started.set()
+                self.release_first.wait(timeout=2.0)
+            else:
+                self.second_started.set()
+            return None
+
+    _prepare_repo_dataset(repository, dataset_manager)
+    launcher = BlockingLauncher()
+    system, _ = _build_system(
+        repository,
+        dataset_manager,
+        FixedGenerationBackend(source=build_baseline_linear_classifier()),
+        launcher,
+    )
+    track = system.create_track("blocking-launch", "mnist:v1", {})
+    second_trial, created = repository.create_queued_trial_if_absent(
+        track.track_id,
+        build_candidate_train_script(
+            build_model_block(
+                """
+def forward(self, x):
+    flat = x.reshape(x.shape[0], -1)
+    scores = flat.sum(dim=1) + 11
+    return torch.stack((-scores, scores), dim=1)
+"""
+            )
+        ),
+        make_llm_provenance(model="second-launchable"),
+    )
+    assert created is True
+    assert second_trial is not None
+
+    result_holder: dict[str, object] = {}
+
+    def run_reconcile():
+        result_holder["result"] = system.reconcile_track(track.track_id, ready_queue_threshold=0, max_parallelism=2)
+
+    thread = threading.Thread(target=run_reconcile)
+    thread.start()
+    try:
+        assert launcher.first_started.wait(timeout=1.0)
+        assert launcher.second_started.wait(timeout=1.0)
+    finally:
+        launcher.release_first.set()
+        thread.join(timeout=2.0)
+
+    assert thread.is_alive() is False
+    result = result_holder["result"]
+    assert len(result.launched_trial_ids) == 2
+
+
 def test_reconcile_persists_launcher_metadata_for_launched_trials(repository, dataset_manager):
     class MetadataLauncher:
-        def launch_trial(self, trial_id: str, dispatch_token: str):
+        def launch_trial(self, trial_id: str, dispatch_token: str, launch_policy: dict[str, object] | None = None):
+            del dispatch_token, launch_policy
             return {
                 "kind": "modal",
                 "run_id": f"fc-{trial_id}",

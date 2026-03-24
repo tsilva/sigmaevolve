@@ -73,6 +73,92 @@ def test_track_and_trial_mutations_publish_dashboard_notifications(repository):
     assert notifications[-1] == (track.track_id, "trial_changed")
 
 
+def test_update_active_trial_metrics_updates_only_matching_active_runner_and_notifies(repository):
+    repository.register_dataset("mnist:v1", "/tmp/manifest.json")
+
+    notifications: list[tuple[str, str]] = []
+    repository._notify_dashboard = lambda conn, track_id, reason: notifications.append((track_id, reason))  # type: ignore[method-assign]
+
+    track = repository.create_track(name="live-metrics", dataset_id="mnist:v1", policy_json={})
+    trial, created = repository.create_queued_trial_if_absent(
+        track_id=track.track_id,
+        source="print('candidate')\n",
+        provenance_json=make_llm_provenance(model="worker"),
+    )
+    assert created is True
+    assert trial is not None
+
+    reserved = repository.reserve_trials(track.track_id, max_parallelism=1, dispatch_ttl_sec=60, limit=1)
+    claimed = repository.claim_trial(reserved[0].trial_id, reserved[0].dispatch_token, "runner-1")
+    assert claimed is not None
+
+    repository.update_active_trial_metrics(
+        trial_id=claimed.trial_id,
+        runner_id="runner-1",
+        metrics={"accuracy": 0.5, "eval_count": 1, "last_phase": "train"},
+    )
+    updated = repository.get_trial(claimed.trial_id)
+    assert updated is not None
+    assert updated.metrics_json == {"accuracy": 0.5, "eval_count": 1, "last_phase": "train"}
+    assert notifications[-1] == (track.track_id, "trial_changed")
+
+    notify_count = len(notifications)
+    repository.update_active_trial_metrics(
+        trial_id=claimed.trial_id,
+        runner_id="runner-1",
+        metrics={"accuracy": 0.5, "eval_count": 1, "last_phase": "train"},
+    )
+    assert len(notifications) == notify_count
+
+    notify_count = len(notifications)
+    repository.update_active_trial_metrics(
+        trial_id=claimed.trial_id,
+        runner_id="runner-2",
+        metrics={"accuracy": 0.9},
+    )
+    assert len(notifications) == notify_count
+    unchanged = repository.get_trial(claimed.trial_id)
+    assert unchanged is not None
+    assert unchanged.metrics_json == {"accuracy": 0.5, "eval_count": 1, "last_phase": "train"}
+
+
+def test_finalize_trial_overwrites_interim_active_metrics(repository):
+    repository.register_dataset("mnist:v1", "/tmp/manifest.json")
+    track = repository.create_track(name="final-metrics", dataset_id="mnist:v1", policy_json={})
+
+    trial, created = repository.create_queued_trial_if_absent(
+        track_id=track.track_id,
+        source="print('candidate')\n",
+        provenance_json=make_llm_provenance(model="worker"),
+    )
+    assert created is True
+    assert trial is not None
+
+    reserved = repository.reserve_trials(track.track_id, max_parallelism=1, dispatch_ttl_sec=60, limit=1)
+    claimed = repository.claim_trial(reserved[0].trial_id, reserved[0].dispatch_token, "runner-1")
+    assert claimed is not None
+
+    repository.update_active_trial_metrics(
+        trial_id=claimed.trial_id,
+        runner_id="runner-1",
+        metrics={"accuracy": 0.5, "eval_count": 1, "last_phase": "train"},
+    )
+    repository.finalize_trial(
+        trial_id=claimed.trial_id,
+        runner_id="runner-1",
+        outcome_reason="succeeded",
+        metrics={"accuracy": 0.75, "eval_count": 2, "timed_out": False},
+        score=0.75,
+        error_info=None,
+    )
+
+    updated = repository.get_trial(claimed.trial_id)
+    assert updated is not None
+    assert updated.status == "finished"
+    assert updated.metrics_json == {"accuracy": 0.75, "eval_count": 2, "timed_out": False}
+    assert updated.score == 0.75
+
+
 def test_failed_trials_persist_error_status_and_error_type(repository):
     repository.register_dataset("mnist:v1", "/tmp/manifest.json")
     track = repository.create_track(name="errors", dataset_id="mnist:v1", policy_json={})

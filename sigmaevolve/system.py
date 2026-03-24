@@ -73,6 +73,21 @@ class EvolutionSystem:
             max_parallelism=max_parallelism,
         )
 
+    def start_track_controller(
+        self,
+        track_id: str,
+        reporter=None,
+        *,
+        max_parallelism: int,
+        ready_queue_threshold: int = 0,
+    ):
+        return self.orchestrator.start_track_controller(
+            track_id,
+            reporter=reporter,
+            max_parallelism=max_parallelism,
+            ready_queue_threshold=ready_queue_threshold,
+        )
+
     def sample_trial_context(self, track_id: str, limit: int) -> list[TrialSummary]:
         return self.repository.sample_trial_context(track_id=track_id, limit=limit)
 
@@ -81,6 +96,9 @@ class EvolutionSystem:
 
     def heartbeat_trial(self, trial_id: str, runner_id: str, meta: dict) -> None:
         self.repository.heartbeat_trial(trial_id=trial_id, runner_id=runner_id, meta=meta)
+
+    def update_active_trial_metrics(self, trial_id: str, runner_id: str, metrics: dict) -> None:
+        self.repository.update_active_trial_metrics(trial_id=trial_id, runner_id=runner_id, metrics=metrics)
 
     def finalize_trial(
         self,

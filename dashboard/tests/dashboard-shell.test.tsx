@@ -176,6 +176,37 @@ describe("DashboardShell", () => {
     expect(screen.getByRole("button", { name: "Open trial trial_2" })).toBeTruthy();
   });
 
+  it("adds hover and focus tooltip text to progress breakdown segments", () => {
+    const customTrack: TrackListItem = {
+      ...tracks[0],
+      totalTrials: 6,
+      queuedTrials: 1,
+      dispatchingTrials: 1,
+      activeTrials: 2,
+      finishedTrials: 1,
+      errorTrials: 1,
+    };
+
+    const { container } = render(
+      <DashboardShell
+        initialDetail={{
+          track: customTrack,
+          trials: baseTrials,
+          nextCursor: null,
+        }}
+        initialTracks={[customTrack]}
+        initialSelectedTrialId={null}
+        selectedTrackId="track_1"
+      />,
+    );
+
+    const activeSegment = container.querySelector(".progress-segment.active");
+    expect(activeSegment?.getAttribute("title")).toBe("Running: 2");
+    expect(activeSegment?.getAttribute("data-tooltip")).toBe("Running: 2");
+    expect(activeSegment?.getAttribute("aria-label")).toBe("Running: 2");
+    expect(activeSegment?.getAttribute("tabindex")).toBe("0");
+  });
+
   it("respects a valid trial param on first render", () => {
     renderShell({
       initialSelectedTrialId: "trial_1",
@@ -361,7 +392,7 @@ describe("DashboardShell", () => {
   });
 
   it("renders provenance as property rows instead of a raw JSON block", () => {
-    renderShell({
+    const { container } = renderShell({
       detail: createDetail([
         createTrial({
           trialId: "trial_provenance",
@@ -384,12 +415,49 @@ describe("DashboardShell", () => {
     });
 
     expect(screen.getByText("Generation provenance")).toBeTruthy();
+    const subsectionLabels = Array.from(container.querySelectorAll(".trial-summary-subsection-label")).map(
+      (element) => element.textContent,
+    );
+    expect(subsectionLabels).toContain("Model");
+    expect(subsectionLabels).not.toContain("Launcher");
     expect(screen.getByText("Provider Response ID")).toBeTruthy();
     expect(screen.getByText("gen_1774284821")).toBeTruthy();
     expect(screen.getByText("Config Temperature")).toBeTruthy();
     expect(screen.getByText("0.2")).toBeTruthy();
     expect(screen.getByText("trial_parent_a")).toBeTruthy();
     expect(screen.queryByText('"generation_config"')).toBeNull();
+  });
+
+  it("moves launcher fields into a launcher provenance group", () => {
+    const { container } = renderShell({
+      detail: createDetail([
+        createTrial({
+          trialId: "trial_launcher",
+          provenanceJson: {
+            backend: "openrouter",
+            model: "x-ai/grok-4.1-fast",
+            launcher: {
+              kind: "modal",
+              run_id: "fc-123",
+              run_url: "https://modal.com/apps/test/runs/fc-123",
+            },
+          },
+        }),
+      ]),
+      initialSelectedTrialId: "trial_launcher",
+    });
+
+    const subsectionLabels = Array.from(container.querySelectorAll(".trial-summary-subsection-label")).map(
+      (element) => element.textContent,
+    );
+    expect(subsectionLabels).toContain("Launcher");
+    expect(screen.getByText("Launcher Kind")).toBeTruthy();
+    expect(screen.getByText("modal")).toBeTruthy();
+    expect(screen.getByText("Launcher Run Id")).toBeTruthy();
+    expect(screen.getByText("fc-123")).toBeTruthy();
+    expect(screen.getByText("Launcher Run Url")).toBeTruthy();
+    const launcherLink = screen.getByRole("link", { name: "https://modal.com/apps/test/runs/fc-123" });
+    expect(launcherLink.getAttribute("href")).toBe("https://modal.com/apps/test/runs/fc-123");
   });
 
   it("keeps the explorer visible when a filter changes the visible trial set", async () => {
@@ -488,6 +556,20 @@ describe("DashboardShell", () => {
     expect(screen.getByRole("img", { name: "Score history for the trials currently displayed in the table" })).toBeTruthy();
     expect(screen.getByText("Score History")).toBeTruthy();
     expect(container.querySelectorAll("circle.score-point").length).toBe(baseTrials.length);
+  });
+
+  it("shows trial details when a score point is hovered", () => {
+    const { container } = renderShell();
+
+    const points = Array.from(container.querySelectorAll("circle.score-point"));
+    expect(points.length).toBeGreaterThan(0);
+
+    fireEvent.mouseEnter(points[0]);
+
+    const tooltip = container.querySelector(".score-point-tooltip");
+    expect(tooltip?.textContent).toContain("trial_1");
+    expect(tooltip?.textContent).toContain("Score: 0.9123");
+    expect(tooltip?.textContent).toContain("Model: google/gemini");
   });
 
   it("updates the score history chart when the visible table rows change", async () => {

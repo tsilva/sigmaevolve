@@ -6,6 +6,7 @@
   "heartbeat_interval_sec": 15,
   "stale_ttl_sec": 120,
   "max_dispatch_retries": 2,
+  "modal_gpu_preferences": ["T4", "L4", "A10"],
   "scorer_settings": {
     "primary_metric": "accuracy"
   },

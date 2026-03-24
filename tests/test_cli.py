@@ -267,6 +267,39 @@ def test_cli_launch_maintain_running_stops_after_max_cycles(tmp_path, patched_cl
     assert payload["stopped_reason"] == "max_cycles_reached"
 
 
+def test_cli_daemon_reports_controller_mode_in_stderr(tmp_path, patched_cli_system):
+    del patched_cli_system
+    db_url = f"sqlite:///{tmp_path / 'cli-launch-controller.sqlite'}"
+    dataset_root = tmp_path / "datasets"
+    track_file = _write_track_file(tmp_path, {"dataset_id": "mnist:v1"}, "daemon-track.json")
+
+    track_id = json.loads(
+        _run_cli(["--database-url", db_url, "--dataset-root", str(dataset_root), "create-track", track_file])[1]
+    )["track_id"]
+    code, stdout, stderr = _run_cli(
+        [
+            "--database-url",
+            db_url,
+            "--dataset-root",
+            str(dataset_root),
+            "--launcher",
+            "recording",
+            "launch",
+            track_id,
+            "1",
+            "--daemon",
+            "--max-cycles",
+            "1",
+        ]
+    )
+
+    assert code == 0
+    payload = json.loads(stdout)
+    assert payload["mode"] == "daemon"
+    assert "Starting controller" in stderr
+    assert "Running launch pass" not in stderr
+
+
 def test_make_system_with_modal_launcher_uses_modal_proxy(monkeypatch, tmp_path):
     from sigmaevolve import cli as cli_module
 

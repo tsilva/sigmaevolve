@@ -113,6 +113,41 @@ describe("dashboard row mappers", () => {
     });
   });
 
+  it("maps active trial rows with interim metrics", () => {
+    const mapped = mapTrialListItem({
+      trialId: "trial_live",
+      status: "active",
+      outcomeReason: null,
+      modalRunId: null,
+      modalRunUrl: null,
+      score: "0",
+      accuracy: "0.875",
+      timeToBestEvalSec: "1.25",
+      timedOut: false,
+      timeSinceLastEvalSec: null,
+      hadUnscoredWorkAtTimeout: false,
+      lastPhase: "train",
+      backend: "openrouter",
+      model: "test/model",
+      dispatchAttempts: "1",
+      createdAt: "2026-03-20T15:00:00.000Z",
+      startedAt: "2026-03-20T15:01:00.000Z",
+      finishedAt: null,
+      durationSec: "12.5",
+      hasError: false,
+      errorType: null,
+      source: "print('candidate')\n",
+      errorJson: null,
+      provenanceJson: { model: "test/model", request_messages: [] },
+    });
+
+    expect(mapped.status).toBe("active");
+    expect(mapped.accuracy).toBe(0.875);
+    expect(mapped.timeToBestEvalSec).toBe(1.25);
+    expect(mapped.lastPhase).toBe("train");
+    expect(mapped.durationSec).toBe(12.5);
+  });
+
   it("does not flag successful diagnostics as an execution error", () => {
     const mapped = mapTrialListItem({
       trialId: "trial_success",

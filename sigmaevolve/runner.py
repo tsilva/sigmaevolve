@@ -19,6 +19,15 @@ from sigmaevolve.scoring import compute_classification_metrics, compute_score
 
 
 logger = logging.getLogger(__name__)
+ACTIVE_METRICS_INTERVAL_SEC = 1.0
+DEBUG_METRIC_KEYS = (
+    "early_stopped",
+    "early_stop_epoch",
+    "early_stopping_patience",
+    "epochs_completed",
+    "best_validation_accuracy_seen",
+    "epochs_without_improvement",
+)
 
 
 def _coerce_optional_scalar(value: Any, cast) -> Any | None:
@@ -131,17 +140,20 @@ class RunnerService:
                         runner_id,
                         exc_info=True,
                     )
-                    engine = getattr(self.repository, "engine", None)
-                    dispose = getattr(engine, "dispose", None)
-                    if callable(dispose):
-                        try:
-                            dispose()
-                        except Exception:
-                            logger.warning("Disposing repository engine after heartbeat failure also failed.", exc_info=True)
+                    self._dispose_repository_engine()
 
         thread = threading.Thread(target=loop, daemon=True)
         thread.start()
         return stop_event, thread
+
+    def _dispose_repository_engine(self) -> None:
+        engine = getattr(self.repository, "engine", None)
+        dispose = getattr(engine, "dispose", None)
+        if callable(dispose):
+            try:
+                dispose()
+            except Exception:
+                logger.warning("Disposing repository engine after failure also failed.", exc_info=True)
 
     def _read_progress(self, progress_path: Path) -> dict[str, Any] | None:
         if not progress_path.exists():
@@ -169,7 +181,7 @@ class RunnerService:
         self,
         eval_dir: Path,
         labels_path: str,
-        fallback_predictions_path: Path,
+        fallback_predictions_path: Path | None,
         fallback_elapsed_time_sec: float,
     ) -> list[dict[str, Any]]:
         labels = np.load(labels_path)
@@ -194,7 +206,7 @@ class RunnerService:
                     }
                 )
 
-        if not artifacts and fallback_predictions_path.exists():
+        if not artifacts and fallback_predictions_path is not None and fallback_predictions_path.exists():
             with np.load(fallback_predictions_path) as payload:
                 predictions = payload["predictions"]
                 if predictions.ndim > 1:
@@ -275,18 +287,139 @@ class RunnerService:
                 "process_elapsed_sec": float(process_elapsed_sec),
             }
         )
-        if debug_payload:
-            for key in (
-                "early_stopped",
-                "early_stop_epoch",
-                "early_stopping_patience",
-                "epochs_completed",
-                "best_validation_accuracy_seen",
-                "epochs_without_improvement",
-            ):
-                if key in debug_payload:
-                    metrics[key] = debug_payload[key]
+        self._apply_debug_metrics(metrics, debug_payload)
         return metrics
+
+    def _apply_debug_metrics(self, metrics: dict[str, Any], debug_payload: dict[str, Any] | None) -> None:
+        if not debug_payload:
+            return
+        for key in DEBUG_METRIC_KEYS:
+            if key in debug_payload:
+                metrics[key] = debug_payload[key]
+
+    def _build_active_metrics_payload(
+        self,
+        artifacts: list[dict[str, Any]],
+        progress_payload: dict[str, Any] | None,
+        process_elapsed_sec: float,
+        debug_payload: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        progress = dict(progress_payload or {})
+        metrics: dict[str, Any] = {
+            "process_elapsed_sec": float(process_elapsed_sec),
+        }
+
+        last_phase = progress.get("phase") or progress.get("current_phase")
+        if last_phase is not None:
+            metrics["last_phase"] = last_phase
+
+        progress_eval_index = _coerce_optional_scalar(progress.get("eval_index"), int)
+        debug_eval_count = _coerce_optional_scalar((debug_payload or {}).get("eval_count"), int)
+        eval_count = max(len(artifacts), progress_eval_index or 0, debug_eval_count or 0)
+        metrics["eval_count"] = eval_count
+
+        last_completed_eval_sec = _coerce_optional_scalar(progress.get("last_completed_eval_sec"), float)
+        last_completed_eval_index = progress_eval_index
+
+        if artifacts:
+            best_artifact = self._select_best_eval(artifacts)
+            last_artifact = self._select_last_completed_eval(artifacts)
+            last_completed_eval_sec = _coerce_optional_scalar(last_artifact.get("elapsed_time_sec"), float)
+            last_completed_eval_index = _coerce_optional_scalar(last_artifact.get("eval_index"), int)
+            metrics.update(dict(best_artifact["metrics"]))
+            metrics.update(
+                {
+                    "best_accuracy": best_artifact["metrics"]["accuracy"],
+                    "time_to_best_eval_sec": _coerce_optional_scalar(best_artifact.get("elapsed_time_sec"), float),
+                    "best_eval_index": _coerce_optional_scalar(best_artifact.get("eval_index"), int),
+                    "best_eval_epoch": _coerce_optional_scalar(best_artifact.get("epoch"), int),
+                }
+            )
+
+        if last_completed_eval_sec is not None:
+            metrics["last_completed_eval_sec"] = float(last_completed_eval_sec)
+        if last_completed_eval_index is not None:
+            metrics["last_completed_eval_index"] = int(last_completed_eval_index)
+
+        self._apply_debug_metrics(metrics, debug_payload)
+        return metrics if metrics else None
+
+    def _collect_active_metrics_payload(
+        self,
+        *,
+        eval_dir: Path,
+        progress_path: Path,
+        debug_path: Path,
+        labels_path: str,
+        started_at: float,
+    ) -> dict[str, Any] | None:
+        progress_payload = self._read_progress(progress_path)
+        debug_payload = self._read_debug_payload(debug_path)
+        artifacts: list[dict[str, Any]] = []
+        try:
+            artifacts = self._load_eval_artifacts(
+                eval_dir=eval_dir,
+                labels_path=labels_path,
+                fallback_predictions_path=None,
+                fallback_elapsed_time_sec=0.0,
+            )
+        except Exception:
+            logger.warning("Active metrics scan failed; continuing without eval artifacts.", exc_info=True)
+        if not progress_payload and not debug_payload and not artifacts:
+            return None
+        return self._build_active_metrics_payload(
+            artifacts=artifacts,
+            progress_payload=progress_payload,
+            process_elapsed_sec=time.monotonic() - started_at,
+            debug_payload=debug_payload,
+        )
+
+    def _start_active_metrics_reporter(
+        self,
+        *,
+        trial_id: str,
+        runner_id: str,
+        progress_path: Path,
+        debug_path: Path,
+        eval_dir: Path,
+        labels_path: str,
+        started_at: float,
+        interval_sec: float = ACTIVE_METRICS_INTERVAL_SEC,
+    ) -> tuple[threading.Event, threading.Thread]:
+        stop_event = threading.Event()
+
+        def report_once(last_metrics: dict[str, Any] | None) -> dict[str, Any] | None:
+            metrics = self._collect_active_metrics_payload(
+                eval_dir=eval_dir,
+                progress_path=progress_path,
+                debug_path=debug_path,
+                labels_path=labels_path,
+                started_at=started_at,
+            )
+            if metrics is None or metrics == last_metrics:
+                return last_metrics
+            self.repository.update_active_trial_metrics(trial_id=trial_id, runner_id=runner_id, metrics=metrics)
+            return metrics
+
+        def loop() -> None:
+            last_metrics: dict[str, Any] | None = None
+            while not stop_event.is_set():
+                try:
+                    last_metrics = report_once(last_metrics)
+                except Exception:
+                    logger.warning(
+                        "Active metrics update failed for trial %s runner %s; retrying.",
+                        trial_id,
+                        runner_id,
+                        exc_info=True,
+                    )
+                    self._dispose_repository_engine()
+                if stop_event.wait(interval_sec):
+                    break
+
+        thread = threading.Thread(target=loop, daemon=True)
+        thread.start()
+        return stop_event, thread
 
     def run_reserved_trial(self, trial_id: str, dispatch_token: str, runner_id: str) -> None:
         trial = self.repository.claim_trial(trial_id, dispatch_token, runner_id)
@@ -297,11 +430,6 @@ class RunnerService:
             raise RuntimeError(f"Track not found for trial {trial.trial_id}")
         policy = track.policy_json
         manifest = self.dataset_manager.verify(track.dataset_id)
-        heartbeat_stop, heartbeat_thread = self._start_heartbeat(
-            trial_id=trial.trial_id,
-            runner_id=runner_id,
-            interval_sec=int(policy["heartbeat_interval_sec"]),
-        )
         try:
             with tempfile.TemporaryDirectory(prefix=f"sigmaevolve_{trial.trial_id}_") as temp_dir:
                 temp_path = Path(temp_dir)
@@ -329,12 +457,31 @@ class RunnerService:
                         sort_keys=True,
                     )
                 )
+                heartbeat_stop, heartbeat_thread = self._start_heartbeat(
+                    trial_id=trial.trial_id,
+                    runner_id=runner_id,
+                    interval_sec=int(policy["heartbeat_interval_sec"]),
+                )
+                metrics_stop = threading.Event()
+                metrics_thread: threading.Thread | None = None
                 command = [self.python_executable, str(train_script_path), "--config", str(config_path)]
                 timed_out = False
                 stdout: str | None = None
                 stderr: str | None = None
                 started_at = time.monotonic()
+                metrics_stop, metrics_thread = self._start_active_metrics_reporter(
+                    trial_id=trial.trial_id,
+                    runner_id=runner_id,
+                    progress_path=progress_path,
+                    debug_path=debug_path,
+                    eval_dir=eval_dir,
+                    labels_path=manifest.validation_labels_path,
+                    started_at=started_at,
+                )
                 completed = _run_streamed_subprocess(command, timeout=self.hard_timeout_sec)
+                metrics_stop.set()
+                if metrics_thread is not None:
+                    metrics_thread.join(timeout=1.0)
                 timed_out = completed.timed_out
                 stdout = _coerce_text(completed.stdout)
                 stderr = _coerce_text(completed.stderr)
@@ -451,6 +598,12 @@ class RunnerService:
                     },
                 )
         finally:
-            heartbeat_stop.set()
-            heartbeat_thread.join(timeout=1.0)
+            if "metrics_stop" in locals():
+                metrics_stop.set()
+            if "metrics_thread" in locals() and metrics_thread is not None:
+                metrics_thread.join(timeout=1.0)
+            if "heartbeat_stop" in locals():
+                heartbeat_stop.set()
+            if "heartbeat_thread" in locals():
+                heartbeat_thread.join(timeout=1.0)
             time.sleep(0.01)

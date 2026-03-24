@@ -149,6 +149,22 @@ class _CliReconcileReporter:
         )
 
     def __call__(self, event: str, payload: dict[str, Any]) -> None:
+        if event == "controller_started":
+            self._log(
+                f"Starting controller for {payload['track_id']} with launcher={payload['launcher']} "
+                f"and max_parallelism={payload['max_parallelism']}."
+            )
+            return
+        if event == "controller_stopped":
+            self._log(
+                "Controller stopped: "
+                f"generated={payload['generated_count']} "
+                f"launched={payload['launched_count']} "
+                f"duplicates={payload['duplicate_count']} "
+                f"generation_failures={payload['failed_generation_count']} "
+                f"errors={payload['error_count']}."
+            )
+            return
         if event == "reconcile_started":
             self._log(f"Running launch pass for {payload['track_id']} with launcher={payload['launcher']}.")
             return
@@ -393,28 +409,30 @@ def cmd_launch(args) -> int:
         return 0
 
     summary = _LaunchSummary(mode="daemon", cycles_completed=0)
+    controller = system.start_track_controller(
+        args.track_id,
+        reporter=reporter,
+        max_parallelism=args.count,
+    )
     try:
         while True:
-            result = _run_launch_pass(
-                system,
-                args.track_id,
-                reporter,
-                target_count=args.count,
-                daemon=True,
-            )
             summary.cycles_completed += 1
-            summary.generated_count += len(result.generated_trial_ids)
-            summary.launched_count += len(result.launched_trial_ids)
-            summary.duplicate_count += len(result.duplicate_trial_ids)
-            summary.stale_count += len(result.stale_trial_ids)
-            summary.requeued_count += len(result.requeued_trial_ids)
-            summary.error_count += len(result.errors)
             if args.max_cycles is not None and summary.cycles_completed >= args.max_cycles:
                 summary.stopped_reason = "max_cycles_reached"
                 break
             time.sleep(args.poll_interval_sec)
     except KeyboardInterrupt:
         summary.stopped_reason = "keyboard_interrupt"
+    finally:
+        controller.stop()
+
+    result = controller.result
+    summary.generated_count = len(result.generated_trial_ids)
+    summary.launched_count = len(result.launched_trial_ids)
+    summary.duplicate_count = len(result.duplicate_trial_ids)
+    summary.stale_count = len(result.stale_trial_ids)
+    summary.requeued_count = len(result.requeued_trial_ids)
+    summary.error_count = len(result.errors)
 
     payload = asdict(summary)
     payload["target_running"] = args.count
