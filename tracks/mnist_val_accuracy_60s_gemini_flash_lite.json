@@ -37,14 +37,14 @@
       {
         "model": "moonshotai/kimi-k2.5",
         "temperature": 0.2,
-        "max_tokens": 2500,
+        "max_tokens": 5000,
         "retry_count": 2,
         "probability": 0.1578
       },
       {
         "model": "google/gemini-3.1-pro-preview",
         "temperature": 0.2,
-        "max_tokens": 2500,
+        "max_tokens": 5000,
         "retry_count": 2,
         "probability": 0.0306
       },

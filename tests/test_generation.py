@@ -267,6 +267,11 @@ def test_openrouter_generation_prompt_lists_prior_programs_before_current_progra
     assert "score: 0.992" in prompt
     assert "val_acc: 0.992" in prompt
     assert "val_loss: 0.1" in prompt
+    prior_section, current_section = prompt.split("CURRENT PROGRAM:\n", maxsplit=1)
+    assert "# EVOLVE-BLOCK-START" not in prior_section
+    assert "# EVOLVE-BLOCK-END" not in prior_section
+    assert "# EVOLVE-BLOCK-START" in current_section
+    assert "# EVOLVE-BLOCK-END" in current_section
     assert prompt.rstrip().endswith("REPLACEMENTS:")
 
 
