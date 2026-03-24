@@ -572,6 +572,58 @@ describe("DashboardShell", () => {
     expect(tooltip?.textContent).toContain("Model: google/gemini");
   });
 
+  it("zooms the score chart when low outliers flatten a tight high-score cluster", () => {
+    const clusteredTrials = [
+      createTrial({
+        trialId: "trial_low",
+        status: "error",
+        outcomeReason: "failed",
+        score: 0,
+        accuracy: null,
+        createdAt: "2026-03-20T15:00:00.000Z",
+      }),
+      createTrial({
+        trialId: "trial_a",
+        score: 0.9962,
+        accuracy: 0.9962,
+        createdAt: "2026-03-20T15:01:00.000Z",
+      }),
+      createTrial({
+        trialId: "trial_b",
+        score: 0.9968,
+        accuracy: 0.9968,
+        createdAt: "2026-03-20T15:02:00.000Z",
+      }),
+      createTrial({
+        trialId: "trial_c",
+        score: 0.9974,
+        accuracy: 0.9974,
+        createdAt: "2026-03-20T15:03:00.000Z",
+      }),
+    ];
+
+    const { container } = renderShell({
+      detail: createDetail(clusteredTrials),
+    });
+
+    expect(screen.getByText(/Zoomed range/)).toBeTruthy();
+    expect(screen.getByText("1 lower outlier pinned to the baseline")).toBeTruthy();
+    expect(container.querySelector(".score-axis-break")).toBeTruthy();
+
+    const getPointY = (trialId: string) =>
+      Number(
+        container
+          .querySelector(`circle.score-point[aria-label^="${trialId}"]`)
+          ?.getAttribute("cy"),
+      );
+
+    const lowPointY = getPointY("trial_low");
+    const highClusterYs = ["trial_a", "trial_b", "trial_c"].map(getPointY);
+
+    expect(Math.max(...highClusterYs) - Math.min(...highClusterYs)).toBeGreaterThan(20);
+    expect(lowPointY).toBeGreaterThan(Math.max(...highClusterYs));
+  });
+
   it("updates the score history chart when the visible table rows change", async () => {
     const { container } = renderShell();
 

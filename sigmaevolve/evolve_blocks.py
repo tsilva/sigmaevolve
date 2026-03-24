@@ -25,6 +25,13 @@ class SearchReplaceBlock:
     replace: str
 
 
+def _contains_evolve_block_marker_line(text: str) -> bool:
+    for line in text.splitlines():
+        if line.strip() in {EVOLVE_BLOCK_START, EVOLVE_BLOCK_END}:
+            return True
+    return False
+
+
 def _line_indent(line: str) -> str:
     prefix_length = len(line) - len(line.lstrip(" \t"))
     return line[:prefix_length]
@@ -143,7 +150,10 @@ def parse_search_replace_blocks(response_text: str) -> list[SearchReplaceBlock]:
         search = "".join(search_lines)
         if not search:
             raise EvolveBlockError("SEARCH/REPLACE block must include non-empty SEARCH text")
-        blocks.append(SearchReplaceBlock(search=search, replace="".join(replace_lines)))
+        replace = "".join(replace_lines)
+        if _contains_evolve_block_marker_line(search) or _contains_evolve_block_marker_line(replace):
+            raise EvolveBlockError("SEARCH/REPLACE blocks may not include evolve block marker lines")
+        blocks.append(SearchReplaceBlock(search=search, replace=replace))
 
     if not blocks:
         raise EvolveBlockError("generated response must contain SEARCH/REPLACE blocks or NO_CHANGES")

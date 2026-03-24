@@ -548,6 +548,7 @@ type ActiveWorkspace = "explorer" | "inspector";
 type ScoreChartPoint = {
   backend: string | null;
   createdAt: string;
+  isClippedLow: boolean;
   lastPhase: string | null;
   model: string | null;
   outcomeReason: string | null;
@@ -567,6 +568,77 @@ const SCORE_CHART_PADDING = {
   bottom: 24,
   left: 40,
 };
+const MIN_SCORE_CHART_RANGE = 0.02;
+const MIN_ZOOMED_SCORE_CHART_RANGE = 0.003;
+const MIN_ZOOMED_SCORE_PADDING = 0.0015;
+
+function getScoreTickDigits(range: number): number {
+  if (range < 0.002) {
+    return 5;
+  }
+  if (range < 0.02) {
+    return 4;
+  }
+  return 3;
+}
+
+function buildScoreDomain(scoredValues: number[]): {
+  clippedLowThreshold: number | null;
+  scaleMode: "full" | "zoomed";
+  tickDigits: number;
+  yMax: number;
+  yMin: number;
+} {
+  if (scoredValues.length === 0) {
+    return {
+      clippedLowThreshold: null,
+      scaleMode: "full",
+      tickDigits: 3,
+      yMax: 1,
+      yMin: 0,
+    };
+  }
+
+  const rawMin = Math.min(...scoredValues);
+  const rawMax = Math.max(...scoredValues);
+  const positiveValues = scoredValues.filter((score) => score > 0);
+  let focusValues = scoredValues;
+  let scaleMode: "full" | "zoomed" = "full";
+
+  if (positiveValues.length >= 2) {
+    const positiveMin = Math.min(...positiveValues);
+    const positiveMax = Math.max(...positiveValues);
+    const positiveSpread = positiveMax - positiveMin;
+    const lowerGap = positiveMin - rawMin;
+    const hasTightUpperCluster = positiveSpread > 0 && positiveSpread <= 0.02 && positiveMax >= 0.9;
+    const hasLowOutlierCompression =
+      lowerGap >= Math.max(positiveSpread * 4, 0.05) && rawMax - rawMin >= Math.max(positiveSpread * 6, 0.08);
+
+    if (hasTightUpperCluster && hasLowOutlierCompression) {
+      focusValues = positiveValues;
+      scaleMode = "zoomed";
+    }
+  }
+
+  const focusMin = Math.min(...focusValues);
+  const focusMax = Math.max(...focusValues);
+  const focusSpread = focusMax - focusMin;
+  const padding = Math.max(
+    focusSpread * 0.18,
+    scaleMode === "zoomed" ? MIN_ZOOMED_SCORE_PADDING : MIN_SCORE_CHART_RANGE * 0.18,
+  );
+  const yMin = Math.max(0, focusMin - padding);
+  const yMax = Math.min(1, focusMax + padding);
+  const range = Math.max(scaleMode === "zoomed" ? MIN_ZOOMED_SCORE_CHART_RANGE : MIN_SCORE_CHART_RANGE, yMax - yMin);
+
+  return {
+    clippedLowThreshold: scaleMode === "zoomed" ? yMin : null,
+    scaleMode,
+    tickDigits: getScoreTickDigits(range),
+    yMax,
+    yMin,
+  };
+}
 
 function buildTrialsUrl(trackId: string, status: TrialStatusFilter, cursor?: string | null, limit = 50): string {
   const params = new URLSearchParams();
@@ -580,9 +652,13 @@ function buildTrialsUrl(trackId: string, status: TrialStatusFilter, cursor?: str
 
 function buildScoreChart(trials: TrialListItem[]): {
   bestScore: number | null;
+  clippedLowCount: number;
+  clippedLowThreshold: number | null;
   linePath: string;
   points: ScoreChartPoint[];
+  scaleMode: "full" | "zoomed";
   scoredCount: number;
+  tickDigits: number;
   yMax: number;
   yMin: number;
 } {
@@ -601,12 +677,8 @@ function buildScoreChart(trials: TrialListItem[]): {
     .map((trial) => trial.score)
     .filter((score) => Number.isFinite(score));
   const bestScore = scoredValues.length > 0 ? Math.max(...scoredValues) : null;
-  const rawMin = scoredValues.length > 0 ? Math.min(...scoredValues) : 0;
-  const rawMax = scoredValues.length > 0 ? Math.max(...scoredValues) : 1;
-  const spread = Math.max(0.02, rawMax - rawMin);
-  const yMin = Math.max(0, rawMin - spread * 0.18);
-  const yMax = Math.min(1, rawMax + spread * 0.18);
-  const safeRange = Math.max(0.02, yMax - yMin);
+  const { clippedLowThreshold, scaleMode, tickDigits, yMax, yMin } = buildScoreDomain(scoredValues);
+  const safeRange = Math.max(scaleMode === "zoomed" ? MIN_ZOOMED_SCORE_CHART_RANGE : MIN_SCORE_CHART_RANGE, yMax - yMin);
 
   const xForIndex = (index: number): number => {
     if (orderedTrials.length <= 1) {
@@ -619,15 +691,19 @@ function buildScoreChart(trials: TrialListItem[]): {
     if (score === null) {
       return SCORE_CHART_PADDING.top + chartHeight + 6;
     }
-    const normalized = (score - yMin) / safeRange;
+    const displayScore =
+      clippedLowThreshold !== null && score < clippedLowThreshold ? clippedLowThreshold : Math.min(yMax, Math.max(yMin, score));
+    const normalized = (displayScore - yMin) / safeRange;
     return SCORE_CHART_PADDING.top + chartHeight - normalized * chartHeight;
   };
 
   const points = orderedTrials.map((trial, index) => {
     const score = trial.status === "finished" || trial.status === "error" ? trial.score : null;
+    const isClippedLow = score !== null && clippedLowThreshold !== null && score < clippedLowThreshold;
     return {
       backend: trial.backend,
       createdAt: trial.createdAt,
+      isClippedLow,
       lastPhase: trial.lastPhase,
       model: trial.model,
       outcomeReason: trial.outcomeReason,
@@ -649,9 +725,13 @@ function buildScoreChart(trials: TrialListItem[]): {
 
   return {
     bestScore,
+    clippedLowCount: points.filter((point) => point.isClippedLow).length,
+    clippedLowThreshold,
     linePath,
     points,
+    scaleMode,
     scoredCount: scoredValues.length,
+    tickDigits,
     yMax,
     yMin,
   };
@@ -662,6 +742,7 @@ function summarizeScorePoint(point: ScoreChartPoint): string[] {
     point.trialId,
     `Status: ${formatStatusLabel(point.status)}`,
     point.score === null ? "Score: pending" : `Score: ${formatNumber(point.score, 4)}`,
+    point.isClippedLow ? "Display: pinned below the zoomed score range" : null,
     point.model ? `Model: ${point.model}` : null,
     point.backend ? `Backend: ${point.backend}` : null,
     point.lastPhase ? `Phase: ${point.lastPhase}` : null,
@@ -1067,7 +1148,16 @@ export function DashboardShell({
                   </div>
                   <div className="score-chart-meta">
                     <span>Best {formatNumber(scoreChart.bestScore, 4)}</span>
-                    <span>Range {formatNumber(scoreChart.yMin, 4)} to {formatNumber(scoreChart.yMax, 4)}</span>
+                    <span>
+                      {scoreChart.scaleMode === "zoomed" ? "Zoomed range" : "Range"} {formatNumber(scoreChart.yMin, 4)} to{" "}
+                      {formatNumber(scoreChart.yMax, 4)}
+                    </span>
+                    {scoreChart.scaleMode === "zoomed" ? (
+                      <span>
+                        {scoreChart.clippedLowCount} lower outlier{scoreChart.clippedLowCount === 1 ? "" : "s"} pinned to the
+                        baseline
+                      </span>
+                    ) : null}
                   </div>
                   <div className="score-chart-shell">
                     <svg
@@ -1090,10 +1180,21 @@ export function DashboardShell({
                         x2={SCORE_CHART_PADDING.left}
                         y2={SCORE_CHART_HEIGHT - SCORE_CHART_PADDING.bottom}
                       />
+                      {scoreChart.scaleMode === "zoomed" ? (
+                        <path
+                          className="score-axis-break"
+                          d={`M ${SCORE_CHART_PADDING.left - 4} ${SCORE_CHART_HEIGHT - SCORE_CHART_PADDING.bottom - 20}
+                            l 4 4 l 4 -4 l 4 4`}
+                        />
+                      ) : null}
                       {[scoreChart.yMax, (scoreChart.yMax + scoreChart.yMin) / 2, scoreChart.yMin].map((tick) => {
                         const y =
                           SCORE_CHART_PADDING.top +
-                          ((scoreChart.yMax - tick) / Math.max(0.02, scoreChart.yMax - scoreChart.yMin)) *
+                          ((scoreChart.yMax - tick) /
+                            Math.max(
+                              scoreChart.scaleMode === "zoomed" ? MIN_ZOOMED_SCORE_CHART_RANGE : MIN_SCORE_CHART_RANGE,
+                              scoreChart.yMax - scoreChart.yMin,
+                            )) *
                             (SCORE_CHART_HEIGHT - SCORE_CHART_PADDING.top - SCORE_CHART_PADDING.bottom);
                         return (
                           <g key={tick}>
@@ -1105,7 +1206,7 @@ export function DashboardShell({
                               y2={y}
                             />
                             <text className="score-tick-label" x={SCORE_CHART_PADDING.left - 10} y={y + 4}>
-                              {formatNumber(tick, 3)}
+                              {formatNumber(tick, scoreChart.tickDigits)}
                             </text>
                           </g>
                         );
