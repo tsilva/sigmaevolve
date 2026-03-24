@@ -5,7 +5,7 @@ from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from sigmaevolve.models import ACTIVE_STATUSES, ReconcileResult
+from sigmaevolve.models import ACTIVE_STATUSES, ReconcileResult, now_utc
 
 
 @dataclass
@@ -322,6 +322,8 @@ class TrackController:
             track_id=self.track.track_id,
             stale_ttl_sec=int(self.track.policy_json["stale_ttl_sec"]),
         )
+        if stale_active:
+            self._cancel_stale_modal_runs(stale_active)
         stale_trial_ids = stale_dispatch + stale_active
         if requeued or stale_trial_ids:
             with self._condition:
@@ -335,6 +337,34 @@ class TrackController:
                 requeued_count=len(requeued),
                 stale_count=len(stale_trial_ids),
             )
+
+    def _cancel_stale_modal_runs(self, stale_trial_ids: list[str]) -> None:
+        cancel_run = getattr(self.orchestrator.launcher, "cancel_run", None)
+        for trial_id in stale_trial_ids:
+            trial = self.orchestrator.repository.get_trial(trial_id)
+            if trial is None:
+                continue
+            launcher_metadata = dict((trial.provenance_json or {}).get("launcher") or {})
+            if launcher_metadata.get("kind") != "modal":
+                continue
+
+            cancel_metadata = {"cancel_attempted_at": now_utc().isoformat()}
+            run_id = launcher_metadata.get("run_id")
+            if not isinstance(run_id, str) or not run_id:
+                cancel_metadata["cancel_outcome"] = "skipped_no_run_id"
+                self.orchestrator.repository.record_trial_launcher_metadata(trial_id, cancel_metadata)
+                continue
+
+            try:
+                if not callable(cancel_run):
+                    raise RuntimeError("Active launcher does not support remote cancellation.")
+                cancel_run(launcher_metadata)
+            except Exception as exc:
+                cancel_metadata["cancel_outcome"] = "failed"
+                cancel_metadata["cancel_error"] = str(exc)
+            else:
+                cancel_metadata["cancel_outcome"] = "requested"
+            self.orchestrator.repository.record_trial_launcher_metadata(trial_id, cancel_metadata)
 
     def _pending_generation_count(self) -> int:
         with self._lock:

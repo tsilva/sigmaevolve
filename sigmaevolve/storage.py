@@ -519,7 +519,13 @@ class SQLAlchemyRepository:
                 raise KeyError(f"Trial not found: {trial_id}")
             provenance_json = dict(row.provenance_json or {})
             updated_provenance_json = dict(provenance_json)
-            updated_provenance_json["launcher"] = payload
+            existing_launcher = updated_provenance_json.get("launcher")
+            if isinstance(existing_launcher, dict):
+                merged_launcher = dict(existing_launcher)
+                merged_launcher.update(payload)
+                updated_provenance_json["launcher"] = merged_launcher
+            else:
+                updated_provenance_json["launcher"] = payload
             if updated_provenance_json == provenance_json:
                 return
             conn.execute(

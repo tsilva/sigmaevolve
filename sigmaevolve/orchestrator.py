@@ -27,6 +27,9 @@ class RunnerLauncher(Protocol):
     ) -> dict[str, Any] | None:
         ...
 
+    def cancel_run(self, launcher_metadata: dict[str, Any]) -> None:
+        ...
+
 
 class RecordingLauncher:
     def __init__(self) -> None:
@@ -41,6 +44,9 @@ class RecordingLauncher:
         del launch_policy
         self.launched.append((trial_id, dispatch_token))
         return None
+
+    def cancel_run(self, launcher_metadata: dict[str, Any]) -> None:
+        del launcher_metadata
 
 
 class InlineRunnerLauncher:
@@ -60,6 +66,9 @@ class InlineRunnerLauncher:
         runner_id = f"{self.runner_id_prefix}_{self.launch_count}"
         self.runner_service.run_reserved_trial(trial_id, dispatch_token, runner_id)
         return None
+
+    def cancel_run(self, launcher_metadata: dict[str, Any]) -> None:
+        del launcher_metadata
 
 
 class ModalRemoteLauncher:
@@ -115,6 +124,12 @@ class ModalRemoteLauncher:
             return metadata
 
         raise RuntimeError("Modal launch failed for all configured resources: " + "; ".join(failures))
+
+    def cancel_run(self, launcher_metadata: dict[str, Any]) -> None:
+        run_id = launcher_metadata.get("run_id")
+        if not isinstance(run_id, str) or not run_id:
+            raise ValueError("Modal cancellation requires launcher_metadata.run_id.")
+        self.modal_function.cancel(run_id)
 
 
 @dataclass(frozen=True)

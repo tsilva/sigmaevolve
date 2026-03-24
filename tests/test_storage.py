@@ -241,6 +241,24 @@ def test_record_trial_launcher_metadata_merges_into_provenance_and_notifies(repo
     }
     assert notifications[-1] == (track.track_id, "trial_changed")
 
+    repository.record_trial_launcher_metadata(
+        trial.trial_id,
+        {
+            "cancel_outcome": "requested",
+            "cancel_attempted_at": "2026-03-24T12:00:00+00:00",
+        },
+    )
+    updated = repository.get_trial(trial.trial_id)
+
+    assert updated is not None
+    assert updated.provenance_json["launcher"] == {
+        "kind": "modal",
+        "run_id": "fc-123",
+        "run_url": "https://modal.com/apps/test/runs/fc-123",
+        "cancel_outcome": "requested",
+        "cancel_attempted_at": "2026-03-24T12:00:00+00:00",
+    }
+
 
 def test_trial_indexes_exist():
     index_names = {index.name for index in trials_table.indexes}

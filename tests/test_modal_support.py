@@ -197,3 +197,40 @@ def test_modal_launcher_surfaces_combined_gpu_failures(monkeypatch):
             "dispatch_1",
             launch_policy={"modal_gpu_preferences": ["T4", "L4", "A10"]},
         )
+
+
+def test_modal_launcher_cancels_function_call_by_run_id(monkeypatch):
+    captured = {}
+
+    class FakeFunctionCallHandle:
+        def __init__(self, run_id):
+            self.run_id = run_id
+
+        def cancel(self):
+            captured["cancelled_run_id"] = self.run_id
+
+    class FakeFunctionCall:
+        @staticmethod
+        def from_id(run_id):
+            captured["lookup_run_id"] = run_id
+            return FakeFunctionCallHandle(run_id)
+
+    class FakeModal:
+        FunctionCall = FakeFunctionCall
+
+    monkeypatch.setattr("sigmaevolve.modal_support.require_modal", lambda: FakeModal)
+
+    launcher = create_modal_launcher(
+        app_name="sigmaevolve-runner",
+        function_name="run_trial",
+        database_url="postgresql://example/db",
+        dataset_root="/mnt/datasets",
+        environment_name="main",
+    )
+
+    launcher.cancel_run({"kind": "modal", "run_id": "fc-789"})
+
+    assert captured == {
+        "lookup_run_id": "fc-789",
+        "cancelled_run_id": "fc-789",
+    }

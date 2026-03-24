@@ -353,6 +353,129 @@ def test_stale_active_trial_is_finalized(system):
     assert trial.outcome_reason == "stale"
 
 
+def test_stale_active_modal_trial_requests_run_cancellation(repository, dataset_manager):
+    class CancellationLauncher:
+        def __init__(self):
+            self.cancelled: list[dict[str, object]] = []
+
+        def launch_trial(self, trial_id: str, dispatch_token: str, launch_policy: dict[str, object] | None = None):
+            del trial_id, dispatch_token, launch_policy
+            return None
+
+        def cancel_run(self, launcher_metadata: dict[str, object]) -> None:
+            self.cancelled.append(dict(launcher_metadata))
+
+    _prepare_repo_dataset(repository, dataset_manager)
+    launcher = CancellationLauncher()
+    system, _ = _build_system(repository, dataset_manager, FixedGenerationBackend(source=build_baseline_linear_classifier()), launcher)
+    track = system.create_track("active-stale-modal", "mnist:v1", {"stale_ttl_sec": 0})
+    reserved = repository.reserve_trials(track.track_id, max_parallelism=1, dispatch_ttl_sec=60, limit=1)[0]
+    claimed = system.claim_trial(reserved.trial_id, reserved.dispatch_token, "runner")
+    assert claimed is not None
+    repository.record_trial_launcher_metadata(
+        claimed.trial_id,
+        {
+            "kind": "modal",
+            "run_id": "fc-123",
+            "run_url": "https://modal.com/apps/test/runs/fc-123",
+        },
+    )
+
+    time.sleep(0.05)
+    result = system.reconcile_track(track.track_id)
+    trial = repository.get_trial(claimed.trial_id)
+
+    assert result.stale_trial_ids == [claimed.trial_id]
+    assert launcher.cancelled == [
+        {
+            "kind": "modal",
+            "run_id": "fc-123",
+            "run_url": "https://modal.com/apps/test/runs/fc-123",
+        }
+    ]
+    assert trial is not None
+    assert trial.outcome_reason == "stale"
+    assert trial.provenance_json["launcher"]["cancel_outcome"] == "requested"
+    assert trial.provenance_json["launcher"]["cancel_attempted_at"]
+    assert "cancel_error" not in trial.provenance_json["launcher"]
+
+
+def test_stale_active_modal_trial_records_missing_run_id_skip(repository, dataset_manager):
+    class CancellationLauncher:
+        def __init__(self):
+            self.cancel_calls = 0
+
+        def launch_trial(self, trial_id: str, dispatch_token: str, launch_policy: dict[str, object] | None = None):
+            del trial_id, dispatch_token, launch_policy
+            return None
+
+        def cancel_run(self, launcher_metadata: dict[str, object]) -> None:
+            del launcher_metadata
+            self.cancel_calls += 1
+
+    _prepare_repo_dataset(repository, dataset_manager)
+    launcher = CancellationLauncher()
+    system, _ = _build_system(repository, dataset_manager, FixedGenerationBackend(source=build_baseline_linear_classifier()), launcher)
+    track = system.create_track("active-stale-missing-run", "mnist:v1", {"stale_ttl_sec": 0})
+    reserved = repository.reserve_trials(track.track_id, max_parallelism=1, dispatch_ttl_sec=60, limit=1)[0]
+    claimed = system.claim_trial(reserved.trial_id, reserved.dispatch_token, "runner")
+    assert claimed is not None
+    repository.record_trial_launcher_metadata(
+        claimed.trial_id,
+        {
+            "kind": "modal",
+            "run_url": "https://modal.com/apps/test/runs/fc-missing",
+        },
+    )
+
+    time.sleep(0.05)
+    system.reconcile_track(track.track_id)
+    trial = repository.get_trial(claimed.trial_id)
+
+    assert launcher.cancel_calls == 0
+    assert trial is not None
+    assert trial.outcome_reason == "stale"
+    assert trial.provenance_json["launcher"]["cancel_outcome"] == "skipped_no_run_id"
+    assert trial.provenance_json["launcher"]["cancel_attempted_at"]
+    assert "cancel_error" not in trial.provenance_json["launcher"]
+
+
+def test_stale_active_modal_trial_records_cancellation_failure(repository, dataset_manager):
+    class FailingCancellationLauncher:
+        def launch_trial(self, trial_id: str, dispatch_token: str, launch_policy: dict[str, object] | None = None):
+            del trial_id, dispatch_token, launch_policy
+            return None
+
+        def cancel_run(self, launcher_metadata: dict[str, object]) -> None:
+            del launcher_metadata
+            raise RuntimeError("modal cancellation failed")
+
+    _prepare_repo_dataset(repository, dataset_manager)
+    launcher = FailingCancellationLauncher()
+    system, _ = _build_system(repository, dataset_manager, FixedGenerationBackend(source=build_baseline_linear_classifier()), launcher)
+    track = system.create_track("active-stale-failed-cancel", "mnist:v1", {"stale_ttl_sec": 0})
+    reserved = repository.reserve_trials(track.track_id, max_parallelism=1, dispatch_ttl_sec=60, limit=1)[0]
+    claimed = system.claim_trial(reserved.trial_id, reserved.dispatch_token, "runner")
+    assert claimed is not None
+    repository.record_trial_launcher_metadata(
+        claimed.trial_id,
+        {
+            "kind": "modal",
+            "run_id": "fc-bad",
+        },
+    )
+
+    time.sleep(0.05)
+    system.reconcile_track(track.track_id)
+    trial = repository.get_trial(claimed.trial_id)
+
+    assert trial is not None
+    assert trial.outcome_reason == "stale"
+    assert trial.provenance_json["launcher"]["cancel_outcome"] == "failed"
+    assert trial.provenance_json["launcher"]["cancel_attempted_at"]
+    assert trial.provenance_json["launcher"]["cancel_error"] == "modal cancellation failed"
+
+
 def test_weighted_successful_sampling_favors_higher_scores(repository, dataset_manager):
     _prepare_repo_dataset(repository, dataset_manager)
     system, runner = _build_system(
