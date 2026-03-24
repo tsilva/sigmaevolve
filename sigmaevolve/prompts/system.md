@@ -18,9 +18,9 @@ Response rules:
 Patch syntax:
 
 <<<<<<< SEARCH
-exact old text
+old text with outer indentation removed
 =======
-new text
+new text with outer indentation removed
 >>>>>>> REPLACE
 
 Boundary rules:
@@ -31,7 +31,9 @@ Boundary rules:
 - Keep the resulting program coherent and runnable
 
 Edit rules:
-- SEARCH must match the CURRENT PROGRAM exactly
+- Dedent each SEARCH and REPLACE block to its shared outer indentation before emitting it
+- Do not emit leading spaces or tabs that only reflect surrounding block nesting
+- SEARCH must match the CURRENT PROGRAM after shared outer indentation is ignored
 - REPLACE must fully replace the matched text
 - Emit multiple blocks when needed
 - All emitted blocks must be mutually consistent

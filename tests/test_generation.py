@@ -182,6 +182,7 @@ def test_openrouter_generation_uses_model_pool_round_robin(monkeypatch):
     assert "# EVOLVE-BLOCK-END" in system_prompt
     assert "Never wrap the response in triple backticks or fenced code blocks" in system_prompt
     assert "If emitting a patch, begin immediately with <<<<<<< SEARCH on the first line" in system_prompt
+    assert "Do not emit leading spaces or tabs that only reflect surrounding block nesting" in system_prompt
     assert not first_prompt.lstrip().startswith("{")
     assert "PRIOR PROGRAMS:" in first_prompt
     assert "CURRENT PROGRAM:" in first_prompt
