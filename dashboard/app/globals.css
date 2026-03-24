@@ -15,6 +15,7 @@
   --success: #1a6a40;
   --warning: #a06411;
   --danger: #b33a2d;
+  --best: #b57a17;
   --shadow: 0 10px 28px rgba(46, 35, 22, 0.08);
 }
 
@@ -221,17 +222,7 @@ button {
 }
 
 .track-card-bar {
-  overflow: hidden;
-  height: 10px;
-  border-radius: 999px;
-  background: rgba(54, 43, 27, 0.08);
-}
-
-.track-card-bar span {
-  display: block;
-  height: 100%;
-  border-radius: inherit;
-  background: linear-gradient(90deg, #c99a39, #3362b7);
+  margin: 2px 0;
 }
 
 .track-card-meta {
@@ -732,6 +723,13 @@ button {
   overflow-wrap: anywhere;
 }
 
+.trial-cell-title-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
 .trial-cell-secondary {
   margin-top: 2px;
   font-size: 0.68rem;
@@ -757,6 +755,12 @@ button {
   color: var(--warning);
   border-color: rgba(160, 100, 17, 0.2);
   background: rgba(160, 100, 17, 0.08);
+}
+
+.flag-best {
+  color: var(--best);
+  border-color: rgba(181, 122, 23, 0.28);
+  background: rgba(181, 122, 23, 0.1);
 }
 
 .flag-success {
@@ -847,6 +851,20 @@ button {
   flex-wrap: wrap;
   gap: 8px;
   align-items: center;
+}
+
+.trial-row.best-trial {
+  box-shadow: inset 3px 0 0 rgba(181, 122, 23, 0.85);
+  background:
+    linear-gradient(90deg, rgba(201, 154, 57, 0.12), rgba(255, 255, 255, 0) 24%),
+    rgba(255, 255, 255, 0.72);
+}
+
+.trial-row.best-trial:hover,
+.trial-row.best-trial.active {
+  background:
+    linear-gradient(90deg, rgba(201, 154, 57, 0.16), rgba(255, 255, 255, 0) 24%),
+    rgba(255, 255, 255, 0.86);
 }
 
 .trial-summary-flags {
@@ -999,6 +1017,12 @@ button {
   fill: rgba(255, 255, 255, 0.94);
   stroke: rgba(31, 26, 20, 0.26);
   stroke-dasharray: 2 2;
+}
+
+.score-point.best-point {
+  stroke: rgba(181, 122, 23, 0.95);
+  stroke-width: 2.6;
+  filter: drop-shadow(0 0 6px rgba(201, 154, 57, 0.42));
 }
 
 .score-point:focus-visible {

@@ -16,6 +16,7 @@ type TrackRow = {
   errorTrials: number | string | null;
   succeededTrials: number | string | null;
   bestScore: number | string | null;
+  bestTrialId: string | null;
   lastActivityAt: string | Date | null;
 };
 
@@ -126,6 +127,7 @@ export function mapTrackListItem(row: TrackRow): TrackListItem {
     errorTrials: asNumber(row.errorTrials),
     succeededTrials: asNumber(row.succeededTrials),
     bestScore: asNullableNumber(row.bestScore),
+    bestTrialId: asNullableString(row.bestTrialId),
     lastActivityAt: asIsoDate(row.lastActivityAt ?? row.createdAt) ?? new Date(0).toISOString(),
   };
 }

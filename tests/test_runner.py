@@ -232,6 +232,26 @@ def test_successful_run_produces_metrics_and_score(repository, dataset_manager):
     assert finished.error_json is None
 
 
+def test_successful_run_creates_wandb_experiment(repository, dataset_manager, fake_wandb):
+    system = build_inline_system(repository, dataset_manager)
+    system.prepare_dataset("mnist:v1")
+    track = system.create_track("wandb", "mnist:v1", {"epochs": 2})
+    finalize_baseline(system, track.track_id)
+    finished = _run_trial(system, track.track_id, SUCCESS_BLOCK)
+
+    runs = fake_wandb["runs"]
+    assert isinstance(runs, list)
+    assert len(runs) == 1
+    run = runs[0]
+    assert finished.outcome_reason == "succeeded"
+    assert finished.provenance_json["wandb"]["project"] == "sigmaevolve"
+    assert finished.provenance_json["wandb"]["run_id"] == run.id
+    assert finished.provenance_json["wandb"]["run_url"] == run.url
+    assert any(entry["payload"]["trial_state"] == "terminal" for entry in run.logged)
+    assert run.summary["outcome_reason"] == "succeeded"
+    assert run.finished == {"exit_code": 0}
+
+
 def test_successful_run_with_custom_data_block(repository, dataset_manager):
     system = build_inline_system(repository, dataset_manager)
     system.prepare_dataset("mnist:v1")
@@ -403,7 +423,7 @@ def test_run_uses_unbuffered_python_for_child_process(repository, dataset_manage
     assert str(command[2]).endswith("train.py")
 
 
-def test_active_run_persists_live_metrics_before_finalization(repository, dataset_manager):
+def test_active_run_persists_live_metrics_before_finalization(repository, dataset_manager, fake_wandb):
     system = build_inline_system(repository, dataset_manager)
     system.prepare_dataset("mnist:v1")
     track = system.create_track("live-metrics", "mnist:v1", {"epochs": 3})
@@ -449,6 +469,13 @@ def test_active_run_persists_live_metrics_before_finalization(repository, datase
     assert finished.metrics_json["timed_out"] is False
     assert finished.metrics_json["accuracy"] == 1.0
     assert finished.metrics_json != active_snapshot.metrics_json
+
+    runs = fake_wandb["runs"]
+    assert isinstance(runs, list)
+    assert len(runs) == 1
+    run = runs[0]
+    assert any(entry["payload"]["trial_state"] == "active" for entry in run.logged)
+    assert run.finished == {"exit_code": 0}
 
 
 def test_rescore_updates_only_derived_score(repository, dataset_manager):

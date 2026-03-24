@@ -518,7 +518,13 @@ class SQLAlchemyRepository:
         return _row_to_trial(row) if row else None
 
     def record_trial_launcher_metadata(self, trial_id: str, launcher_metadata: dict[str, Any]) -> None:
-        payload = dict(launcher_metadata)
+        self._record_trial_provenance_section(trial_id, "launcher", launcher_metadata)
+
+    def record_trial_wandb_metadata(self, trial_id: str, wandb_metadata: dict[str, Any]) -> None:
+        self._record_trial_provenance_section(trial_id, "wandb", wandb_metadata)
+
+    def _record_trial_provenance_section(self, trial_id: str, section: str, payload: dict[str, Any]) -> None:
+        payload = dict(payload)
         with self.transaction() as conn:
             row = conn.execute(
                 sa.select(trials_table.c.track_id, trials_table.c.provenance_json).where(trials_table.c.trial_id == trial_id)
@@ -527,13 +533,13 @@ class SQLAlchemyRepository:
                 raise KeyError(f"Trial not found: {trial_id}")
             provenance_json = dict(row.provenance_json or {})
             updated_provenance_json = dict(provenance_json)
-            existing_launcher = updated_provenance_json.get("launcher")
-            if isinstance(existing_launcher, dict):
-                merged_launcher = dict(existing_launcher)
-                merged_launcher.update(payload)
-                updated_provenance_json["launcher"] = merged_launcher
+            existing_section = updated_provenance_json.get(section)
+            if isinstance(existing_section, dict):
+                merged_section = dict(existing_section)
+                merged_section.update(payload)
+                updated_provenance_json[section] = merged_section
             else:
-                updated_provenance_json["launcher"] = payload
+                updated_provenance_json[section] = payload
             if updated_provenance_json == provenance_json:
                 return
             conn.execute(

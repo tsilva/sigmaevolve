@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import sys
+import types
 
 import numpy as np
 import pytest
@@ -17,6 +18,65 @@ from sigmaevolve.runner import RunnerService
 from sigmaevolve.storage import SQLAlchemyRepository
 from sigmaevolve.system import EvolutionSystem
 from sigmaevolve.train_script_blocks import build_candidate_train_script, build_model_block
+
+
+@pytest.fixture
+def fake_wandb(monkeypatch):
+    state: dict[str, object] = {
+        "login_calls": [],
+        "runs": [],
+    }
+
+    class FakeRun:
+        def __init__(self, **kwargs) -> None:
+            runs = state["runs"]
+            assert isinstance(runs, list)
+            index = len(runs) + 1
+            self.project = kwargs.get("project")
+            self.entity = kwargs.get("entity")
+            self.id = f"wandb-run-{index}"
+            self.name = kwargs.get("name") or self.id
+            self.url = f"https://wandb.example/{self.project}/{self.id}"
+            self.config = kwargs.get("config")
+            self.tags = kwargs.get("tags")
+            self.job_type = kwargs.get("job_type")
+            self.logged: list[dict[str, object]] = []
+            self.summary: dict[str, object] = {}
+            self.finished: dict[str, object] | None = None
+
+        def log(self, payload, step=None) -> None:
+            self.logged.append({"payload": dict(payload), "step": step})
+
+        def finish(self, exit_code=None) -> None:
+            self.finished = {"exit_code": exit_code}
+
+    module = types.ModuleType("wandb")
+
+    def login(*, key=None, relogin=None):
+        login_calls = state["login_calls"]
+        assert isinstance(login_calls, list)
+        login_calls.append({"key": key, "relogin": relogin})
+        return True
+
+    def init(**kwargs):
+        runs = state["runs"]
+        assert isinstance(runs, list)
+        run = FakeRun(**kwargs)
+        runs.append(run)
+        return run
+
+    module.login = login  # type: ignore[attr-defined]
+    module.init = init  # type: ignore[attr-defined]
+
+    monkeypatch.setitem(sys.modules, "wandb", module)
+    monkeypatch.setenv("WANDB_API_KEY", "test-wandb-key")
+    monkeypatch.delenv("WANDB_MODE", raising=False)
+    return state
+
+
+@pytest.fixture(autouse=True)
+def _install_fake_wandb(fake_wandb):
+    return fake_wandb
 
 
 def make_policy(**overrides):
