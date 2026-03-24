@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +21,21 @@ def require_modal():
     except ImportError as exc:
         raise RuntimeError("Modal support requires the 'modal' package. Install it with: pip install '.[modal]'") from exc
     return modal
+
+
+@dataclass(frozen=True)
+class ModalSpawnResult:
+    function_call: Any
+    effective_gpu: str | None
+
+
+def _is_missing_class_lookup_error(exc: Exception, class_name: str) -> bool:
+    message = str(exc).lower()
+    class_name_lower = class_name.lower()
+    return (
+        f"class '{class_name_lower}' not found" in message
+        or ("lookup failed for cls" in message and class_name_lower in message and "not found" in message)
+    )
 
 
 class _ModalClassProxy:
@@ -49,16 +65,74 @@ class _ModalClassProxy:
         if gpu is not None:
             cls = cls.with_options(gpu=gpu)
         method = getattr(cls(), self.method_name)
-        return method.spawn(
-            trial_id=trial_id,
-            dispatch_token=dispatch_token,
-            database_url=self.database_url,
-            dataset_root=self.dataset_root,
+        return ModalSpawnResult(
+            function_call=method.spawn(
+                trial_id=trial_id,
+                dispatch_token=dispatch_token,
+                database_url=self.database_url,
+                dataset_root=self.dataset_root,
+            ),
+            effective_gpu=gpu,
         )
 
     def cancel(self, run_id: str) -> None:
         modal = require_modal()
         modal.FunctionCall.from_id(run_id).cancel()
+
+
+class _ModalFunctionProxy:
+    def __init__(
+        self,
+        app_name: str,
+        function_name: str,
+        database_url: str,
+        dataset_root: str,
+        environment_name: str | None = None,
+    ) -> None:
+        self.app_name = app_name
+        self.function_name = function_name
+        self.database_url = database_url
+        self.dataset_root = dataset_root
+        self.environment_name = environment_name
+
+    def spawn(self, trial_id: str, dispatch_token: str, gpu: str | None = None):
+        del gpu
+        modal = require_modal()
+        function = modal.Function.from_name(
+            self.app_name,
+            self.function_name,
+            environment_name=self.environment_name,
+        )
+        return ModalSpawnResult(
+            function_call=function.spawn(
+                trial_id=trial_id,
+                dispatch_token=dispatch_token,
+                database_url=self.database_url,
+                dataset_root=self.dataset_root,
+            ),
+            effective_gpu=None,
+        )
+
+    def cancel(self, run_id: str) -> None:
+        modal = require_modal()
+        modal.FunctionCall.from_id(run_id).cancel()
+
+
+class _ModalCompatProxy:
+    def __init__(self, class_proxy: _ModalClassProxy, function_proxy: _ModalFunctionProxy) -> None:
+        self.class_proxy = class_proxy
+        self.function_proxy = function_proxy
+
+    def spawn(self, trial_id: str, dispatch_token: str, gpu: str | None = None):
+        try:
+            return self.class_proxy.spawn(trial_id=trial_id, dispatch_token=dispatch_token, gpu=gpu)
+        except Exception as exc:
+            if not _is_missing_class_lookup_error(exc, self.class_proxy.class_name):
+                raise
+        return self.function_proxy.spawn(trial_id=trial_id, dispatch_token=dispatch_token, gpu=None)
+
+    def cancel(self, run_id: str) -> None:
+        self.class_proxy.cancel(run_id)
 
 
 def create_modal_launcher(
@@ -68,7 +142,7 @@ def create_modal_launcher(
     dataset_root: str = DEFAULT_MODAL_DATASET_MOUNT,
     environment_name: str | None = None,
 ) -> ModalRemoteLauncher:
-    proxy = _ModalClassProxy(
+    class_proxy = _ModalClassProxy(
         app_name=app_name,
         class_name=DEFAULT_MODAL_CLASS_NAME,
         method_name=function_name,
@@ -76,6 +150,14 @@ def create_modal_launcher(
         dataset_root=dataset_root,
         environment_name=environment_name,
     )
+    function_proxy = _ModalFunctionProxy(
+        app_name=app_name,
+        function_name=function_name,
+        database_url=database_url,
+        dataset_root=dataset_root,
+        environment_name=environment_name,
+    )
+    proxy = _ModalCompatProxy(class_proxy, function_proxy)
     return ModalRemoteLauncher(proxy)
 
 

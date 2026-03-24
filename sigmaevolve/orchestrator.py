@@ -95,7 +95,7 @@ class ModalRemoteLauncher:
             if gpu is not None:
                 attempted_gpus.append(gpu)
             try:
-                function_call = self.modal_function.spawn(
+                spawn_result = self.modal_function.spawn(
                     trial_id=trial_id,
                     dispatch_token=dispatch_token,
                     gpu=gpu,
@@ -103,13 +103,15 @@ class ModalRemoteLauncher:
             except Exception as exc:
                 failures.append(f"{gpu or 'cpu'}: {exc}")
                 continue
+            function_call = getattr(spawn_result, "function_call", spawn_result)
+            effective_gpu = getattr(spawn_result, "effective_gpu", gpu)
 
             metadata: dict[str, Any] = {
                 "kind": "modal",
                 "gpu_attempts": list(attempted_gpus),
             }
-            if gpu is not None:
-                metadata["gpu_selected"] = gpu
+            if effective_gpu is not None:
+                metadata["gpu_selected"] = effective_gpu
             object_id = getattr(function_call, "object_id", None)
             if isinstance(object_id, str) and object_id:
                 metadata["run_id"] = object_id
