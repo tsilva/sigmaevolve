@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import subprocess
 import sys
 import tempfile
@@ -74,12 +75,15 @@ def _stream_pipe(pipe, sink, chunks: list[str]) -> None:
 
 
 def _run_streamed_subprocess(command: list[str], timeout: float) -> _StreamedProcessResult:
+    child_env = os.environ.copy()
+    child_env["PYTHONUNBUFFERED"] = "1"
     process = subprocess.Popen(
         command,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
         bufsize=1,
+        env=child_env,
     )
     assert process.stdout is not None
     assert process.stderr is not None
@@ -422,14 +426,18 @@ class RunnerService:
         return stop_event, thread
 
     def run_reserved_trial(self, trial_id: str, dispatch_token: str, runner_id: str) -> None:
+        logger.info("Claiming reserved trial %s with runner %s.", trial_id, runner_id)
         trial = self.repository.claim_trial(trial_id, dispatch_token, runner_id)
         if trial is None:
+            logger.info("Skipping trial %s because the reservation could not be claimed.", trial_id)
             return
+        logger.info("Claimed trial %s on track %s.", trial.trial_id, trial.track_id)
         track = self.repository.get_track(trial.track_id)
         if track is None:
             raise RuntimeError(f"Track not found for trial {trial.trial_id}")
         policy = track.policy_json
         manifest = self.dataset_manager.verify(track.dataset_id)
+        logger.info("Verified dataset %s for trial %s.", track.dataset_id, trial.trial_id)
         try:
             with tempfile.TemporaryDirectory(prefix=f"sigmaevolve_{trial.trial_id}_") as temp_dir:
                 temp_path = Path(temp_dir)
@@ -464,11 +472,12 @@ class RunnerService:
                 )
                 metrics_stop = threading.Event()
                 metrics_thread: threading.Thread | None = None
-                command = [self.python_executable, str(train_script_path), "--config", str(config_path)]
+                command = [self.python_executable, "-u", str(train_script_path), "--config", str(config_path)]
                 timed_out = False
                 stdout: str | None = None
                 stderr: str | None = None
                 started_at = time.monotonic()
+                logger.info("Starting child process for trial %s: %s", trial.trial_id, " ".join(command))
                 metrics_stop, metrics_thread = self._start_active_metrics_reporter(
                     trial_id=trial.trial_id,
                     runner_id=runner_id,
@@ -486,6 +495,13 @@ class RunnerService:
                 stdout = _coerce_text(completed.stdout)
                 stderr = _coerce_text(completed.stderr)
                 process_elapsed_sec = time.monotonic() - started_at
+                logger.info(
+                    "Child process finished for trial %s with returncode=%s timed_out=%s elapsed=%.2fs.",
+                    trial.trial_id,
+                    completed.returncode,
+                    timed_out,
+                    process_elapsed_sec,
+                )
                 progress_payload = self._read_progress(progress_path)
                 debug_payload = self._read_debug_payload(debug_path)
                 timed_out = bool(timed_out or (debug_payload or {}).get("timed_out"))
@@ -509,6 +525,7 @@ class RunnerService:
                                 "progress": progress_payload,
                             },
                         )
+                        logger.info("Finalized trial %s with outcome=%s.", trial.trial_id, OUTCOME_EVAL_FAILED)
                         return
                     self.repository.finalize_trial(
                         trial_id=trial.trial_id,
@@ -524,6 +541,7 @@ class RunnerService:
                             "progress": progress_payload,
                         },
                     )
+                    logger.info("Finalized trial %s with outcome=%s.", trial.trial_id, OUTCOME_CRASHED)
                     return
 
                 try:
@@ -549,6 +567,7 @@ class RunnerService:
                             "progress": progress_payload,
                         },
                     )
+                    logger.info("Finalized trial %s with outcome=%s.", trial.trial_id, OUTCOME_EVAL_FAILED)
                     return
 
                 if not artifacts:
@@ -569,6 +588,7 @@ class RunnerService:
                         score=0.0,
                         error_info=error_info,
                     )
+                    logger.info("Finalized trial %s with outcome=%s.", trial.trial_id, outcome_reason)
                     return
 
                 metrics = self._build_metrics_payload(
@@ -596,6 +616,13 @@ class RunnerService:
                         "eval_artifacts": [artifact["path"] for artifact in artifacts],
                         "timed_out": timed_out,
                     },
+                )
+                logger.info(
+                    "Finalized trial %s with outcome=%s score=%.6f accuracy=%s.",
+                    trial.trial_id,
+                    outcome_reason,
+                    score,
+                    metrics.get("accuracy"),
                 )
         finally:
             if "metrics_stop" in locals():

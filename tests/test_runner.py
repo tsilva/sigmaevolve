@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import threading
 import time
 
@@ -349,6 +350,57 @@ def test_run_streams_child_output_to_parent_logs(repository, dataset_manager, ca
     assert finished.outcome_reason == "succeeded"
     assert "stdout-marker" in captured.out
     assert "stderr-marker" in captured.err
+
+
+def test_run_emits_lifecycle_logs(repository, dataset_manager, caplog):
+    system = build_inline_system(repository, dataset_manager)
+    system.prepare_dataset("mnist:v1")
+    track = system.create_track("lifecycle-logging", "mnist:v1", {"epochs": 1})
+    finalize_baseline(system, track.track_id)
+    with caplog.at_level(logging.INFO, logger="sigmaevolve.runner"):
+        finished = _run_trial(system, track.track_id, SUCCESS_BLOCK)
+    messages = [record.getMessage() for record in caplog.records]
+    assert finished.outcome_reason == "succeeded"
+    assert any("Claimed trial" in message for message in messages)
+    assert any("Verified dataset" in message for message in messages)
+    assert any("Starting child process" in message for message in messages)
+    assert any("Child process finished" in message for message in messages)
+    assert any("Finalized trial" in message for message in messages)
+
+
+def test_run_uses_unbuffered_python_for_child_process(repository, dataset_manager, monkeypatch):
+    system = build_inline_system(repository, dataset_manager)
+    system.prepare_dataset("mnist:v1")
+    track = system.create_track("unbuffered-child", "mnist:v1", {"epochs": 1})
+    finalize_baseline(system, track.track_id)
+    reserved_source = build_candidate_train_script(SUCCESS_BLOCK)
+    _, created = system.repository.create_queued_trial_if_absent(
+        track.track_id,
+        reserved_source,
+        make_llm_provenance(candidate_kind=CANDIDATE_KIND_STRATEGY_V1),
+    )
+    assert created is True
+    reserved = system.repository.reserve_trials(track.track_id, max_parallelism=1, dispatch_ttl_sec=60, limit=1)[0]
+
+    seen: dict[str, object] = {}
+
+    def fake_run_streamed_subprocess(command, timeout):
+        seen["command"] = command
+        seen["timeout"] = timeout
+        return type(
+            "Completed",
+            (),
+            {"returncode": 0, "stdout": "", "stderr": "", "timed_out": False},
+        )()
+
+    monkeypatch.setattr("sigmaevolve.runner._run_streamed_subprocess", fake_run_streamed_subprocess)
+
+    system.runner_service.run_reserved_trial(reserved.trial_id, reserved.dispatch_token, "runner-unbuffered")
+
+    command = seen["command"]
+    assert isinstance(command, list)
+    assert command[1] == "-u"
+    assert str(command[2]).endswith("train.py")
 
 
 def test_active_run_persists_live_metrics_before_finalization(repository, dataset_manager):
