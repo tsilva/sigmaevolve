@@ -197,7 +197,15 @@ class OpenRouterGenerationBackend:
                 return self._format_scalar(metrics[name])
         return "n/a"
 
-    def _render_trial_prompt_block(self, trial: TrialSummary) -> list[str]:
+    def _strip_evolve_block_tags(self, source: str) -> str:
+        lines = source.splitlines()
+        filtered_lines = [line for line in lines if line not in {EVOLVE_BLOCK_START, EVOLVE_BLOCK_END}]
+        return "\n".join(filtered_lines) + ("\n" if source.endswith("\n") else "")
+
+    def _render_trial_prompt_block(self, trial: TrialSummary, *, strip_evolve_block_tags: bool = False) -> list[str]:
+        source = trial.source
+        if strip_evolve_block_tags:
+            source = self._strip_evolve_block_tags(source)
         return [
             "---",
             f"score: {self._format_scalar(trial.score)}",
@@ -205,7 +213,7 @@ class OpenRouterGenerationBackend:
             f"val_loss: {self._trial_prompt_metric(trial, 'val_loss', 'loss')}",
             "---",
             "```python",
-            trial.source.rstrip(),
+            source.rstrip(),
             "```",
         ]
 
@@ -230,7 +238,7 @@ class OpenRouterGenerationBackend:
         lines = ["PRIOR PROGRAMS:"]
         if prior_programs:
             for index, trial in enumerate(prior_programs):
-                lines.extend(self._render_trial_prompt_block(trial))
+                lines.extend(self._render_trial_prompt_block(trial, strip_evolve_block_tags=True))
         else:
             lines.append("None.")
         lines.extend(
@@ -244,7 +252,7 @@ class OpenRouterGenerationBackend:
             lines.extend(self._render_trial_prompt_block(current_program))
         else:
             lines.append("None.")
-        lines.append("REPLACEMENTS:")
+        lines.append("PATCHES:")
         return "\n".join(lines)
 
     def _build_prompt(
