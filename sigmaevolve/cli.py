@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shlex
 import sys
 import time
 from dataclasses import asdict, dataclass
@@ -351,6 +352,33 @@ def _trial_diagnostics(metrics_json: dict[str, Any] | None) -> dict[str, Any]:
     }
 
 
+def _suggest_launch_command(args, track_id: str, *, count: int = 1) -> str:
+    command = [
+        sys.executable,
+        "-m",
+        "sigmaevolve.cli",
+        "--dataset-root",
+        args.dataset_root,
+        "--launcher",
+        args.launcher,
+    ]
+    if args.launcher == "modal":
+        command.extend(
+            [
+                "--modal-app-name",
+                args.modal_app_name,
+                "--modal-function-name",
+                args.modal_function_name,
+                "--modal-dataset-mount",
+                args.modal_dataset_mount,
+            ]
+        )
+        if args.modal_environment_name:
+            command.extend(["--modal-environment-name", args.modal_environment_name])
+    command.extend(["launch", track_id, str(count)])
+    return shlex.join(command)
+
+
 def cmd_prepare_dataset(args) -> int:
     system = _make_system(args)
     record = system.prepare_dataset(args.dataset_id)
@@ -385,6 +413,7 @@ def cmd_create_track(args) -> int:
     print(f"Creating track for dataset {dataset_id} and seeding the baseline trial.", file=sys.stderr, flush=True)
     track = system.create_track(name, dataset_id, policy)
     print(f"Created track {track.track_id}.", file=sys.stderr, flush=True)
+    print(f"Run it with:\n{_suggest_launch_command(args, track.track_id)}", file=sys.stderr, flush=True)
     _print_json(
         {
             "track_id": track.track_id,

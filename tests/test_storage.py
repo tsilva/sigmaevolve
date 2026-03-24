@@ -207,6 +207,28 @@ def test_generation_attempt_trial_uses_specific_error_type_when_present(reposito
     }
 
 
+def test_generation_attempt_trial_classifies_length_limited_invalid_candidate_as_truncated(repository):
+    repository.register_dataset("mnist:v1", "/tmp/manifest.json")
+    track = repository.create_track(name="generation-errors", dataset_id="mnist:v1", policy_json={})
+
+    trial = repository.create_generation_attempt_trial(
+        track_id=track.track_id,
+        provenance_json=make_llm_provenance(model="worker"),
+        outcome_reason="generation_failed",
+        error_json={
+            "reason": "candidate_materialization_failed",
+            "finish_reason": "length",
+        },
+    )
+
+    assert trial.status == "error"
+    assert trial.error_json == {
+        "reason": "candidate_materialization_failed",
+        "finish_reason": "length",
+        "error_type": "generation_output_truncated",
+    }
+
+
 def test_record_trial_launcher_metadata_merges_into_provenance_and_notifies(repository):
     repository.register_dataset("mnist:v1", "/tmp/manifest.json")
 
