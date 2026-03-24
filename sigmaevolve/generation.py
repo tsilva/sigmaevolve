@@ -81,9 +81,21 @@ class FixedGenerationBackend:
         )
 
 
-@lru_cache(maxsize=1)
-def _load_system_prompt_template() -> str:
-    return (resources.files("sigmaevolve.prompts") / "system.md").read_text(encoding="utf-8").strip()
+@lru_cache(maxsize=None)
+def _load_prompt_template(name: str) -> str:
+    return (resources.files("sigmaevolve.prompts") / name).read_text(encoding="utf-8").strip()
+
+
+def _render_prompt_template(name: str, **variables: str) -> str:
+    template = _load_prompt_template(name)
+
+    def replace_variable(match: re.Match[str]) -> str:
+        variable_name = match.group(1)
+        if variable_name not in variables:
+            raise ValueError(f"Prompt template {name!r} is missing variable {variable_name!r}.")
+        return variables[variable_name]
+
+    return re.sub(r"{{([a-zA-Z0-9_]+)}}", replace_variable, template)
 
 
 class OpenRouterGenerationBackend:
@@ -206,22 +218,20 @@ class OpenRouterGenerationBackend:
         source = trial.source
         if strip_evolve_block_tags:
             source = self._strip_evolve_block_tags(source)
-        return [
-            "---",
-            f"score: {self._format_scalar(trial.score)}",
-            f"val_acc: {self._trial_prompt_metric(trial, 'val_acc', 'accuracy')}",
-            f"val_loss: {self._trial_prompt_metric(trial, 'val_loss', 'loss')}",
-            "---",
-            "```python",
-            source.rstrip(),
-            "```",
-        ]
+        rendered = _render_prompt_template(
+            "trial.md",
+            score=self._format_scalar(trial.score),
+            val_acc=self._trial_prompt_metric(trial, "val_acc", "accuracy"),
+            val_loss=self._trial_prompt_metric(trial, "val_loss", "loss"),
+            source=source.rstrip(),
+        )
+        return rendered.splitlines()
 
     def _build_system_prompt_text(self) -> str:
-        return (
-            _load_system_prompt_template()
-            .replace("{{EVOLVE_BLOCK_START}}", EVOLVE_BLOCK_START)
-            .replace("{{EVOLVE_BLOCK_END}}", EVOLVE_BLOCK_END)
+        return _render_prompt_template(
+            "system.md",
+            EVOLVE_BLOCK_START=EVOLVE_BLOCK_START,
+            EVOLVE_BLOCK_END=EVOLVE_BLOCK_END,
         )
 
     def _build_user_prompt_text(
@@ -235,25 +245,22 @@ class OpenRouterGenerationBackend:
         del track, dataset_manifest, negative_trials, selected_config
         current_program = context_trials[0] if context_trials else None
         prior_programs = context_trials[1:] if len(context_trials) > 1 else []
-        lines = ["PRIOR PROGRAMS:"]
         if prior_programs:
-            for index, trial in enumerate(prior_programs):
-                lines.extend(self._render_trial_prompt_block(trial, strip_evolve_block_tags=True))
+            prior_programs_text = "\n".join(
+                "\n".join(self._render_trial_prompt_block(trial, strip_evolve_block_tags=True))
+                for trial in prior_programs
+            )
         else:
-            lines.append("None.")
-        lines.extend(
-            [
-                "CURRENT PROGRAM:",
-                "Here is the current program we are trying to improve",
-                "(you will need to propose a modification to it below).",
-            ]
-        )
+            prior_programs_text = "None."
         if current_program is not None:
-            lines.extend(self._render_trial_prompt_block(current_program))
+            current_program_text = "\n".join(self._render_trial_prompt_block(current_program))
         else:
-            lines.append("None.")
-        lines.append("PATCHES:")
-        return "\n".join(lines)
+            current_program_text = "None."
+        return _render_prompt_template(
+            "user.md",
+            prior_programs=prior_programs_text,
+            current_program=current_program_text,
+        )
 
     def _build_prompt(
         self,
