@@ -67,6 +67,10 @@ function formatPercent(value: number): string {
   return `${Math.round(value)}%`;
 }
 
+function formatStatusLabel(value: string): string {
+  return value === "active" ? "running" : value;
+}
+
 function formatDuration(value: number | null): string {
   if (value === null) {
     return "—";
@@ -396,7 +400,7 @@ function buildProgressSegments(track: TrackListItem): ProgressSegment[] {
   return [
     { key: "queued", count: track.queuedTrials, label: "Queued" },
     { key: "dispatching", count: track.dispatchingTrials, label: "Dispatching" },
-    { key: "active", count: track.activeTrials, label: "Active" },
+    { key: "active", count: track.activeTrials, label: "Running" },
     { key: "finished", count: track.finishedTrials, label: "Finished" },
     { key: "error", count: track.errorTrials, label: "Error" },
   ];
@@ -505,7 +509,7 @@ type ScoreChartPoint = {
 };
 
 const SCORE_CHART_WIDTH = 760;
-const SCORE_CHART_HEIGHT = 228;
+const SCORE_CHART_HEIGHT = 184;
 const SCORE_CHART_PADDING = {
   top: 18,
   right: 18,
@@ -870,7 +874,7 @@ export function DashboardShell({
                   </div>
                   <div className="track-card-meta">
                     <span>{getCompletedCount(track)}/{track.totalTrials} completed</span>
-                    <span>{track.activeTrials} active</span>
+                    <span>{track.activeTrials} running</span>
                   </div>
                   <div className="track-card-meta">
                     <span>{track.errorTrials} errors</span>
@@ -954,7 +958,7 @@ export function DashboardShell({
                       <span className="metric-note">
                         {detail.track.activeTrials > 0
                           ? `${detail.track.activeTrials} trials are still running.`
-                          : "No active trials right now."}
+                          : "No running trials right now."}
                       </span>
                     </article>
                   </div>
@@ -1083,24 +1087,20 @@ export function DashboardShell({
                   placeholder="trial id, model, phase, outcome"
                 />
               </label>
-              <div className="toolbar-meta">
-                <span className="meta-chip">{visibleTrials.length} shown</span>
-                <span className="meta-chip">{isPending ? "Refreshing" : "Stable"}</span>
-              </div>
             </div>
 
             <div className="status-filter" role="tablist" aria-label="Trial status filters">
-              {STATUS_OPTIONS.map((option) => (
-                <button
-                  key={option}
-                  type="button"
-                  className={`filter-chip ${status === option ? "active" : ""}`}
-                  onClick={() => handleStatusChange(option)}
-                  disabled={isPending}
-                >
-                  {option}
-                </button>
-              ))}
+                  {STATUS_OPTIONS.map((option) => (
+                    <button
+                      key={option}
+                      type="button"
+                      className={`filter-chip ${status === option ? "active" : ""}`}
+                      onClick={() => handleStatusChange(option)}
+                      disabled={isPending}
+                    >
+                      {formatStatusLabel(option)}
+                    </button>
+                  ))}
             </div>
 
             {error ? <div className="error-banner">{error}</div> : null}
@@ -1120,7 +1120,6 @@ export function DashboardShell({
                       <th scope="col">Status</th>
                       <th scope="col">Score</th>
                       <th scope="col">Accuracy</th>
-                      <th scope="col">Duration</th>
                       <th scope="col">Model</th>
                       <th scope="col">Notes</th>
                     </tr>
@@ -1139,17 +1138,18 @@ export function DashboardShell({
                         <td>
                           <div className="trial-cell-primary">{trial.trialId}</div>
                           <div className="trial-cell-secondary">{getTrialNarrative(trial)}</div>
-                          {renderModalRunLink(trial)}
                         </td>
                         <td>
-                          <span className={`status-badge status-${trial.status}`}>
-                            <span className={`status-indicator ${trial.status}`} />
-                            {trial.status}
-                          </span>
+                          <div className="trial-status-row">
+                            <span className={`status-badge status-${trial.status}`}>
+                              <span className={`status-indicator ${trial.status}`} />
+                              {formatStatusLabel(trial.status)}
+                            </span>
+                            <span className="trial-status-duration">{formatDuration(trial.durationSec)}</span>
+                          </div>
                         </td>
                         <td>{formatNumber(trial.score, 4)}</td>
                         <td>{formatNumber(trial.accuracy, 4)}</td>
-                        <td>{formatDuration(trial.durationSec)}</td>
                         <td>
                           <div className="trial-cell-primary">{trial.model ?? "unknown model"}</div>
                           <div className="trial-cell-secondary">{trial.backend ?? "unknown backend"}</div>
@@ -1214,7 +1214,7 @@ export function DashboardShell({
                     <div className="trial-summary-chip-row">
                       <span className={`status-badge status-${selectedTrial.status}`}>
                         <span className={`status-indicator ${selectedTrial.status}`} />
-                        {selectedTrial.status}
+                        {formatStatusLabel(selectedTrial.status)}
                       </span>
                       {selectedTrialRank ? <span className="meta-chip">Rank #{selectedTrialRank} by score</span> : null}
                       {renderModalRunLink(selectedTrial)}

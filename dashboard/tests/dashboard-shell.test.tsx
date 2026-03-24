@@ -211,7 +211,7 @@ describe("DashboardShell", () => {
     expect(screen.queryByText("How each run went")).toBeNull();
   });
 
-  it("shows a Modal run link in the table when the trial has a remote run URL", () => {
+  it("does not show a Modal run link in the table when the trial is not selected", () => {
     renderShell({
       detail: createDetail([
         createTrial({
@@ -222,8 +222,7 @@ describe("DashboardShell", () => {
       ]),
     });
 
-    const link = screen.getByRole("link", { name: "Open Modal run for trial_modal" });
-    expect(link.getAttribute("href")).toBe("https://modal.com/apps/test/runs/fc-123");
+    expect(screen.queryByRole("link", { name: "Open Modal run for trial_modal" })).toBeNull();
   });
 
   it("shows a Modal run link in the inspector when the selected trial has a remote run URL", () => {

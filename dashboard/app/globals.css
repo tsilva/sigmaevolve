@@ -286,7 +286,7 @@ button {
 
 .overview-panel {
   display: grid;
-  gap: 14px;
+  gap: 10px;
 }
 
 .overview-hero {
@@ -312,8 +312,8 @@ button {
 
 .metric-tile {
   display: grid;
-  gap: 6px;
-  padding: 11px;
+  gap: 4px;
+  padding: 9px 10px;
   background: rgba(255, 255, 255, 0.68);
 }
 
@@ -331,13 +331,13 @@ button {
 }
 
 .metric-value {
-  font-size: clamp(0.98rem, 1.4vw, 1.25rem);
+  font-size: clamp(0.92rem, 1.15vw, 1.12rem);
   line-height: 1;
 }
 
 .metric-note {
-  font-size: 0.74rem;
-  line-height: 1.35;
+  font-size: 0.7rem;
+  line-height: 1.22;
   overflow-wrap: anywhere;
 }
 
@@ -354,7 +354,7 @@ button {
 
 .analysis-card {
   display: grid;
-  gap: 10px;
+  gap: 8px;
   padding: 11px;
   background: rgba(255, 255, 255, 0.58);
 }
@@ -370,31 +370,32 @@ button {
 }
 
 .overview-snapshot-card {
-  padding: 14px;
+  padding: 12px;
 }
 
 .overview-snapshot-layout {
   display: grid;
-  grid-template-columns: minmax(300px, 0.72fr) minmax(0, 1.28fr);
-  gap: 16px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px;
   align-items: start;
 }
 
 .overview-snapshot-sidebar,
 .overview-snapshot-chart {
   display: grid;
-  gap: 12px;
+  gap: 8px;
   min-width: 0;
 }
 
 .overview-snapshot-metrics {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
 }
 
 .overview-progress-panel {
   display: grid;
-  gap: 10px;
-  padding: 12px;
+  gap: 8px;
+  padding: 10px 12px;
   border-radius: 14px;
   border: 1px solid rgba(62, 50, 35, 0.08);
   background: rgba(255, 255, 255, 0.64);
@@ -403,7 +404,7 @@ button {
 .progress-strip {
   display: flex;
   overflow: hidden;
-  height: 10px;
+  height: 8px;
   border-radius: 999px;
   background: rgba(62, 50, 35, 0.08);
 }
@@ -627,6 +628,19 @@ button {
   font-size: 0.7rem;
 }
 
+.trial-status-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.trial-status-duration {
+  color: var(--muted);
+  font-size: 0.76rem;
+  white-space: nowrap;
+}
+
 .status-queued {
   color: #8a5b07;
   background: rgba(216, 161, 66, 0.14);
@@ -829,13 +843,13 @@ button {
 .score-chart-meta {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px 14px;
+  gap: 6px 12px;
   color: var(--muted);
-  font-size: 0.76rem;
+  font-size: 0.72rem;
 }
 
 .score-chart-shell {
-  padding: 8px 10px 10px;
+  padding: 6px 8px 8px;
   border-radius: 16px;
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.84), rgba(243, 247, 255, 0.92)),
@@ -1057,12 +1071,12 @@ button {
     grid-template-columns: 1fr;
   }
 
-  .overview-snapshot-layout {
+  .trial-summary-grid {
     grid-template-columns: 1fr;
   }
 
-  .trial-summary-grid {
-    grid-template-columns: 1fr;
+  .overview-snapshot-metrics {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }
 
@@ -1084,7 +1098,7 @@ button {
   }
 
   .overview-snapshot-metrics {
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .trial-summary-grid {
@@ -1104,5 +1118,11 @@ button {
 
   .inspector-title {
     font-size: clamp(1rem, 5vw, 1.3rem);
+  }
+}
+
+@media (max-width: 640px) {
+  .overview-snapshot-metrics {
+    grid-template-columns: 1fr;
   }
 }

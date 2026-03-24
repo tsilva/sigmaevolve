@@ -289,11 +289,12 @@ def _result_payload(result) -> dict[str, Any]:
     }
 
 
-def _ensure_dataset_prepared(system, dataset_id: str) -> None:
+def _ensure_dataset_prepared(system, dataset_id: str) -> tuple[Any, bool]:
     dataset = system.repository.get_dataset(dataset_id)
     manifest_missing = dataset is None or dataset.manifest_path is None or not Path(dataset.manifest_path).exists()
     if manifest_missing:
-        system.prepare_dataset(dataset_id)
+        return system.prepare_dataset(dataset_id), True
+    return dataset, False
 
 
 def _launch_pass_settings(system, track_id: str, *, target_count: int, daemon: bool) -> tuple[int, int]:
@@ -349,9 +350,25 @@ def cmd_prepare_dataset(args) -> int:
 
 def cmd_create_track(args) -> int:
     system = _make_system(args)
+    print(f"Loading track definition from {args.track_file}.", file=sys.stderr, flush=True)
     name, dataset_id, policy = _load_track_definition(args.track_file)
-    _ensure_dataset_prepared(system, dataset_id)
+    print(f"Ensuring dataset {dataset_id} is prepared.", file=sys.stderr, flush=True)
+    dataset, prepared_now = _ensure_dataset_prepared(system, dataset_id)
+    if prepared_now:
+        print(
+            f"Prepared dataset {dataset_id} at {dataset.manifest_path}.",
+            file=sys.stderr,
+            flush=True,
+        )
+    else:
+        print(
+            f"Reusing prepared dataset {dataset_id} at {dataset.manifest_path}.",
+            file=sys.stderr,
+            flush=True,
+        )
+    print(f"Creating track for dataset {dataset_id} and seeding the baseline trial.", file=sys.stderr, flush=True)
     track = system.create_track(name, dataset_id, policy)
+    print(f"Created track {track.track_id}.", file=sys.stderr, flush=True)
     _print_json(
         {
             "track_id": track.track_id,
