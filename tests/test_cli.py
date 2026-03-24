@@ -125,6 +125,32 @@ def test_cli_create_track_from_track_file(tmp_path, patched_cli_system):
     assert pool[1]["model"] == "anthropic/claude-sonnet-4.6"
 
 
+def test_cli_create_track_reports_progress_to_stderr(tmp_path, patched_cli_system):
+    del patched_cli_system
+    db_url = f"sqlite:///{tmp_path / 'cli-create-track-progress.sqlite'}"
+    dataset_root = tmp_path / "datasets"
+    track_file = _write_track_file(
+        tmp_path,
+        {
+            "dataset_id": "mnist:v1",
+            "name": "cli-progress",
+        },
+        "create-track-progress.json",
+    )
+
+    code, stdout, stderr = _run_cli(
+        ["--database-url", db_url, "--dataset-root", str(dataset_root), "create-track", track_file]
+    )
+    assert code == 0
+    payload = json.loads(stdout)
+    assert payload["dataset_id"] == "mnist:v1"
+    assert "Loading track definition" in stderr
+    assert "Ensuring dataset mnist:v1 is prepared." in stderr
+    assert "Prepared dataset mnist:v1" in stderr
+    assert "Creating track for dataset mnist:v1 and seeding the baseline trial." in stderr
+    assert f"Created track {payload['track_id']}." in stderr
+
+
 def test_cli_loads_env_file_for_defaults(tmp_path, monkeypatch):
     env_dir = tmp_path / ".config" / "sigmaevolve"
     env_dir.mkdir(parents=True)
