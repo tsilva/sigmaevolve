@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass
 
@@ -22,6 +23,51 @@ class EvolveBlockError(ValueError):
 class SearchReplaceBlock:
     search: str
     replace: str
+
+
+def _line_indent(line: str) -> str:
+    prefix_length = len(line) - len(line.lstrip(" \t"))
+    return line[:prefix_length]
+
+
+def _common_indent(lines: list[str]) -> str:
+    indents = [_line_indent(line) for line in lines if line.strip()]
+    if not indents:
+        return ""
+    return os.path.commonprefix(indents)
+
+
+def _dedent_lines(lines: list[str]) -> tuple[list[str], str]:
+    indent = _common_indent(lines)
+    if not indent:
+        return list(lines), ""
+    dedented = [line[len(indent) :] if line.startswith(indent) and line.strip() else line for line in lines]
+    return dedented, indent
+
+
+def _canonicalize_patch_text(text: str) -> tuple[list[str], str]:
+    lines = normalize_source(text).splitlines(keepends=True)
+    return _dedent_lines(lines)
+
+
+def _reindent_lines(lines: list[str], indent: str) -> list[str]:
+    if not indent:
+        return list(lines)
+    return [f"{indent}{line}" if line.strip() else line for line in lines]
+
+
+def _find_matching_line_ranges(source_lines: list[str], search_lines: list[str]) -> list[tuple[int, int, str]]:
+    if not search_lines:
+        return []
+    canonical_search_lines, _ = _dedent_lines(search_lines)
+    search_length = len(search_lines)
+    matches: list[tuple[int, int, str]] = []
+    for start in range(len(source_lines) - search_length + 1):
+        candidate_lines = source_lines[start : start + search_length]
+        canonical_candidate_lines, candidate_indent = _dedent_lines(candidate_lines)
+        if canonical_candidate_lines == canonical_search_lines:
+            matches.append((start, start + search_length, candidate_indent))
+    return matches
 
 
 def split_evolve_blocks(source: str) -> tuple[list[str], list[str]]:
@@ -105,15 +151,18 @@ def parse_search_replace_blocks(response_text: str) -> list[SearchReplaceBlock]:
 
 
 def apply_search_replace_blocks(current_source: str, blocks: list[SearchReplaceBlock]) -> str:
-    updated = normalize_source(current_source)
+    updated_lines = normalize_source(current_source).splitlines(keepends=True)
     for index, block in enumerate(blocks, start=1):
-        start = updated.find(block.search)
-        if start < 0:
+        search_lines = normalize_source(block.search).splitlines(keepends=True)
+        replace_lines, _ = _canonicalize_patch_text(block.replace)
+        matches = _find_matching_line_ranges(updated_lines, search_lines)
+        if not matches:
             raise EvolveBlockError(f"SEARCH block {index} did not match the current program")
-        if updated.find(block.search, start + 1) != -1:
+        if len(matches) > 1:
             raise EvolveBlockError(f"SEARCH block {index} matched multiple locations in the current program")
-        updated = updated[:start] + block.replace + updated[start + len(block.search) :]
-    return normalize_source(updated)
+        start, end, indent = matches[0]
+        updated_lines[start:end] = _reindent_lines(replace_lines, indent)
+    return normalize_source("".join(updated_lines))
 
 
 def materialize_candidate_source(current_source: str, generated_source: str) -> str:

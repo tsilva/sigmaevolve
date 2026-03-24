@@ -143,6 +143,58 @@ def test_materialize_candidate_source_applies_search_replace_blocks():
     assert_only_evolve_blocks_changed(source, updated)
 
 
+def test_materialize_candidate_source_matches_search_blocks_without_outer_indentation():
+    source = build_baseline_train_script()
+    response = """<<<<<<< SEARCH
+optimizer = torch.optim.AdamW(trainable_parameters, lr=0.002, weight_decay=1e-4)
+scheduler = torch.optim.lr_scheduler.OneCycleLR(
+    optimizer,
+    max_lr=0.002,
+    total_steps=max(1, num_epochs * max(1, len(train_loader))),
+    pct_start=0.2,
+)
+=======
+optimizer = torch.optim.AdamW(trainable_parameters, lr=0.001, weight_decay=1e-5)
+scheduler = torch.optim.lr_scheduler.OneCycleLR(
+    optimizer,
+    max_lr=0.005,
+    total_steps=max(1, num_epochs * max(1, len(train_loader))),
+    pct_start=0.25,
+)
+>>>>>>> REPLACE
+"""
+
+    updated = materialize_candidate_source(source, response)
+
+    assert "optimizer = torch.optim.AdamW(trainable_parameters, lr=0.001, weight_decay=1e-5)" in updated
+    assert "        optimizer = torch.optim.AdamW(trainable_parameters, lr=0.001, weight_decay=1e-5)" in updated
+    assert_only_evolve_blocks_changed(source, updated)
+
+
+def test_apply_search_replace_blocks_preserves_internal_indentation():
+    source = build_baseline_train_script()
+    response = """<<<<<<< SEARCH
+def configure_training_policy(*, num_epochs):
+    patience = 2 if num_epochs > 2 else 0
+    return {
+        "early_stopping_patience": patience,
+    }
+=======
+def configure_training_policy(*, num_epochs):
+    patience = 5 if num_epochs > 5 else max(1, num_epochs // 2)
+    return {
+        "early_stopping_patience": patience,
+    }
+>>>>>>> REPLACE
+"""
+
+    updated = materialize_candidate_source(source, response)
+
+    assert '    patience = 5 if num_epochs > 5 else max(1, num_epochs // 2)' in updated
+    assert '        "early_stopping_patience": patience,' in updated
+    assert_only_evolve_blocks_changed(source, updated)
+
+
 def test_parse_and_apply_search_replace_blocks_support_no_changes():
     source = build_baseline_train_script()
 
