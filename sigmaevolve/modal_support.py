@@ -56,6 +56,10 @@ class _ModalClassProxy:
             dataset_root=self.dataset_root,
         )
 
+    def cancel(self, run_id: str) -> None:
+        modal = require_modal()
+        modal.FunctionCall.from_id(run_id).cancel()
+
 
 def create_modal_launcher(
     app_name: str,
