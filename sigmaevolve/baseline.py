@@ -3,35 +3,84 @@ from __future__ import annotations
 from textwrap import dedent
 
 
+DEFAULT_CONFIG_BLOCK = dedent(
+    """
+    CONFIG = {
+        "normalization_std_floor": 1e-6,
+        "binary_probability_threshold": 0.5,
+        "binary_logit_threshold": 0.0,
+        "initial_best_accuracy": -1.0,
+        "accuracy_improvement_tol": 1e-9,
+        "model": {
+            "mlp_hidden_dims": (256, 128),
+            "cnn_channels": (24, 48),
+            "cnn_kernel_sizes": (5, 3),
+            "cnn_paddings": (2, 1),
+            "cnn_pool_kernel_size": 2,
+            "cnn_adaptive_pool_size": (4, 4),
+            "cnn_projection_dim": 64,
+            "dropout_p": 0.1,
+        },
+        "data": {
+            "max_batch_size": 512,
+            "shuffle_train": True,
+            "shuffle_validation": False,
+        },
+        "optimization": {
+            "learning_rate": 0.002,
+            "weight_decay": 1e-4,
+            "scheduler_max_lr": 0.002,
+            "scheduler_pct_start": 0.2,
+            "label_smoothing_multiclass": 0.02,
+            "label_smoothing_binary": 0.0,
+            "grad_clip_norm": 1.0,
+        },
+        "training_policy": {
+            "patience_threshold_epochs": 2,
+            "early_stopping_patience": 2,
+            "short_run_patience": 0,
+        },
+    }
+    """
+).strip("\n")
+
+
 DEFAULT_MODEL_BLOCK = dedent(
     """
     class EvolvedModel(torch.nn.Module):
         def __init__(self, input_shape, num_classes):
             super().__init__()
+            model_config = CONFIG["model"]
             if len(input_shape) <= 1:
                 flat_dim = int(np.prod(input_shape))
+                hidden_dim_1, hidden_dim_2 = model_config["mlp_hidden_dims"]
                 self.network = torch.nn.Sequential(
-                    torch.nn.Linear(flat_dim, 256),
+                    torch.nn.Linear(flat_dim, hidden_dim_1),
                     torch.nn.GELU(),
-                    torch.nn.Linear(256, 128),
+                    torch.nn.Linear(hidden_dim_1, hidden_dim_2),
                     torch.nn.GELU(),
-                    torch.nn.Linear(128, num_classes),
+                    torch.nn.Linear(hidden_dim_2, num_classes),
                 )
             else:
                 channels = 1 if len(input_shape) == 2 else int(input_shape[0])
+                conv_channels_1, conv_channels_2 = model_config["cnn_channels"]
+                kernel_size_1, kernel_size_2 = model_config["cnn_kernel_sizes"]
+                padding_1, padding_2 = model_config["cnn_paddings"]
+                adaptive_pool_size = model_config["cnn_adaptive_pool_size"]
+                projection_dim = model_config["cnn_projection_dim"]
                 self.network = torch.nn.Sequential(
-                    torch.nn.Conv2d(channels, 24, kernel_size=5, padding=2),
+                    torch.nn.Conv2d(channels, conv_channels_1, kernel_size=kernel_size_1, padding=padding_1),
                     torch.nn.GELU(),
-                    torch.nn.MaxPool2d(2),
-                    torch.nn.Conv2d(24, 48, kernel_size=3, padding=1),
+                    torch.nn.MaxPool2d(model_config["cnn_pool_kernel_size"]),
+                    torch.nn.Conv2d(conv_channels_1, conv_channels_2, kernel_size=kernel_size_2, padding=padding_2),
                     torch.nn.GELU(),
-                    torch.nn.MaxPool2d(2),
-                    torch.nn.AdaptiveAvgPool2d((4, 4)),
+                    torch.nn.MaxPool2d(model_config["cnn_pool_kernel_size"]),
+                    torch.nn.AdaptiveAvgPool2d(adaptive_pool_size),
                     torch.nn.Flatten(),
-                    torch.nn.Linear(48 * 4 * 4, 64),
+                    torch.nn.Linear(conv_channels_2 * adaptive_pool_size[0] * adaptive_pool_size[1], projection_dim),
                     torch.nn.GELU(),
-                    torch.nn.Dropout(p=0.1),
-                    torch.nn.Linear(64, num_classes),
+                    torch.nn.Dropout(p=model_config["dropout_p"]),
+                    torch.nn.Linear(projection_dim, num_classes),
                 )
 
         def forward(self, x):
@@ -48,18 +97,19 @@ DEFAULT_DATA_BLOCK = dedent(
     """
     def configure_data(*, train_x, train_y, validation_x, random_seed):
         del random_seed
-        batch_size = max(1, min(512, int(train_x.shape[0])))
+        data_config = CONFIG["data"]
+        batch_size = max(1, min(data_config["max_batch_size"], int(train_x.shape[0])))
         return {
             "batch_size": batch_size,
             "train_loader": torch.utils.data.DataLoader(
                 torch.utils.data.TensorDataset(train_x, train_y),
                 batch_size=batch_size,
-                shuffle=True,
+                shuffle=data_config["shuffle_train"],
             ),
             "validation_loader": torch.utils.data.DataLoader(
                 torch.utils.data.TensorDataset(validation_x),
                 batch_size=batch_size,
-                shuffle=False,
+                shuffle=data_config["shuffle_validation"],
             ),
         }
     """
@@ -69,22 +119,31 @@ DEFAULT_DATA_BLOCK = dedent(
 DEFAULT_OPTIMIZATION_BLOCK = dedent(
     """
     def configure_optimization(*, model, train_loader, num_epochs, num_classes):
+        optimization_config = CONFIG["optimization"]
         trainable_parameters = [parameter for parameter in model.parameters() if parameter.requires_grad]
         optimizer = scheduler = None
         if trainable_parameters:
-            optimizer = torch.optim.AdamW(trainable_parameters, lr=0.002, weight_decay=1e-4)
+            optimizer = torch.optim.AdamW(
+                trainable_parameters,
+                lr=optimization_config["learning_rate"],
+                weight_decay=optimization_config["weight_decay"],
+            )
             scheduler = torch.optim.lr_scheduler.OneCycleLR(
                 optimizer,
-                max_lr=0.002,
+                max_lr=optimization_config["scheduler_max_lr"],
                 total_steps=max(1, num_epochs * max(1, len(train_loader))),
-                pct_start=0.2,
+                pct_start=optimization_config["scheduler_pct_start"],
             )
         return {
             "trainable_parameters": trainable_parameters,
             "optimizer": optimizer,
             "scheduler": scheduler,
-            "label_smoothing": 0.02 if num_classes > 2 else 0.0,
-            "grad_clip_norm": 1.0,
+            "label_smoothing": (
+                optimization_config["label_smoothing_multiclass"]
+                if num_classes > 2
+                else optimization_config["label_smoothing_binary"]
+            ),
+            "grad_clip_norm": optimization_config["grad_clip_norm"],
         }
     """
 ).strip("\n")
@@ -93,7 +152,12 @@ DEFAULT_OPTIMIZATION_BLOCK = dedent(
 DEFAULT_TRAINING_POLICY_BLOCK = dedent(
     """
     def configure_training_policy(*, num_epochs):
-        patience = 2 if num_epochs > 2 else 0
+        training_policy = CONFIG["training_policy"]
+        patience = (
+            training_policy["early_stopping_patience"]
+            if num_epochs > training_policy["patience_threshold_epochs"]
+            else training_policy["short_run_patience"]
+        )
         return {
             "early_stopping_patience": patience,
         }
@@ -168,14 +232,17 @@ def build_baseline_train_script() -> str:
                 if len(input_shape) == 2:
                     tensor = tensor.unsqueeze(1)
                 return input_shape, tensor.contiguous()
-
-
+            """
+        ).lstrip(),
+        _wrap_evolve_block(DEFAULT_CONFIG_BLOCK),
+        dedent(
+            """
             def normalize_feature_tensors(train_x, validation_x):
                 if train_x.ndim <= 1:
                     raise TrainScriptContractError("feature tensors must be at least 2D including the batch axis")
                 reduce_dims = (0,) if train_x.ndim == 2 else (0,) + tuple(range(2, train_x.ndim))
                 mean = train_x.mean(dim=reduce_dims, keepdim=True)
-                std = train_x.std(dim=reduce_dims, keepdim=True, unbiased=False).clamp_min(1e-6)
+                std = train_x.std(dim=reduce_dims, keepdim=True, unbiased=False).clamp_min(CONFIG["normalization_std_floor"])
                 return (train_x - mean) / std, (validation_x - mean) / std
 
 
@@ -191,7 +258,11 @@ def build_baseline_train_script() -> str:
                     if num_classes != 2:
                         raise TrainScriptContractError("model evaluation returned a 1D float array for a non-binary task; return class ids or logits.")
                     finite = array[np.isfinite(array)]
-                    threshold = 0.5 if finite.size and float(finite.min()) >= 0.0 and float(finite.max()) <= 1.0 else 0.0
+                    threshold = (
+                        CONFIG["binary_probability_threshold"]
+                        if finite.size and float(finite.min()) >= 0.0 and float(finite.max()) <= 1.0
+                        else CONFIG["binary_logit_threshold"]
+                    )
                     return (array >= threshold).astype(np.int64)
                 reshaped = array.reshape(num_examples, -1)
                 return (reshaped.reshape(num_examples) if reshaped.shape[1] <= 1 else reshaped.argmax(axis=1)).astype(np.int64)
@@ -221,7 +292,7 @@ def build_baseline_train_script() -> str:
                     raise TrainScriptContractError(f"{name} must return a dict.")
                 return value
             """
-        ).lstrip(),
+        ),
         _wrap_evolve_block(DEFAULT_MODEL_BLOCK),
         dedent(
             """
@@ -265,7 +336,7 @@ def build_baseline_train_script() -> str:
                 start_time = time.monotonic()
                 eval_index = epochs_completed = stale_epochs = 0
                 last_eval_sec = None
-                best_accuracy = -1.0
+                best_accuracy = CONFIG["initial_best_accuracy"]
                 debug_payload = {
                     "timed_out": False,
                     "eval_count": 0,
@@ -365,7 +436,7 @@ def build_baseline_train_script() -> str:
                         elapsed_after_eval = time.monotonic() - start_time
                         write_eval_atomic(eval_dir, eval_index, predictions, elapsed_after_eval, epoch_index + 1)
                         val_acc = float((predictions == validation_labels).mean())
-                        stale_epochs = 0 if val_acc > best_accuracy + 1e-9 else stale_epochs + 1
+                        stale_epochs = 0 if val_acc > best_accuracy + CONFIG["accuracy_improvement_tol"] else stale_epochs + 1
                         best_accuracy = max(best_accuracy, val_acc)
                         last_eval_sec = elapsed_after_eval
                         epochs_completed = epoch_index + 1
