@@ -30,8 +30,8 @@ def test_modal_launcher_spawns_named_method_without_gpu_override(monkeypatch):
         def __init__(self, gpu=None):
             self.gpu = gpu
 
-        def with_options(self, *, gpu=None, **_kwargs):
-            captured.setdefault("with_options", []).append(gpu)
+        def with_options(self, *, gpu=None, secrets=None, **_kwargs):
+            captured.setdefault("with_options", []).append({"gpu": gpu, "secrets": secrets})
             return FakeClassHandle(gpu=gpu)
 
         def __call__(self):
@@ -48,8 +48,15 @@ def test_modal_launcher_spawns_named_method_without_gpu_override(monkeypatch):
             }
             return FakeClassHandle()
 
+    class FakeSecret:
+        @staticmethod
+        def from_dict(payload):
+            captured["secret_payload"] = dict(payload)
+            return {"secret_payload": dict(payload)}
+
     class FakeModal:
         Cls = FakeCls
+        Secret = FakeSecret
 
     monkeypatch.setattr("sigmaevolve.modal_support.require_modal", lambda: FakeModal)
 
@@ -69,9 +76,14 @@ def test_modal_launcher_spawns_named_method_without_gpu_override(monkeypatch):
     assert captured["spawn"]["dispatch_token"] == "dispatch_1"
     assert captured["spawn"]["database_url"] == "postgresql://example/db"
     assert captured["spawn"]["dataset_root"] == "/mnt/datasets"
-    assert captured["spawn"]["wandb_env"] == {"WANDB_API_KEY": "wandb-test-key", "WANDB_PROJECT": "sigmaevolve"}
+    assert captured["secret_payload"] == {"WANDB_API_KEY": "wandb-test-key", "WANDB_PROJECT": "sigmaevolve"}
     assert captured["spawn"]["gpu"] is None
-    assert "with_options" not in captured
+    assert captured["with_options"] == [
+        {
+            "gpu": None,
+            "secrets": [{"secret_payload": {"WANDB_API_KEY": "wandb-test-key", "WANDB_PROJECT": "sigmaevolve"}}],
+        }
+    ]
     assert metadata == {
         "kind": "modal",
         "run_id": "fc-123",
@@ -107,7 +119,8 @@ def test_modal_launcher_retries_gpu_preferences_in_order(monkeypatch):
         def __init__(self, gpu=None):
             self.gpu = gpu
 
-        def with_options(self, *, gpu=None, **_kwargs):
+        def with_options(self, *, gpu=None, secrets=None, **_kwargs):
+            captured.setdefault("with_options", []).append({"gpu": gpu, "secrets": secrets})
             return FakeClassHandle(gpu=gpu)
 
         def __call__(self):
@@ -123,8 +136,14 @@ def test_modal_launcher_retries_gpu_preferences_in_order(monkeypatch):
             }
             return FakeClassHandle()
 
+    class FakeSecret:
+        @staticmethod
+        def from_dict(payload):
+            return {"secret_payload": dict(payload)}
+
     class FakeModal:
         Cls = FakeCls
+        Secret = FakeSecret
 
     monkeypatch.setattr("sigmaevolve.modal_support.require_modal", lambda: FakeModal)
 
@@ -169,7 +188,8 @@ def test_modal_launcher_surfaces_combined_gpu_failures(monkeypatch):
         def __init__(self, gpu=None):
             self.gpu = gpu
 
-        def with_options(self, *, gpu=None, **_kwargs):
+        def with_options(self, *, gpu=None, secrets=None, **_kwargs):
+            del secrets
             return FakeClassHandle(gpu=gpu)
 
         def __call__(self):
@@ -181,8 +201,14 @@ def test_modal_launcher_surfaces_combined_gpu_failures(monkeypatch):
             del app_name, name, environment_name
             return FakeClassHandle()
 
+    class FakeSecret:
+        @staticmethod
+        def from_dict(payload):
+            return {"secret_payload": dict(payload)}
+
     class FakeModal:
         Cls = FakeCls
+        Secret = FakeSecret
 
     monkeypatch.setattr("sigmaevolve.modal_support.require_modal", lambda: FakeModal)
 
@@ -251,6 +277,10 @@ def test_modal_launcher_falls_back_to_legacy_function_when_class_lookup_is_missi
             return "https://modal.com/apps/test/runs/fc-legacy"
 
     class FakeFunctionHandle:
+        def with_options(self, *, secrets=None, **_kwargs):
+            captured["function_with_options"] = {"secrets": secrets}
+            return self
+
         def spawn(self, **kwargs):
             captured["spawn"] = kwargs
             return FakeFunctionCall()
@@ -281,6 +311,11 @@ def test_modal_launcher_falls_back_to_legacy_function_when_class_lookup_is_missi
     class FakeModal:
         Cls = FakeCls
         Function = FakeFunction
+        Secret = type(
+            "FakeSecret",
+            (),
+            {"from_dict": staticmethod(lambda payload: {"secret_payload": dict(payload)})},
+        )
 
     monkeypatch.setattr("sigmaevolve.modal_support.require_modal", lambda: FakeModal)
 
@@ -313,7 +348,9 @@ def test_modal_launcher_falls_back_to_legacy_function_when_class_lookup_is_missi
         "dispatch_token": "dispatch_1",
         "database_url": "postgresql://example/db",
         "dataset_root": "/mnt/datasets",
-        "wandb_env": {"WANDB_API_KEY": "wandb-test-key"},
+    }
+    assert captured["function_with_options"] == {
+        "secrets": [{"secret_payload": {"WANDB_API_KEY": "wandb-test-key"}}]
     }
     assert metadata == {
         "kind": "modal",
@@ -342,7 +379,8 @@ def test_modal_launcher_does_not_fallback_to_legacy_function_for_non_lookup_erro
         def __init__(self, gpu=None):
             self.gpu = gpu
 
-        def with_options(self, *, gpu=None, **_kwargs):
+        def with_options(self, *, gpu=None, secrets=None, **_kwargs):
+            del secrets
             return FakeClassHandle(gpu=gpu)
 
         def __call__(self):
@@ -364,6 +402,11 @@ def test_modal_launcher_does_not_fallback_to_legacy_function_for_non_lookup_erro
     class FakeModal:
         Cls = FakeCls
         Function = FakeFunction
+        Secret = type(
+            "FakeSecret",
+            (),
+            {"from_dict": staticmethod(lambda payload: {"secret_payload": dict(payload)})},
+        )
 
     monkeypatch.setattr("sigmaevolve.modal_support.require_modal", lambda: FakeModal)
 

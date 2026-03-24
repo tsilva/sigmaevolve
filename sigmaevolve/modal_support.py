@@ -38,6 +38,17 @@ def _is_missing_class_lookup_error(exc: Exception, class_name: str) -> bool:
     )
 
 
+def _apply_runtime_options(handle: Any, *, modal, gpu: str | None = None, wandb_env: dict[str, str] | None = None):
+    options: dict[str, Any] = {}
+    if gpu is not None:
+        options["gpu"] = gpu
+    if wandb_env:
+        options["secrets"] = [modal.Secret.from_dict(dict(wandb_env))]
+    if not options:
+        return handle
+    return handle.with_options(**options)
+
+
 class _ModalClassProxy:
     def __init__(
         self,
@@ -64,8 +75,7 @@ class _ModalClassProxy:
             self.class_name,
             environment_name=self.environment_name,
         )
-        if gpu is not None:
-            cls = cls.with_options(gpu=gpu)
+        cls = _apply_runtime_options(cls, modal=modal, gpu=gpu, wandb_env=self.wandb_env)
         method = getattr(cls(), self.method_name)
         return ModalSpawnResult(
             function_call=method.spawn(
@@ -73,7 +83,6 @@ class _ModalClassProxy:
                 dispatch_token=dispatch_token,
                 database_url=self.database_url,
                 dataset_root=self.dataset_root,
-                wandb_env=self.wandb_env or None,
             ),
             effective_gpu=gpu,
         )
@@ -108,13 +117,13 @@ class _ModalFunctionProxy:
             self.function_name,
             environment_name=self.environment_name,
         )
+        function = _apply_runtime_options(function, modal=modal, wandb_env=self.wandb_env)
         return ModalSpawnResult(
             function_call=function.spawn(
                 trial_id=trial_id,
                 dispatch_token=dispatch_token,
                 database_url=self.database_url,
                 dataset_root=self.dataset_root,
-                wandb_env=self.wandb_env or None,
             ),
             effective_gpu=None,
         )
