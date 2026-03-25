@@ -51,6 +51,24 @@ def _env_first(*keys: str, default: str | None = None) -> str | None:
     return default
 
 
+def _wandb_metric_aliases(metrics: dict[str, Any] | None) -> dict[str, Any]:
+    payload = dict(metrics or {})
+    train_loss = payload.get("train_loss")
+    train_acc = payload.get("train_acc")
+    val_loss = payload.get("val_loss", payload.get("loss"))
+    val_acc = payload.get("val_acc", payload.get("accuracy"))
+
+    if train_loss is not None:
+        payload["train/loss"] = train_loss
+    if train_acc is not None:
+        payload["train/acc"] = train_acc
+    if val_loss is not None:
+        payload["val/loss"] = val_loss
+    if val_acc is not None:
+        payload["val/acc"] = val_acc
+    return payload
+
+
 @dataclass(frozen=True)
 class WandbSettings:
     api_key: str
@@ -137,7 +155,7 @@ class WandbRunLogger:
         )
 
     def log_metrics(self, metrics: dict[str, Any], *, state: str) -> None:
-        payload = dict(metrics or {})
+        payload = _wandb_metric_aliases(metrics)
         payload["trial_state"] = state
         self.step += 1
         self.run.log(payload, step=self.step)
@@ -156,7 +174,7 @@ class WandbRunLogger:
             "score": float(score),
         }
         if metrics:
-            payload.update(dict(metrics))
+            payload.update(_wandb_metric_aliases(metrics))
         self.step += 1
         self.run.log(payload, step=self.step)
 
@@ -167,7 +185,7 @@ class WandbRunLogger:
         self.run.summary["outcome_reason"] = outcome_reason
         self.run.summary["score"] = float(score)
         if metrics:
-            for key, value in metrics.items():
+            for key, value in _wandb_metric_aliases(metrics).items():
                 self.run.summary[key] = value
         if error_info:
             reason = error_info.get("reason")

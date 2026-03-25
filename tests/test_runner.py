@@ -227,6 +227,10 @@ def test_successful_run_produces_metrics_and_score(repository, dataset_manager):
     finished = _run_trial(system, track.track_id, SUCCESS_BLOCK)
     assert finished.outcome_reason == "succeeded"
     assert finished.metrics_json["accuracy"] >= 0.0
+    assert finished.metrics_json["train_loss"] >= 0.0
+    assert 0.0 <= finished.metrics_json["train_acc"] <= 1.0
+    assert finished.metrics_json["val_loss"] >= 0.0
+    assert finished.metrics_json["val_acc"] == pytest.approx(finished.metrics_json["accuracy"])
     assert finished.metrics_json["eval_count"] == 2
     assert finished.score == finished.metrics_json["accuracy"]
     assert finished.error_json is None
@@ -247,8 +251,18 @@ def test_successful_run_creates_wandb_experiment(repository, dataset_manager, fa
     assert finished.provenance_json["wandb"]["project"] == "sigmaevolve"
     assert finished.provenance_json["wandb"]["run_id"] == run.id
     assert finished.provenance_json["wandb"]["run_url"] == run.url
-    assert any(entry["payload"]["trial_state"] == "terminal" for entry in run.logged)
+    terminal_entries = [entry for entry in run.logged if entry["payload"]["trial_state"] == "terminal"]
+    assert terminal_entries
+    terminal_payload = terminal_entries[-1]["payload"]
+    assert terminal_payload["train/loss"] == pytest.approx(finished.metrics_json["train_loss"])
+    assert terminal_payload["train/acc"] == pytest.approx(finished.metrics_json["train_acc"])
+    assert terminal_payload["val/loss"] == pytest.approx(finished.metrics_json["val_loss"])
+    assert terminal_payload["val/acc"] == pytest.approx(finished.metrics_json["val_acc"])
     assert run.summary["outcome_reason"] == "succeeded"
+    assert run.summary["train/loss"] == pytest.approx(finished.metrics_json["train_loss"])
+    assert run.summary["train/acc"] == pytest.approx(finished.metrics_json["train_acc"])
+    assert run.summary["val/loss"] == pytest.approx(finished.metrics_json["val_loss"])
+    assert run.summary["val/acc"] == pytest.approx(finished.metrics_json["val_acc"])
     assert run.finished == {"exit_code": 0}
 
 
@@ -459,6 +473,10 @@ def test_active_run_persists_live_metrics_before_finalization(repository, datase
     assert active_snapshot.finished_at is None
     assert active_snapshot.metrics_json["accuracy"] == 1.0
     assert active_snapshot.metrics_json["best_accuracy"] == 1.0
+    assert active_snapshot.metrics_json["train_loss"] >= 0.0
+    assert 0.0 <= active_snapshot.metrics_json["train_acc"] <= 1.0
+    assert active_snapshot.metrics_json["val_loss"] >= 0.0
+    assert active_snapshot.metrics_json["val_acc"] == pytest.approx(active_snapshot.metrics_json["accuracy"])
     assert active_snapshot.metrics_json["eval_count"] >= 1
     assert active_snapshot.metrics_json["last_phase"] in {"train", "eval", "finished"}
     assert "timed_out" not in active_snapshot.metrics_json
@@ -474,7 +492,13 @@ def test_active_run_persists_live_metrics_before_finalization(repository, datase
     assert isinstance(runs, list)
     assert len(runs) == 1
     run = runs[0]
-    assert any(entry["payload"]["trial_state"] == "active" for entry in run.logged)
+    active_entries = [entry for entry in run.logged if entry["payload"]["trial_state"] == "active"]
+    assert active_entries
+    active_payload = active_entries[-1]["payload"]
+    assert "train/loss" in active_payload
+    assert "train/acc" in active_payload
+    assert "val/loss" in active_payload
+    assert "val/acc" in active_payload
     assert run.finished == {"exit_code": 0}
 
 
