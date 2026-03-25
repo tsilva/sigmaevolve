@@ -197,16 +197,20 @@ def build_baseline_train_script() -> str:
                 temp_path.replace(path)
 
 
-            def write_eval_atomic(eval_dir, eval_index, predictions, elapsed_time_sec, epoch):
+            def write_eval_atomic(eval_dir, eval_index, predictions, elapsed_time_sec, epoch, metrics=None):
                 eval_dir.mkdir(parents=True, exist_ok=True)
                 temp_path = eval_dir / f".eval_{eval_index:04d}.tmp.npz"
-                np.savez(
-                    temp_path,
-                    predictions=np.asarray(predictions, dtype=np.int64),
-                    eval_index=np.array(eval_index, dtype=np.int64),
-                    elapsed_time_sec=np.array(elapsed_time_sec, dtype=np.float64),
-                    epoch=np.array(epoch, dtype=np.int64),
-                )
+                payload = {
+                    "predictions": np.asarray(predictions, dtype=np.int64),
+                    "eval_index": np.array(eval_index, dtype=np.int64),
+                    "elapsed_time_sec": np.array(elapsed_time_sec, dtype=np.float64),
+                    "epoch": np.array(epoch, dtype=np.int64),
+                }
+                for key, value in (metrics or {}).items():
+                    if value is None:
+                        continue
+                    payload[key] = np.array(float(value), dtype=np.float64)
+                np.savez(temp_path, **payload)
                 temp_path.replace(eval_dir / f"eval_{eval_index:04d}.npz")
 
 
@@ -351,6 +355,7 @@ def build_baseline_train_script() -> str:
                     _, validation_x = prepare_feature_tensor(validation_features, input_shape=input_shape)
                     train_x, validation_x = normalize_feature_tensors(train_x, validation_x)
                     train_y = torch.from_numpy(train_labels.astype(np.int64))
+                    validation_y = torch.from_numpy(validation_labels.astype(np.int64))
                     num_classes = int(dataset_metadata.get("num_classes") or (np.max(train_labels) + 1))
 
                     model = require_callable("build_model")(input_shape=input_shape, num_classes=num_classes)
@@ -410,6 +415,9 @@ def build_baseline_train_script() -> str:
 
                     report("train", elapsed_time_sec=0.0, epoch_index=0)
                     for epoch_index in range(num_epochs):
+                        train_loss_total = 0.0
+                        train_correct = 0
+                        train_examples = 0
                         hook = getattr(model, "on_epoch_start", None)
                         if callable(hook):
                             hook(epoch_index=epoch_index, num_epochs=num_epochs)
@@ -417,25 +425,54 @@ def build_baseline_train_script() -> str:
                         report("train", elapsed_time_sec=time.monotonic() - start_time, epoch_index=epoch_index)
                         for batch_x, batch_y in train_loader:
                             logits = coerce_model_logits(model(batch_x), batch_size=int(batch_x.shape[0]), num_classes=num_classes)
+                            loss = torch.nn.functional.cross_entropy(logits, batch_y, label_smoothing=label_smoothing)
+                            batch_size = int(batch_y.shape[0])
+                            train_loss_total += float(loss.detach().item()) * batch_size
+                            train_correct += int((logits.argmax(dim=1) == batch_y).sum().item())
+                            train_examples += batch_size
                             if optimizer is None:
                                 continue
                             optimizer.zero_grad(set_to_none=True)
-                            torch.nn.functional.cross_entropy(logits, batch_y, label_smoothing=label_smoothing).backward()
+                            loss.backward()
                             if grad_clip_norm is not None and trainable_parameters:
                                 torch.nn.utils.clip_grad_norm_(trainable_parameters, max_norm=float(grad_clip_norm))
                             optimizer.step()
                             if scheduler is not None:
                                 scheduler.step()
                         report("eval", elapsed_time_sec=time.monotonic() - start_time, epoch_index=epoch_index)
+                        validation_logits = run_validation(model, validation_loader, num_classes=num_classes)
                         predictions = normalize_predictions(
-                            run_validation(model, validation_loader, num_classes=num_classes),
+                            validation_logits,
                             num_examples=int(validation_features.shape[0]),
                             num_classes=num_classes,
                         )
                         eval_index += 1
                         elapsed_after_eval = time.monotonic() - start_time
-                        write_eval_atomic(eval_dir, eval_index, predictions, elapsed_after_eval, epoch_index + 1)
+                        train_loss = train_loss_total / max(1, train_examples)
+                        train_acc = train_correct / max(1, train_examples)
+                        val_loss = float(
+                            torch.nn.functional.cross_entropy(
+                                validation_logits,
+                                validation_y,
+                                label_smoothing=label_smoothing,
+                            ).detach().item()
+                        )
                         val_acc = float((predictions == validation_labels).mean())
+                        write_eval_atomic(
+                            eval_dir,
+                            eval_index,
+                            predictions,
+                            elapsed_after_eval,
+                            epoch_index + 1,
+                            metrics={
+                                "train_loss": train_loss,
+                                "train_acc": train_acc,
+                                "val_loss": val_loss,
+                                "val_acc": val_acc,
+                                "loss": val_loss,
+                                "accuracy": val_acc,
+                            },
+                        )
                         stale_epochs = 0 if val_acc > best_accuracy + CONFIG["accuracy_improvement_tol"] else stale_epochs + 1
                         best_accuracy = max(best_accuracy, val_acc)
                         last_eval_sec = elapsed_after_eval

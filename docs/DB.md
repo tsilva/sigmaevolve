@@ -104,7 +104,12 @@ Common keys observed in persisted trial metrics:
 | Key | Description |
 | --- | --- |
 | `accuracy` | Validation accuracy for the best scored evaluation. |
+| `loss` | Validation loss for the best scored evaluation. This is kept as a backward-compatible alias of `val_loss`. |
 | `best_accuracy` | Best validation accuracy reached across completed evaluations. |
+| `train_loss` | Mean training loss from the epoch that produced the persisted best evaluation snapshot. |
+| `train_acc` | Training accuracy from the epoch that produced the persisted best evaluation snapshot. |
+| `val_loss` | Validation loss from the epoch that produced the persisted best evaluation snapshot. |
+| `val_acc` | Validation accuracy from the epoch that produced the persisted best evaluation snapshot. This mirrors `accuracy`. |
 | `time_to_best_eval_sec` | Elapsed runtime until the best evaluation was produced. |
 | `best_eval_index` | Index of the evaluation that produced the best metrics. |
 | `best_eval_epoch` | Epoch corresponding to the best evaluation. |

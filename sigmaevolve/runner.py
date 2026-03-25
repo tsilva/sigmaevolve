@@ -31,6 +31,14 @@ DEBUG_METRIC_KEYS = (
     "best_validation_accuracy_seen",
     "epochs_without_improvement",
 )
+EVAL_ARTIFACT_METRIC_KEYS = (
+    "accuracy",
+    "loss",
+    "train_loss",
+    "train_acc",
+    "val_loss",
+    "val_acc",
+)
 
 
 def _coerce_optional_scalar(value: Any, cast) -> Any | None:
@@ -200,6 +208,17 @@ class RunnerService:
                 if predictions.ndim > 1:
                     predictions = predictions.argmax(axis=1)
                 metrics = compute_classification_metrics(predictions.astype(int).tolist(), labels.astype(int).tolist())
+                for key in EVAL_ARTIFACT_METRIC_KEYS:
+                    if key not in payload:
+                        continue
+                    value = _coerce_optional_scalar(payload[key], float)
+                    if value is not None:
+                        metrics[key] = value
+                metrics.setdefault("val_acc", metrics.get("accuracy"))
+                if metrics.get("val_loss") is not None:
+                    metrics.setdefault("loss", metrics["val_loss"])
+                elif metrics.get("loss") is not None:
+                    metrics.setdefault("val_loss", metrics["loss"])
                 artifacts.append(
                     {
                         "path": str(eval_path),
