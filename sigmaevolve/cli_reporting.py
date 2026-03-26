@@ -65,12 +65,21 @@ class CliReconcileReporter:
     def _log(self, message: str) -> None:
         logger.info("[%s] %s", self._elapsed(), message)
 
-    def _progress_line(self, completed: int, requested: int, failures: int, max_failures: int, in_flight: int) -> str:
+    def _progress_line(
+        self,
+        completed: int,
+        requested: int,
+        failures: int,
+        max_failures: int,
+        in_flight: int,
+    ) -> str:
         if requested <= 0:
             return "Queue fill: nothing to generate."
+
         width = 20
         filled = int(width * completed / requested)
         bar = "#" * filled + "-" * (width - filled)
+
         return (
             f"Queue fill [{bar}] {completed}/{requested} accepted"
             f" | failures {failures}/{max_failures}"
@@ -113,11 +122,17 @@ class CliReconcileReporter:
     def _handle_queue_fill_started(self, payload: dict[str, Any]) -> None:
         self.requested = int(payload["requested_generations"])
         self.max_failures = int(payload["max_failures"])
-        self._log(f"Queue below target: queued={payload['queued_count']} target={payload['target_queue_count']}.")
+        self._log(
+            f"Queue below target: queued={payload['queued_count']} "
+            f"target={payload['target_queue_count']}."
+        )
         self._log(self._progress_line(0, self.requested, 0, self.max_failures, 0))
 
     def _handle_queue_fill_skipped(self, payload: dict[str, Any]) -> None:
-        self._log(f"Queue already full: queued={payload['queued_count']} target={payload['target_queue_count']}.")
+        self._log(
+            f"Queue already full: queued={payload['queued_count']} "
+            f"target={payload['target_queue_count']}."
+        )
 
     def _handle_generation_scheduled(self, payload: dict[str, Any]) -> None:
         self._log(
@@ -161,7 +176,8 @@ class CliReconcileReporter:
 
     def _handle_launch_batch_started(self, payload: dict[str, Any]) -> None:
         self._log(
-            f"Launching reserved trials: count={payload['reserved_count']} max_parallelism={payload['max_parallelism']}."
+            f"Launching reserved trials: count={payload['reserved_count']} "
+            f"max_parallelism={payload['max_parallelism']}."
         )
 
     def _handle_trial_launch_started(self, payload: dict[str, Any]) -> None:

@@ -45,10 +45,11 @@ def load_track_definition(track_file: str) -> tuple[str | None, str, dict[str, A
             raise argparse.ArgumentTypeError("Track file policy must be a JSON object.")
         policy_json = dict(policy)
     else:
+        excluded_fields = {"dataset_id", "name"}
         policy_json = {
             key: value
             for key, value in parsed.items()
-            if key not in {"dataset_id", "name"}
+            if key not in excluded_fields
         }
 
     return name, dataset_id, policy_json
@@ -166,7 +167,10 @@ def build_cli_parser(*, handlers: dict[str, Callable[..., int]]) -> argparse.Arg
     )
     list_trials.set_defaults(func=handlers["list_trials"])
 
-    sample_context = subparsers.add_parser("sample-context", help="Show successful finished trials used for generation context.")
+    sample_context = subparsers.add_parser(
+        "sample-context",
+        help="Show successful finished trials used for generation context.",
+    )
     sample_context.add_argument("track_id")
     sample_context.add_argument("--limit", type=int, default=5)
     sample_context.set_defaults(func=handlers["sample_context"])
@@ -185,7 +189,10 @@ def build_cli_parser(*, handlers: dict[str, Callable[..., int]]) -> argparse.Arg
     modal_deploy = subparsers.add_parser("modal-deploy", help="Deploy the Modal runner app.")
     modal_deploy.set_defaults(func=handlers["modal_deploy"])
 
-    modal_sync_dataset = subparsers.add_parser("modal-sync-dataset", help="Upload a prepared dataset to the Modal dataset volume.")
+    modal_sync_dataset = subparsers.add_parser(
+        "modal-sync-dataset",
+        help="Upload a prepared dataset to the Modal dataset volume.",
+    )
     modal_sync_dataset.add_argument("dataset_id")
     modal_sync_dataset.set_defaults(func=handlers["modal_sync_dataset"])
 

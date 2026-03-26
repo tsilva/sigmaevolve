@@ -88,6 +88,7 @@ def _trial_summary_sort_key(summary: TrialSummary) -> tuple[float, float, float]
     time_to_best = metrics.get("time_to_best_eval_sec")
     if time_to_best is None:
         time_to_best = float("inf")
+
     return (-accuracy, float(time_to_best), -summary.score)
 
 
@@ -110,6 +111,7 @@ class SQLAlchemyRepository:
         engine_kwargs: dict[str, Any] = {"future": True, "connect_args": connect_args}
         if not database_url.startswith("sqlite"):
             engine_kwargs["pool_pre_ping"] = True
+
         self.engine: Engine = sa.create_engine(database_url, **engine_kwargs)
         metadata.create_all(self.engine)
 
@@ -221,7 +223,9 @@ class SQLAlchemyRepository:
 
     def get_track(self, track_id: str) -> TrackRecord | None:
         with self.engine.connect() as conn:
-            row = conn.execute(sa.select(tracks_table).where(tracks_table.c.track_id == track_id)).fetchone()
+            row = conn.execute(
+                sa.select(tracks_table).where(tracks_table.c.track_id == track_id)
+            ).fetchone()
         return _row_to_track(row) if row else None
 
     def create_queued_trial_if_absent(
@@ -329,10 +333,13 @@ class SQLAlchemyRepository:
         payload = dict(payload)
         with self.transaction() as conn:
             row = conn.execute(
-                sa.select(trials_table.c.track_id, trials_table.c.provenance_json).where(trials_table.c.trial_id == trial_id)
+                sa.select(trials_table.c.track_id, trials_table.c.provenance_json).where(
+                    trials_table.c.trial_id == trial_id
+                )
             ).fetchone()
             if row is None:
                 raise KeyError(f"Trial not found: {trial_id}")
+
             provenance_json = dict(row.provenance_json or {})
             updated_provenance_json = dict(provenance_json)
             existing_section = updated_provenance_json.get(section)
@@ -389,10 +396,11 @@ class SQLAlchemyRepository:
         require_metrics: bool | None = None,
         limit: int = 5,
     ) -> list[TrialSummary]:
+        terminal_statuses = sorted(TERMINAL_STATUSES)
         stmt = sa.select(trials_table).where(
             sa.and_(
                 trials_table.c.track_id == track_id,
-                trials_table.c.status.in_(sorted(TERMINAL_STATUSES)),
+                trials_table.c.status.in_(terminal_statuses),
             )
         )
         if outcome_reasons:
@@ -503,7 +511,7 @@ class SQLAlchemyRepository:
     def heartbeat_trial(self, trial_id: str, runner_id: str, meta: dict[str, Any] | None = None) -> None:
         payload = dict(meta or {})
         with self.transaction() as conn:
-            result = conn.execute(
+            conn.execute(
                 sa.update(trials_table)
                 .where(
                     sa.and_(
@@ -559,19 +567,22 @@ class SQLAlchemyRepository:
             raise ValueError(f"Unsupported outcome_reason: {outcome_reason}")
         if metrics is None:
             score = 0.0
+
         persisted_error_info = dict(error_info) if error_info else None
         if outcome_reason in SUCCESS_OUTCOMES and not has_error_signal(persisted_error_info):
             persisted_error_info = None
+
         with self.transaction() as conn:
-            where = [trials_table.c.trial_id == trial_id]
+            state_filters: list[Any] = []
             if runner_id is not None:
-                where.append(trials_table.c.runner_id == runner_id)
-                where.append(trials_table.c.status == TRIAL_STATUS_ACTIVE)
+                state_filters.append(trials_table.c.runner_id == runner_id)
+                state_filters.append(trials_table.c.status == TRIAL_STATUS_ACTIVE)
+
             now = now_utc()
             updated = self._update_trial_state(
                 conn,
                 trial_id=trial_id,
-                where=where[1:],
+                where=state_filters,
                 values={
                     "status": status_for_outcome_reason(outcome_reason),
                     "outcome_reason": outcome_reason,
@@ -590,6 +601,8 @@ class SQLAlchemyRepository:
     def sweep_expired_dispatches(self, track_id: str, max_dispatch_retries: int) -> tuple[list[str], list[str]]:
         requeued: list[str] = []
         stale: list[str] = []
+        now = now_utc()
+
         with self.transaction() as conn:
             rows = conn.execute(
                 sa.select(trials_table).where(
@@ -597,7 +610,7 @@ class SQLAlchemyRepository:
                         trials_table.c.track_id == track_id,
                         trials_table.c.status == TRIAL_STATUS_DISPATCHING,
                         trials_table.c.dispatch_deadline_at.is_not(None),
-                        trials_table.c.dispatch_deadline_at < now_utc(),
+                        trials_table.c.dispatch_deadline_at < now,
                     )
                 )
             ).fetchall()
@@ -621,7 +634,7 @@ class SQLAlchemyRepository:
                         .values(
                             status=TRIAL_STATUS_ERROR,
                             outcome_reason=OUTCOME_STALE,
-                            finished_at=now_utc(),
+                            finished_at=now,
                             dispatch_token=None,
                             dispatch_deadline_at=None,
                             score=0.0,

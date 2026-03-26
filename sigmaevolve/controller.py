@@ -76,13 +76,21 @@ class TrackController:
         self._one_shot_requested_generations = 0
         self._one_shot_generation_finished = self.continuous
 
-        self._generation_thread = threading.Thread(target=self._generation_loop, name="sigmaevolve-generation", daemon=True)
+        self._generation_thread = threading.Thread(
+            target=self._generation_loop,
+            name="sigmaevolve-generation",
+            daemon=True,
+        )
         self._generation_completion_thread = threading.Thread(
             target=self._generation_completion_loop,
             name="sigmaevolve-generation-completions",
             daemon=True,
         )
-        self._dispatch_thread = threading.Thread(target=self._dispatch_loop, name="sigmaevolve-dispatch", daemon=True)
+        self._dispatch_thread = threading.Thread(
+            target=self._dispatch_loop,
+            name="sigmaevolve-dispatch",
+            daemon=True,
+        )
         self._sweep_thread = threading.Thread(target=self._sweep_loop, name="sigmaevolve-sweep", daemon=True)
 
     @property
@@ -117,7 +125,12 @@ class TrackController:
         with self._condition:
             self._stop_event.set()
             self._condition.notify_all()
-        for thread in (self._generation_thread, self._generation_completion_thread, self._dispatch_thread, self._sweep_thread):
+        for thread in (
+            self._generation_thread,
+            self._generation_completion_thread,
+            self._dispatch_thread,
+            self._sweep_thread,
+        ):
             if thread.is_alive():
                 thread.join()
         self._generation_executor.shutdown(wait=True, cancel_futures=False)
@@ -170,6 +183,7 @@ class TrackController:
             return False
         if self.max_parallelism <= 0:
             return True
+
         active_count = self.repository.count_trials(self.track.track_id, statuses=ACTIVE_STATUSES)
         queue_count = self.repository.count_trials(self.track.track_id, statuses={"queued"})
         return active_count >= self.max_parallelism or queue_count == 0
@@ -197,7 +211,11 @@ class TrackController:
                         deficit = max(0, target_queue_count - queue_count)
                     else:
                         target_queue_count = self.ready_queue_threshold
-                        deficit = self._one_shot_requested_generations if not self._one_shot_generation_finished else 0
+                        deficit = (
+                            self._one_shot_requested_generations
+                            if not self._one_shot_generation_finished
+                            else 0
+                        )
                     if deficit > 0:
                         self._fill_cycle = _FillCycle(
                             requested_generations=deficit,
@@ -218,8 +236,16 @@ class TrackController:
                         pending_attempt.duplicate_retry_count < next_retry_count
                         for pending_attempt in self._pending_generations.values()
                     ):
-                        attempts_to_schedule = [retry for retry in self._deferred_retries if retry[2] == next_retry_count]
-                        self._deferred_retries = [retry for retry in self._deferred_retries if retry[2] != next_retry_count]
+                        attempts_to_schedule = [
+                            retry
+                            for retry in self._deferred_retries
+                            if retry[2] == next_retry_count
+                        ]
+                        self._deferred_retries = [
+                            retry
+                            for retry in self._deferred_retries
+                            if retry[2] != next_retry_count
+                        ]
                 if not attempts_to_schedule:
                     self._condition.wait(timeout=self.wait_interval_sec)
                     continue
@@ -268,7 +294,11 @@ class TrackController:
                     self._condition.wait(timeout=self.wait_interval_sec)
                     continue
                 pending_futures = tuple(self._pending_generations)
-            done, _ = wait(pending_futures, timeout=self.wait_interval_sec, return_when=FIRST_COMPLETED)
+            done, _ = wait(
+                pending_futures,
+                timeout=self.wait_interval_sec,
+                return_when=FIRST_COMPLETED,
+            )
             for future in done:
                 self._on_generation_complete(future)
 
@@ -281,7 +311,9 @@ class TrackController:
             else:
                 active_count = self.repository.count_trials(self.track.track_id, statuses=ACTIVE_STATUSES)
                 queue_count = self.repository.count_trials(self.track.track_id, statuses={"queued"})
-                if active_count >= self.max_parallelism or queue_count <= 0:
+                has_dispatch_capacity = active_count < self.max_parallelism
+                has_queued_trials = queue_count > 0
+                if not has_dispatch_capacity or not has_queued_trials:
                     should_wait = True
                 else:
                     with self._condition:
@@ -543,7 +575,18 @@ class TrackController:
 
         with self._condition:
             cycle = self._fill_cycle
-            if cycle is not None and retry_needed and cycle.failures + len(self._pending_generations) < cycle.max_failures and not self._stop_event.is_set():
+            has_cycle = cycle is not None
+            below_failure_budget = (
+                has_cycle
+                and cycle.failures + len(self._pending_generations) < cycle.max_failures
+            )
+            should_retry = (
+                has_cycle
+                and retry_needed
+                and below_failure_budget
+                and not self._stop_event.is_set()
+            )
+            if should_retry:
                 next_retry = (attempt.slot_index, attempt.generation_index, attempt.duplicate_retry_count + 1)
             if next_retry is None:
                 stopped_payload = self._finish_fill_cycle_if_ready()
@@ -560,11 +603,17 @@ class TrackController:
             return None
         if self._pending_generations and not force:
             return None
-        if not force and len(cycle.completed_slots) < cycle.requested_generations and cycle.failures < cycle.max_failures:
+
+        completed_slots = len(cycle.completed_slots)
+        missing_completions = completed_slots < cycle.requested_generations
+        has_failure_budget = cycle.failures < cycle.max_failures
+        if not force and missing_completions and has_failure_budget:
             return None
-        event = "queue_fill_stopped" if len(cycle.completed_slots) < cycle.requested_generations and cycle.failures >= cycle.max_failures else "queue_fill_completed"
+
+        stopped_on_failures = missing_completions and cycle.failures >= cycle.max_failures
+        event = "queue_fill_stopped" if stopped_on_failures else "queue_fill_completed"
         payload = {
-            "completed": len(cycle.completed_slots),
+            "completed": completed_slots,
             "requested": cycle.requested_generations,
             "failures": cycle.failures,
             "max_failures": cycle.max_failures,
@@ -572,6 +621,7 @@ class TrackController:
         self._fill_cycle = None
         if not self.continuous:
             self._one_shot_generation_finished = True
+
         return {"event": event, "payload": payload}
 
     def _on_launch_complete(self, future: Future[Any]) -> None:

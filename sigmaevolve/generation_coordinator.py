@@ -107,21 +107,25 @@ class GenerationCoordinator:
         payload = dict(provenance_json or {})
         generation_payload = dict(payload.get("generation") or {})
         request_messages = payload.get("request_messages")
+
         if isinstance(request_messages, list):
             if "system_prompt" not in generation_payload and request_messages:
                 first = request_messages[0]
                 if isinstance(first, dict) and isinstance(first.get("content"), str):
                     generation_payload["system_prompt"] = first["content"]
+
             if "user_prompt" not in generation_payload and len(request_messages) > 1:
                 second = request_messages[1]
                 if isinstance(second, dict) and isinstance(second.get("content"), str):
                     generation_payload["user_prompt"] = second["content"]
+
         generation_payload.setdefault("response_text", None)
         generation_payload["generated_source"] = generated_source
         generation_payload["assertions_passed"] = assertions_passed
         generation_payload["assertion_failures"] = list(assertion_failures)
         generation_payload["candidate_hash"] = candidate_hash
         payload["generation"] = generation_payload
+
         return payload
 
     def normalize_generation_result(self, generated: Any) -> GenerationResult:
@@ -150,8 +154,20 @@ class GenerationCoordinator:
                 model = str(pool_model) if pool_model else "unknown"
             else:
                 model = "unknown"
+
         system_prompt = "Generation backend failed before prompts could be fully recorded."
         user_prompt = "No user prompt was captured because generation aborted before the provider call completed."
+
+        generation_payload = {
+            "system_prompt": system_prompt,
+            "user_prompt": user_prompt,
+            "response_text": None,
+            "generated_source": None,
+            "assertions_passed": False,
+            "assertion_failures": [],
+            "candidate_hash": None,
+        }
+
         return {
             "backend": "openrouter",
             "model": model,
@@ -164,15 +180,7 @@ class GenerationCoordinator:
                 {"role": "user", "content": user_prompt},
             ],
             "context_trial_ids": [trial.trial_id for trial in context_trials],
-            "generation": {
-                "system_prompt": system_prompt,
-                "user_prompt": user_prompt,
-                "response_text": None,
-                "generated_source": None,
-                "assertions_passed": False,
-                "assertion_failures": [],
-                "candidate_hash": None,
-            },
+            "generation": generation_payload,
         }
 
     def record_generation_attempt_failure(
@@ -200,14 +208,18 @@ class GenerationCoordinator:
         generation_payload = dict(final_provenance.get("generation") or {})
         if detail:
             error_payload["detail"] = detail
+
         finish_reason = generation_payload.get("finish_reason")
         if isinstance(finish_reason, str) and finish_reason:
             error_payload["finish_reason"] = finish_reason
+
         native_finish_reason = generation_payload.get("native_finish_reason")
         if isinstance(native_finish_reason, str) and native_finish_reason:
             error_payload["native_finish_reason"] = native_finish_reason
+
         if extra_error_json:
             error_payload.update(extra_error_json)
+
         trial = self.repository.create_generation_attempt_trial(
             track_id=track_id,
             provenance_json=final_provenance,
@@ -236,6 +248,7 @@ class GenerationCoordinator:
         )
         if not context_trials:
             return None
+
         attempt = GenerationAttempt(
             slot_index=slot_index,
             generation_index=generation_index,

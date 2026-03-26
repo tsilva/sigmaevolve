@@ -3,7 +3,13 @@ from __future__ import annotations
 from typing import Any
 
 from sigmaevolve.hashing import normalize_source
-from sigmaevolve.models import ERROR_OUTCOMES, OUTCOME_GENERATION_FAILED, OUTCOME_STALE, TRIAL_STATUS_ERROR, TRIAL_STATUS_FINISHED
+from sigmaevolve.models import (
+    ERROR_OUTCOMES,
+    OUTCOME_GENERATION_FAILED,
+    OUTCOME_STALE,
+    TRIAL_STATUS_ERROR,
+    TRIAL_STATUS_FINISHED,
+)
 
 
 ALLOWED_GENERATION_BACKENDS = frozenset({"openrouter"})
@@ -12,9 +18,13 @@ ALLOWED_GENERATION_BACKENDS = frozenset({"openrouter"})
 def _is_prompt_message(entry: object) -> bool:
     if not isinstance(entry, dict):
         return False
+
     role = entry.get("role")
     content = entry.get("content")
-    return isinstance(role, str) and bool(role.strip()) and isinstance(content, str) and bool(content.strip())
+    has_role = isinstance(role, str) and bool(role.strip())
+    has_content = isinstance(content, str) and bool(content.strip())
+
+    return has_role and has_content
 
 
 def validate_trial_provenance(provenance_json: dict[str, Any]) -> dict[str, Any]:

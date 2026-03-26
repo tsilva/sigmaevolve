@@ -46,33 +46,57 @@ def load_eval_artifacts(
     labels_path: str,
 ) -> list[dict[str, Any]]:
     labels = np.load(labels_path)
+    label_list = labels.astype(int).tolist()
     artifacts: list[dict[str, Any]] = []
+
     for eval_path in sorted(eval_dir.glob("*.npz")):
         with np.load(eval_path) as payload:
             if "predictions" not in payload:
                 continue
+
             predictions = payload["predictions"]
             if predictions.ndim > 1:
                 predictions = predictions.argmax(axis=1)
-            metrics = compute_classification_metrics(predictions.astype(int).tolist(), labels.astype(int).tolist())
+
+            metrics = compute_classification_metrics(
+                predictions.astype(int).tolist(),
+                label_list,
+            )
             for key in EVAL_ARTIFACT_METRIC_KEYS:
                 if key not in payload:
                     continue
+
                 value = coerce_optional_scalar(payload[key], float)
                 if value is not None:
                     metrics[key] = value
+
             metrics.setdefault("val_acc", metrics.get("accuracy"))
+            eval_index = (
+                coerce_optional_scalar(payload["eval_index"], int)
+                if "eval_index" in payload
+                else None
+            )
+            elapsed_time_sec = (
+                coerce_optional_scalar(payload["elapsed_time_sec"], float)
+                if "elapsed_time_sec" in payload
+                else None
+            )
+            epoch = (
+                coerce_optional_scalar(payload["epoch"], int)
+                if "epoch" in payload
+                else None
+            )
+
             artifacts.append(
                 {
                     "path": str(eval_path),
-                    "eval_index": coerce_optional_scalar(payload["eval_index"], int) if "eval_index" in payload else None,
-                    "elapsed_time_sec": coerce_optional_scalar(payload["elapsed_time_sec"], float)
-                    if "elapsed_time_sec" in payload
-                    else None,
-                    "epoch": coerce_optional_scalar(payload["epoch"], int) if "epoch" in payload else None,
+                    "eval_index": eval_index,
+                    "elapsed_time_sec": elapsed_time_sec,
+                    "epoch": epoch,
                     "metrics": metrics,
                 }
             )
+
     return artifacts
 
 
@@ -115,16 +139,20 @@ def build_final_metrics_payload(
 ) -> dict[str, Any]:
     best_artifact = select_best_eval(artifacts)
     last_artifact = select_last_completed_eval(artifacts)
+
     last_completed_eval_sec = last_artifact.get("elapsed_time_sec")
     if last_completed_eval_sec is None and progress_payload:
         last_completed_eval_sec = progress_payload.get("last_completed_eval_sec")
+
     time_to_best_eval_sec = best_artifact.get("elapsed_time_sec")
     time_since_last_eval_sec = None
     if last_completed_eval_sec is not None:
         time_since_last_eval_sec = max(0.0, float(process_elapsed_sec) - float(last_completed_eval_sec))
+
     last_phase = None
     if progress_payload:
         last_phase = progress_payload.get("phase") or progress_payload.get("current_phase")
+
     had_unscored_work_at_timeout = bool(
         timed_out
         and time_since_last_eval_sec is not None
@@ -150,6 +178,7 @@ def build_final_metrics_payload(
             "process_elapsed_sec": float(process_elapsed_sec),
         }
     )
+
     apply_debug_metrics(metrics, debug_payload)
     return metrics
 
@@ -162,9 +191,7 @@ def build_active_metrics_payload(
     debug_payload: dict[str, Any] | None,
 ) -> dict[str, Any] | None:
     progress = dict(progress_payload or {})
-    metrics: dict[str, Any] = {
-        "process_elapsed_sec": float(process_elapsed_sec),
-    }
+    metrics: dict[str, Any] = {"process_elapsed_sec": float(process_elapsed_sec)}
 
     last_phase = progress.get("phase") or progress.get("current_phase")
     if last_phase is not None:
@@ -187,7 +214,10 @@ def build_active_metrics_payload(
         metrics.update(
             {
                 "best_accuracy": best_artifact["metrics"]["accuracy"],
-                "time_to_best_eval_sec": coerce_optional_scalar(best_artifact.get("elapsed_time_sec"), float),
+                "time_to_best_eval_sec": coerce_optional_scalar(
+                    best_artifact.get("elapsed_time_sec"),
+                    float,
+                ),
                 "best_eval_index": coerce_optional_scalar(best_artifact.get("eval_index"), int),
                 "best_eval_epoch": coerce_optional_scalar(best_artifact.get("epoch"), int),
             }

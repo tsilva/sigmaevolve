@@ -249,12 +249,20 @@ def build_baseline_train_script() -> str:
                     raise TrainScriptContractError("feature tensors must be at least 2D including the batch axis")
                 reduce_dims = (0,) if train_x.ndim == 2 else (0,) + tuple(range(2, train_x.ndim))
                 mean = train_x.mean(dim=reduce_dims, keepdim=True)
-                std = train_x.std(dim=reduce_dims, keepdim=True, unbiased=False).clamp_min(CONFIG["normalization_std_floor"])
+                std = train_x.std(
+                    dim=reduce_dims,
+                    keepdim=True,
+                    unbiased=False,
+                ).clamp_min(CONFIG["normalization_std_floor"])
                 return (train_x - mean) / std, (validation_x - mean) / std
 
 
             def normalize_predictions(raw_predictions, *, num_examples, num_classes):
-                array = raw_predictions.detach().cpu().numpy() if isinstance(raw_predictions, torch.Tensor) else np.asarray(raw_predictions)
+                array = (
+                    raw_predictions.detach().cpu().numpy()
+                    if isinstance(raw_predictions, torch.Tensor)
+                    else np.asarray(raw_predictions)
+                )
                 if array.ndim == 0:
                     raise TrainScriptContractError("model evaluation must return one prediction per validation example.")
                 if array.shape[0] != num_examples:
@@ -272,11 +280,20 @@ def build_baseline_train_script() -> str:
                     )
                     return (array >= threshold).astype(np.int64)
                 reshaped = array.reshape(num_examples, -1)
-                return (reshaped.reshape(num_examples) if reshaped.shape[1] <= 1 else reshaped.argmax(axis=1)).astype(np.int64)
+                normalized = (
+                    reshaped.reshape(num_examples)
+                    if reshaped.shape[1] <= 1
+                    else reshaped.argmax(axis=1)
+                )
+                return normalized.astype(np.int64)
 
 
             def coerce_model_logits(raw_output, *, batch_size, num_classes):
-                logits = raw_output if isinstance(raw_output, torch.Tensor) else torch.as_tensor(raw_output, dtype=torch.float32)
+                logits = (
+                    raw_output
+                    if isinstance(raw_output, torch.Tensor)
+                    else torch.as_tensor(raw_output, dtype=torch.float32)
+                )
                 if logits.ndim == 1:
                     if batch_size == 1 and logits.shape[0] == num_classes:
                         return logits.reshape(1, num_classes)
@@ -309,7 +326,11 @@ def build_baseline_train_script() -> str:
                 with torch.no_grad():
                     for (batch_x,) in validation_loader:
                         predictions.append(
-                            coerce_model_logits(model(batch_x), batch_size=int(batch_x.shape[0]), num_classes=num_classes)
+                            coerce_model_logits(
+                                model(batch_x),
+                                batch_size=int(batch_x.shape[0]),
+                                num_classes=num_classes,
+                            )
                         )
                 if not predictions:
                     raise TrainScriptContractError("validation loader must yield at least one batch")
@@ -336,7 +357,13 @@ def build_baseline_train_script() -> str:
                 validation_features, _ = read_split(config["validation_split_path"])
                 validation_labels = np.load(config["validation_labels_path"]).astype(np.int64)
                 if train_labels is None or not all(
-                    isinstance(value, np.ndarray) for value in (train_features, train_labels, validation_features, validation_labels)
+                    isinstance(value, np.ndarray)
+                    for value in (
+                        train_features,
+                        train_labels,
+                        validation_features,
+                        validation_labels,
+                    )
                 ):
                     raise RuntimeError("Dataset splits are invalid.")
 
@@ -390,7 +417,11 @@ def build_baseline_train_script() -> str:
                     )
                     trainable_parameters = optimization_config.get("trainable_parameters")
                     if trainable_parameters is None:
-                        trainable_parameters = [parameter for parameter in model.parameters() if parameter.requires_grad]
+                        trainable_parameters = [
+                            parameter
+                            for parameter in model.parameters()
+                            if parameter.requires_grad
+                        ]
                     trainable_parameters = list(trainable_parameters)
                     optimizer = optimization_config.get("optimizer")
                     scheduler = optimization_config.get("scheduler")
@@ -427,7 +458,11 @@ def build_baseline_train_script() -> str:
                         model.train()
                         report("train", elapsed_time_sec=time.monotonic() - start_time, epoch_index=epoch_index)
                         for batch_x, batch_y in train_loader:
-                            logits = coerce_model_logits(model(batch_x), batch_size=int(batch_x.shape[0]), num_classes=num_classes)
+                            logits = coerce_model_logits(
+                                model(batch_x),
+                                batch_size=int(batch_x.shape[0]),
+                                num_classes=num_classes,
+                            )
                             loss = torch.nn.functional.cross_entropy(logits, batch_y, label_smoothing=label_smoothing)
                             batch_size = int(batch_y.shape[0])
                             train_loss_total += float(loss.detach().item()) * batch_size
@@ -475,7 +510,10 @@ def build_baseline_train_script() -> str:
                                 "accuracy": val_acc,
                             },
                         )
-                        stale_epochs = 0 if val_acc > best_accuracy + CONFIG["accuracy_improvement_tol"] else stale_epochs + 1
+                        improved_accuracy = (
+                            val_acc > best_accuracy + CONFIG["accuracy_improvement_tol"]
+                        )
+                        stale_epochs = 0 if improved_accuracy else stale_epochs + 1
                         best_accuracy = max(best_accuracy, val_acc)
                         last_eval_sec = elapsed_after_eval
                         epochs_completed = epoch_index + 1

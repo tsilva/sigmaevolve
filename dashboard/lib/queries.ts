@@ -11,6 +11,13 @@ import type {
 
 const DEFAULT_TRIAL_LIMIT = 50;
 const MAX_TRIAL_LIMIT = 100;
+const KNOWN_TRIAL_STATUSES = new Set<TrialStatusFilter>([
+  "queued",
+  "dispatching",
+  "active",
+  "finished",
+  "error",
+]);
 
 type TrialCursor = {
   createdAt: string;
@@ -37,9 +44,10 @@ function decodeCursor(value: string | null): TrialCursor | null {
 }
 
 export function parseStatusFilter(value: string | null): TrialStatusFilter {
-  if (value === "queued" || value === "dispatching" || value === "active" || value === "finished" || value === "error") {
+  if (value && KNOWN_TRIAL_STATUSES.has(value as TrialStatusFilter)) {
     return value;
   }
+
   return "all";
 }
 
@@ -159,7 +167,12 @@ export async function listTrials(
   if (cursor) {
     values.push(cursor.createdAt);
     values.push(cursor.trialId);
-    whereClauses.push(`(created_at, trial_id) < ($${values.length - 1}::timestamptz, $${values.length})`);
+    const createdAtIndex = values.length - 1;
+    const trialIdIndex = values.length;
+
+    whereClauses.push(
+      `(created_at, trial_id) < ($${createdAtIndex}::timestamptz, $${trialIdIndex})`,
+    );
   }
 
   values.push(limit + 1);
