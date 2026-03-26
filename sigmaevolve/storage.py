@@ -22,7 +22,6 @@ from sigmaevolve.core import (
     TRIAL_STATUS_ERROR,
     TRIAL_STATUS_FINISHED,
     TRIAL_STATUS_QUEUED,
-    TrackPolicy,
     TrackRecord,
     TrialRecord,
     TrialSummary,
@@ -372,26 +371,6 @@ def slim_provenance_payload(
         slimmed["generation"] = {"response_text": response_text}
 
     return slimmed
-
-
-def normalize_legacy_track_policy(policy_json: dict[str, Any] | None) -> dict[str, Any]:
-    # Rewrite the legacy policy shape into the reduced persisted contract.
-    payload = dict(policy_json or {})
-
-    sampling_settings = payload.pop("sampling_settings", None)
-    if "sampling_seed" not in payload and isinstance(sampling_settings, dict):
-        payload["sampling_seed"] = int(sampling_settings.get("seed", 0))
-
-    payload.pop("scorer_settings", None)
-
-    generation_backend = dict(payload.get("generation_backend") or {})
-    generation_backend.pop("backend", None)
-    if generation_backend:
-        payload["generation_backend"] = generation_backend
-
-    return TrackPolicy.from_dict(payload).to_dict()
-
-
 def coerce_timestamp(value: Any) -> Any:
     # Rebuild ISO8601 timestamps into datetime objects for the reduced schema inserts.
     if isinstance(value, str):
@@ -603,88 +582,6 @@ class SQLAlchemyRepository:
             .where(trials_table.c.trial_id == trial_id)
             .values(**values)
         )
-
-    def _reflect_table_rows(
-        self, conn: Connection, table_name: str
-    ) -> list[dict[str, Any]]:
-        # Materialize reflected rows into plain dicts before destructive migration steps.
-        reflected_metadata = sa.MetaData()
-        reflected_metadata.reflect(bind=conn, only=[table_name])
-        table = reflected_metadata.tables.get(table_name)
-        if table is None:
-            return []
-        rows = conn.execute(sa.select(table)).mappings().all()
-        return [dict(row) for row in rows]
-
-    def _drop_legacy_tables(self, conn: Connection) -> None:
-        # Drop old tables in dependency order before recreating the reduced schema.
-        for table_name in ("datasets", "trials", "tracks"):
-            conn.execute(sa.text(f"DROP TABLE IF EXISTS {table_name}"))
-
-    def migrate_reduced_schema(self) -> dict[str, int]:
-        with self.transaction() as conn:
-            track_rows = self._reflect_table_rows(conn, "tracks")
-            trial_rows = self._reflect_table_rows(conn, "trials")
-
-            normalized_tracks = [
-                {
-                    "track_id": str(row["track_id"]),
-                    "dataset_id": str(row["dataset_id"]),
-                    "policy_json": normalize_legacy_track_policy(
-                        dict(row.get("policy_json") or {})
-                    ),
-                    "created_at": coerce_timestamp(row["created_at"]),
-                }
-                for row in track_rows
-            ]
-
-            normalized_trials = []
-            for row in trial_rows:
-                outcome_reason = row.get("outcome_reason")
-                normalized_trials.append(
-                    {
-                        "trial_id": str(row["trial_id"]),
-                        "track_id": str(row["track_id"]),
-                        "source": str(row["source"]),
-                        "script_hash": str(row["script_hash"]),
-                        "provenance_json": slim_provenance_payload(
-                            dict(row.get("provenance_json") or {}),
-                            outcome_reason=outcome_reason,
-                        ),
-                        "status": str(row["status"]),
-                        "outcome_reason": outcome_reason,
-                        "dispatch_token": row.get("dispatch_token"),
-                        "dispatch_deadline_at": coerce_timestamp(
-                            row.get("dispatch_deadline_at")
-                        ),
-                        "runner_id": row.get("runner_id"),
-                        "heartbeat_at": coerce_timestamp(row.get("heartbeat_at")),
-                        "started_at": coerce_timestamp(row.get("started_at")),
-                        "finished_at": coerce_timestamp(row.get("finished_at")),
-                        "metrics_json": slim_metrics_payload(
-                            dict(row.get("metrics_json") or {})
-                        ),
-                        "error_json": prepare_error_payload(
-                            str(outcome_reason) if outcome_reason is not None else "",
-                            dict(row.get("error_json") or {}),
-                        ),
-                        "dispatch_attempts": int(row.get("dispatch_attempts") or 0),
-                        "created_at": coerce_timestamp(row["created_at"]),
-                    }
-                )
-
-            self._drop_legacy_tables(conn)
-            metadata.create_all(conn)
-
-            if normalized_tracks:
-                conn.execute(sa.insert(tracks_table), normalized_tracks)
-            if normalized_trials:
-                conn.execute(sa.insert(trials_table), normalized_trials)
-
-        return {
-            "migrated_tracks": len(normalized_tracks),
-            "migrated_trials": len(normalized_trials),
-        }
 
     def create_track(self, dataset_id: str, policy_json: dict[str, Any]) -> TrackRecord:
         # Create a fresh track id and persist the track metadata in one transaction.
