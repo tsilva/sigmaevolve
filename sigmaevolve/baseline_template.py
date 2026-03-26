@@ -206,14 +206,6 @@ def require_callable(name):
     return value
 
 
-def require_mapping(name, value):
-
-    # Require each evolve-block helper to return a mapping payload.
-    if not isinstance(value, dict):
-        raise TrainScriptContractError(f"{name} must return a dict.")
-    return value
-
-
 # EVOLVE-BLOCK-START
 
 
@@ -340,22 +332,36 @@ def configure_training_policy(*, num_epochs):
 # EVOLVE-BLOCK-END
 
 
-def main(argv=None):
+def load_run_config(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True)
     config = json.loads(Path(parser.parse_args(argv).config).read_text())
-    progress_path = Path(config["progress_path"])
-    eval_dir = Path(config["eval_dir"])
-    debug_output_path = Path(config["debug_output_path"])
-    num_epochs = int(config["epochs"])
-    random_seed = int(config["random_seed"])
-    dataset_metadata = dict(config.get("dataset_metadata") or {})
+    return {
+        "progress_path": Path(config["progress_path"]),
+        "eval_dir": Path(config["eval_dir"]),
+        "debug_output_path": Path(config["debug_output_path"]),
+        "num_epochs": int(config["epochs"]),
+        "random_seed": int(config["random_seed"]),
+        "dataset_metadata": dict(config.get("dataset_metadata") or {}),
+        "train_split_path": Path(config["train_split_path"]),
+        "validation_split_path": Path(config["validation_split_path"]),
+        "validation_labels_path": Path(config["validation_labels_path"]),
+    }
 
+
+def load_dataset_splits(config):
     train_features, train_labels = read_split(config["train_split_path"])
     validation_features, _ = read_split(config["validation_split_path"])
     validation_labels = np.load(config["validation_labels_path"]).astype(np.int64)
+    return train_features, train_labels, validation_features, validation_labels
 
-    # Validate that every loaded split is a concrete NumPy array before training.
+
+def validate_dataset_splits(
+    train_features,
+    train_labels,
+    validation_features,
+    validation_labels,
+):
     split_arrays = (
         train_features,
         train_labels,
@@ -367,15 +373,13 @@ def main(argv=None):
     )
     has_labels = train_labels is not None
 
-    # Reject malformed dataset metadata before the training loop starts.
+    # Validate that every loaded split is a concrete NumPy array before training.
     if not has_labels or not splits_are_numpy_arrays:
         raise RuntimeError("Dataset splits are invalid.")
 
-    start_time = time.monotonic()
-    eval_index = epochs_completed = stale_epochs = 0
-    last_eval_sec = None
-    best_accuracy = CONFIG["initial_best_accuracy"]
-    debug_payload = {
+
+def build_debug_payload():
+    return {
         "timed_out": False,
         "eval_count": 0,
         "early_stopped": False,
@@ -383,201 +387,404 @@ def main(argv=None):
         "epochs_completed": 0,
     }
 
-    try:
-        seed_everything(random_seed)
-        input_shape, train_x = prepare_feature_tensor(train_features)
-        _, validation_x = prepare_feature_tensor(
-            validation_features, input_shape=input_shape
+def call_required_mapping(name, **kwargs):
+    value = require_callable(name)(**kwargs)
+
+    # Require each evolve-block helper to return a mapping payload.
+    if not isinstance(value, dict):
+        raise TrainScriptContractError(f"{name} must return a dict.")
+    return value
+
+
+def build_required_model(*, input_shape, num_classes):
+    model = require_callable("build_model")(
+        input_shape=input_shape,
+        num_classes=num_classes,
+    )
+    if not isinstance(model, torch.nn.Module):
+        raise TrainScriptContractError(
+            "build_model must return a torch.nn.Module instance."
         )
-        train_x, validation_x = normalize_feature_tensors(train_x, validation_x)
-        train_y = torch.from_numpy(train_labels)
-        validation_y = torch.from_numpy(validation_labels.astype(np.int64))
-        num_classes = int(
-            dataset_metadata.get("num_classes") or (np.max(train_labels) + 1)
+    return model
+
+
+def require_data_loaders(data_config):
+    train_loader = data_config.get("train_loader")
+    validation_loader = data_config.get("validation_loader")
+    if train_loader is None or validation_loader is None:
+        raise TrainScriptContractError(
+            "configure_data must return train_loader and validation_loader."
         )
+    return train_loader, validation_loader
 
-        model = require_callable("build_model")(
-            input_shape=input_shape, num_classes=num_classes
+
+def resolve_trainable_parameters(optimization_config, model):
+    trainable_parameters = optimization_config.get("trainable_parameters")
+    if trainable_parameters is None:
+        trainable_parameters = [
+            parameter for parameter in model.parameters() if parameter.requires_grad
+        ]
+    return list(trainable_parameters)
+
+
+def prepare_training_runtime(
+    *,
+    train_features,
+    train_labels,
+    validation_features,
+    validation_labels,
+    dataset_metadata,
+    random_seed,
+    num_epochs,
+):
+    seed_everything(random_seed)
+    input_shape, train_x = prepare_feature_tensor(train_features)
+    _, validation_x = prepare_feature_tensor(validation_features, input_shape=input_shape)
+    train_x, validation_x = normalize_feature_tensors(train_x, validation_x)
+    train_y = torch.from_numpy(train_labels)
+    validation_y = torch.from_numpy(validation_labels.astype(np.int64))
+    num_classes = int(dataset_metadata.get("num_classes") or (np.max(train_labels) + 1))
+
+    model = build_required_model(input_shape=input_shape, num_classes=num_classes)
+    data_config = call_required_mapping(
+        "configure_data",
+        train_x=train_x,
+        train_y=train_y,
+        validation_x=validation_x,
+        random_seed=random_seed,
+    )
+    train_loader, validation_loader = require_data_loaders(data_config)
+
+    optimization_config = call_required_mapping(
+        "configure_optimization",
+        model=model,
+        train_loader=train_loader,
+        num_epochs=num_epochs,
+        num_classes=num_classes,
+    )
+    training_policy = call_required_mapping(
+        "configure_training_policy",
+        num_epochs=num_epochs,
+    )
+    return {
+        "model": model,
+        "num_classes": num_classes,
+        "train_loader": train_loader,
+        "validation_loader": validation_loader,
+        "validation_labels": validation_labels,
+        "validation_y": validation_y,
+        "num_validation_examples": int(validation_features.shape[0]),
+        "trainable_parameters": resolve_trainable_parameters(optimization_config, model),
+        "optimizer": optimization_config.get("optimizer"),
+        "scheduler": optimization_config.get("scheduler"),
+        "label_smoothing": float(optimization_config.get("label_smoothing", 0.0)),
+        "grad_clip_norm": optimization_config.get("grad_clip_norm", 1.0),
+        "patience": int(training_policy.get("early_stopping_patience", 0)),
+    }
+
+
+def write_progress(
+    progress_path,
+    *,
+    phase,
+    elapsed_time_sec,
+    last_eval_sec,
+    eval_index,
+    epoch_index,
+):
+    write_json_atomic(
+        progress_path,
+        {
+            "phase": phase,
+            "elapsed_time_sec": float(elapsed_time_sec),
+            "last_completed_eval_sec": last_eval_sec,
+            "eval_index": eval_index,
+            "epoch_index": epoch_index,
+        },
+    )
+
+
+def prepare_training_epoch(model, *, epoch_index, num_epochs):
+    hook = getattr(model, "on_epoch_start", None)
+
+    # Invoke the optional epoch hook only when the model defines one.
+    if callable(hook):
+        hook(epoch_index=epoch_index, num_epochs=num_epochs)
+    model.train()
+
+
+def train_one_epoch(
+    model,
+    train_loader,
+    *,
+    optimizer,
+    scheduler,
+    trainable_parameters,
+    grad_clip_norm,
+    label_smoothing,
+    num_classes,
+):
+    train_loss_total = 0.0
+    train_correct = 0
+    train_examples = 0
+
+    for batch_x, batch_y in train_loader:
+        logits = coerce_model_logits(
+            model(batch_x),
+            batch_size=int(batch_x.shape[0]),
+            num_classes=num_classes,
         )
-        if not isinstance(model, torch.nn.Module):
-            raise TrainScriptContractError(
-                "build_model must return a torch.nn.Module instance."
-            )
-
-        data_config = require_mapping(
-            "configure_data",
-            require_callable("configure_data")(
-                train_x=train_x,
-                train_y=train_y,
-                validation_x=validation_x,
-                random_seed=random_seed,
-            ),
+        loss = torch.nn.functional.cross_entropy(
+            logits,
+            batch_y,
+            label_smoothing=label_smoothing,
         )
-        train_loader = data_config.get("train_loader")
-        validation_loader = data_config.get("validation_loader")
-        if train_loader is None or validation_loader is None:
-            raise TrainScriptContractError(
-                "configure_data must return train_loader and validation_loader."
-            )
+        batch_size = int(batch_y.shape[0])
+        train_loss_total += float(loss.detach().item()) * batch_size
+        train_correct += int((logits.argmax(dim=1) == batch_y).sum().item())
+        train_examples += batch_size
 
-        optimization_config = require_mapping(
-            "configure_optimization",
-            require_callable("configure_optimization")(
-                model=model,
-                train_loader=train_loader,
-                num_epochs=num_epochs,
-                num_classes=num_classes,
-            ),
+        # Skip optimization work entirely when the model is inference-only.
+        if optimizer is None:
+            continue
+        optimizer.zero_grad(set_to_none=True)
+        loss.backward()
+
+        # Clip gradients only when the configuration requested it.
+        if grad_clip_norm is not None and trainable_parameters:
+            torch.nn.utils.clip_grad_norm_(
+                trainable_parameters,
+                max_norm=float(grad_clip_norm),
+            )
+        optimizer.step()
+
+        # Advance the learning-rate schedule alongside optimizer updates.
+        if scheduler is not None:
+            scheduler.step()
+
+    return {
+        "train_loss": train_loss_total / max(1, train_examples),
+        "train_acc": train_correct / max(1, train_examples),
+    }
+
+
+def evaluate_epoch(
+    model,
+    validation_loader,
+    *,
+    validation_y,
+    validation_labels,
+    num_validation_examples,
+    label_smoothing,
+    num_classes,
+    train_metrics,
+):
+    validation_logits = run_validation(
+        model,
+        validation_loader,
+        num_classes=num_classes,
+    )
+    predictions = normalize_predictions(
+        validation_logits,
+        num_examples=num_validation_examples,
+        num_classes=num_classes,
+    )
+    val_loss = float(
+        torch.nn.functional.cross_entropy(
+            validation_logits,
+            validation_y,
+            label_smoothing=label_smoothing,
         )
-        trainable_parameters = optimization_config.get("trainable_parameters")
-        if trainable_parameters is None:
-            trainable_parameters = [
-                parameter for parameter in model.parameters() if parameter.requires_grad
-            ]
-        trainable_parameters = list(trainable_parameters)
-        optimizer = optimization_config.get("optimizer")
-        scheduler = optimization_config.get("scheduler")
-        label_smoothing = float(optimization_config.get("label_smoothing", 0.0))
-        grad_clip_norm = optimization_config.get("grad_clip_norm", 1.0)
+        .detach()
+        .item()
+    )
+    val_acc = float((predictions == validation_labels).mean())
+    metrics = {
+        "train_loss": train_metrics["train_loss"],
+        "train_acc": train_metrics["train_acc"],
+        "val_loss": val_loss,
+        "val_acc": val_acc,
+        "accuracy": val_acc,
+    }
+    return predictions, metrics
 
-        training_policy = require_mapping(
-            "configure_training_policy",
-            require_callable("configure_training_policy")(num_epochs=num_epochs),
+
+def update_evaluation_state(
+    debug_payload,
+    *,
+    val_acc,
+    eval_index,
+    epoch_index,
+    elapsed_after_eval,
+    best_accuracy,
+    stale_epochs,
+):
+    improved_accuracy = val_acc > best_accuracy + CONFIG["accuracy_improvement_tol"]
+    best_accuracy = max(best_accuracy, val_acc)
+    stale_epochs = 0 if improved_accuracy else stale_epochs + 1
+    epochs_completed = epoch_index + 1
+    debug_payload.update(
+        {
+            "eval_count": eval_index,
+            "epochs_completed": epochs_completed,
+            "best_validation_accuracy_seen": best_accuracy,
+            "epochs_without_improvement": stale_epochs,
+        }
+    )
+    return {
+        "best_accuracy": best_accuracy,
+        "stale_epochs": stale_epochs,
+        "epochs_completed": epochs_completed,
+        "last_eval_sec": elapsed_after_eval,
+    }
+
+
+def run_training_loop(config, runtime, debug_payload):
+    model = runtime["model"]
+    num_classes = runtime["num_classes"]
+    train_loader = runtime["train_loader"]
+    validation_loader = runtime["validation_loader"]
+    validation_labels = runtime["validation_labels"]
+    validation_y = runtime["validation_y"]
+    num_validation_examples = runtime["num_validation_examples"]
+    trainable_parameters = runtime["trainable_parameters"]
+    optimizer = runtime["optimizer"]
+    scheduler = runtime["scheduler"]
+    label_smoothing = runtime["label_smoothing"]
+    grad_clip_norm = runtime["grad_clip_norm"]
+    patience = runtime["patience"]
+
+    debug_payload["early_stopping_patience"] = patience
+    start_time = time.monotonic()
+    eval_index = 0
+    epochs_completed = 0
+    stale_epochs = 0
+    last_eval_sec = None
+    best_accuracy = CONFIG["initial_best_accuracy"]
+
+    write_progress(
+        config["progress_path"],
+        phase="train",
+        elapsed_time_sec=0.0,
+        last_eval_sec=last_eval_sec,
+        eval_index=eval_index,
+        epoch_index=0,
+    )
+    for epoch_index in range(config["num_epochs"]):
+        prepare_training_epoch(
+            model,
+            epoch_index=epoch_index,
+            num_epochs=config["num_epochs"],
         )
-        patience = int(training_policy.get("early_stopping_patience", 0))
-        debug_payload["early_stopping_patience"] = patience
-
-        def report(phase, *, elapsed_time_sec, epoch_index):
-            write_json_atomic(
-                progress_path,
-                {
-                    "phase": phase,
-                    "elapsed_time_sec": float(elapsed_time_sec),
-                    "last_completed_eval_sec": last_eval_sec,
-                    "eval_index": eval_index,
-                    "epoch_index": epoch_index,
-                },
-            )
-
-        report("train", elapsed_time_sec=0.0, epoch_index=0)
-        for epoch_index in range(num_epochs):
-            train_loss_total = 0.0
-            train_correct = 0
-            train_examples = 0
-            hook = getattr(model, "on_epoch_start", None)
-
-            # Invoke the optional epoch hook only when the model defines one.
-            if callable(hook):
-                hook(epoch_index=epoch_index, num_epochs=num_epochs)
-            model.train()
-            report(
-                "train",
-                elapsed_time_sec=time.monotonic() - start_time,
-                epoch_index=epoch_index,
-            )
-            for batch_x, batch_y in train_loader:
-                logits = coerce_model_logits(
-                    model(batch_x),
-                    batch_size=int(batch_x.shape[0]),
-                    num_classes=num_classes,
-                )
-                loss = torch.nn.functional.cross_entropy(
-                    logits, batch_y, label_smoothing=label_smoothing
-                )
-                batch_size = int(batch_y.shape[0])
-                train_loss_total += float(loss.detach().item()) * batch_size
-                train_correct += int((logits.argmax(dim=1) == batch_y).sum().item())
-                train_examples += batch_size
-
-                # Skip optimization work entirely when the model is inference-only.
-                if optimizer is None:
-                    continue
-                optimizer.zero_grad(set_to_none=True)
-                loss.backward()
-
-                # Clip gradients only when the configuration requested it.
-                if grad_clip_norm is not None and trainable_parameters:
-                    torch.nn.utils.clip_grad_norm_(
-                        trainable_parameters, max_norm=float(grad_clip_norm)
-                    )
-                optimizer.step()
-
-                # Advance the learning-rate schedule alongside optimizer updates.
-                if scheduler is not None:
-                    scheduler.step()
-            report(
-                "eval",
-                elapsed_time_sec=time.monotonic() - start_time,
-                epoch_index=epoch_index,
-            )
-            validation_logits = run_validation(
-                model, validation_loader, num_classes=num_classes
-            )
-            predictions = normalize_predictions(
-                validation_logits,
-                num_examples=int(validation_features.shape[0]),
-                num_classes=num_classes,
-            )
-            eval_index += 1
-            elapsed_after_eval = time.monotonic() - start_time
-            train_loss = train_loss_total / max(1, train_examples)
-            train_acc = train_correct / max(1, train_examples)
-            val_loss = float(
-                torch.nn.functional.cross_entropy(
-                    validation_logits,
-                    validation_y,
-                    label_smoothing=label_smoothing,
-                )
-                .detach()
-                .item()
-            )
-            val_acc = float((predictions == validation_labels).mean())
-            write_eval_atomic(
-                eval_dir,
-                eval_index,
-                predictions,
-                elapsed_after_eval,
-                epoch_index + 1,
-                metrics={
-                    "train_loss": train_loss,
-                    "train_acc": train_acc,
-                    "val_loss": val_loss,
-                    "val_acc": val_acc,
-                    "accuracy": val_acc,
-                },
-            )
-            improved_accuracy = (
-                val_acc > best_accuracy + CONFIG["accuracy_improvement_tol"]
-            )
-            stale_epochs = 0 if improved_accuracy else stale_epochs + 1
-            best_accuracy = max(best_accuracy, val_acc)
-            last_eval_sec = elapsed_after_eval
-            epochs_completed = epoch_index + 1
-            debug_payload.update(
-                {
-                    "eval_count": eval_index,
-                    "epochs_completed": epochs_completed,
-                    "best_validation_accuracy_seen": best_accuracy,
-                    "epochs_without_improvement": stale_epochs,
-                }
-            )
-            report(
-                "train",
-                elapsed_time_sec=elapsed_after_eval,
-                epoch_index=epochs_completed,
-            )
-
-            # Stop early once the configured patience budget is exhausted.
-            if patience and stale_epochs >= patience and epochs_completed < num_epochs:
-                debug_payload["early_stopped"] = True
-                debug_payload["early_stop_epoch"] = epochs_completed
-                break
-        report(
-            "finished",
+        write_progress(
+            config["progress_path"],
+            phase="train",
             elapsed_time_sec=time.monotonic() - start_time,
+            last_eval_sec=last_eval_sec,
+            eval_index=eval_index,
+            epoch_index=epoch_index,
+        )
+        train_metrics = train_one_epoch(
+            model,
+            train_loader,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            trainable_parameters=trainable_parameters,
+            grad_clip_norm=grad_clip_norm,
+            label_smoothing=label_smoothing,
+            num_classes=num_classes,
+        )
+        write_progress(
+            config["progress_path"],
+            phase="eval",
+            elapsed_time_sec=time.monotonic() - start_time,
+            last_eval_sec=last_eval_sec,
+            eval_index=eval_index,
+            epoch_index=epoch_index,
+        )
+        predictions, metrics = evaluate_epoch(
+            model,
+            validation_loader,
+            validation_y=validation_y,
+            validation_labels=validation_labels,
+            num_validation_examples=num_validation_examples,
+            label_smoothing=label_smoothing,
+            num_classes=num_classes,
+            train_metrics=train_metrics,
+        )
+        eval_index += 1
+        elapsed_after_eval = time.monotonic() - start_time
+        write_eval_atomic(
+            config["eval_dir"],
+            eval_index,
+            predictions,
+            elapsed_after_eval,
+            epoch_index + 1,
+            metrics=metrics,
+        )
+        evaluation_state = update_evaluation_state(
+            debug_payload,
+            val_acc=metrics["val_acc"],
+            eval_index=eval_index,
+            epoch_index=epoch_index,
+            elapsed_after_eval=elapsed_after_eval,
+            best_accuracy=best_accuracy,
+            stale_epochs=stale_epochs,
+        )
+        best_accuracy = evaluation_state["best_accuracy"]
+        stale_epochs = evaluation_state["stale_epochs"]
+        epochs_completed = evaluation_state["epochs_completed"]
+        last_eval_sec = evaluation_state["last_eval_sec"]
+        write_progress(
+            config["progress_path"],
+            phase="train",
+            elapsed_time_sec=elapsed_after_eval,
+            last_eval_sec=last_eval_sec,
+            eval_index=eval_index,
             epoch_index=epochs_completed,
         )
-        write_json_atomic(debug_output_path, debug_payload)
+
+        # Stop early once the configured patience budget is exhausted.
+        if patience and stale_epochs >= patience and epochs_completed < config["num_epochs"]:
+            debug_payload["early_stopped"] = True
+            debug_payload["early_stop_epoch"] = epochs_completed
+            break
+
+    write_progress(
+        config["progress_path"],
+        phase="finished",
+        elapsed_time_sec=time.monotonic() - start_time,
+        last_eval_sec=last_eval_sec,
+        eval_index=eval_index,
+        epoch_index=epochs_completed,
+    )
+
+
+def main(argv=None):
+    config = load_run_config(argv)
+    train_features, train_labels, validation_features, validation_labels = (
+        load_dataset_splits(config)
+    )
+    validate_dataset_splits(
+        train_features,
+        train_labels,
+        validation_features,
+        validation_labels,
+    )
+    debug_payload = build_debug_payload()
+
+    try:
+        runtime = prepare_training_runtime(
+            train_features=train_features,
+            train_labels=train_labels,
+            validation_features=validation_features,
+            validation_labels=validation_labels,
+            dataset_metadata=config["dataset_metadata"],
+            random_seed=config["random_seed"],
+            num_epochs=config["num_epochs"],
+        )
+        run_training_loop(config, runtime, debug_payload)
+        write_json_atomic(config["debug_output_path"], debug_payload)
         return 0
     except TrainScriptContractError as exc:
         debug_payload.update(
@@ -587,7 +794,7 @@ def main(argv=None):
                 "detail": str(exc),
             }
         )
-        write_json_atomic(debug_output_path, debug_payload)
+        write_json_atomic(config["debug_output_path"], debug_payload)
         logger.error("%s", exc)
         return 2
 
