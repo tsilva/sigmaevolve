@@ -8,6 +8,11 @@ from typing import Any, Callable
 from sigmaevolve.models import ACTIVE_STATUSES, ReconcileResult, now_utc
 
 
+def _emit(reporter: Callable[[str, dict[str, Any]], None] | None, event: str, **payload: Any) -> None:
+    if reporter is not None:
+        reporter(event, payload)
+
+
 @dataclass
 class _FillCycle:
     requested_generations: int
@@ -22,17 +27,25 @@ class TrackController:
 
     def __init__(
         self,
-        orchestrator,
+        *,
+        repository,
+        dataset_manager,
+        generation,
+        launcher,
+        generation_failure_limit_multiplier: int,
         track,
         reporter: Callable[[str, dict[str, Any]], None] | None = None,
-        *,
         ready_queue_threshold: int,
         max_parallelism: int,
         continuous: bool = False,
         sweep_interval_sec: float = DEFAULT_SWEEP_INTERVAL_SEC,
         wait_interval_sec: float = DEFAULT_WAIT_INTERVAL_SEC,
     ) -> None:
-        self.orchestrator = orchestrator
+        self.repository = repository
+        self.dataset_manager = dataset_manager
+        self.generation = generation
+        self.launcher = launcher
+        self.generation_failure_limit_multiplier = int(generation_failure_limit_multiplier)
         self.track = track
         self.reporter = reporter
         self.ready_queue_threshold = int(ready_queue_threshold)
@@ -53,7 +66,7 @@ class TrackController:
 
         self._result = ReconcileResult()
         self._dataset_manifest = None
-        self._generation_index = self.orchestrator.repository.count_trials(self.track.track_id)
+        self._generation_index = self.repository.count_trials(self.track.track_id)
         self._fill_cycle: _FillCycle | None = None
         self._pending_generations: dict[Future[Any], Any] = {}
         self._deferred_retries: list[tuple[int, int, int]] = []
@@ -83,16 +96,16 @@ class TrackController:
                 return
             self._started = True
         if self.continuous:
-            self.orchestrator._emit(
+            _emit(
                 self.reporter,
                 "controller_started",
                 track_id=self.track.track_id,
-                launcher=self.orchestrator.launcher.__class__.__name__,
+                launcher=self.launcher.__class__.__name__,
                 max_parallelism=self.max_parallelism,
             )
         self._run_sweep(emit_always=True)
         if not self.continuous:
-            queue_count = self.orchestrator.repository.count_trials(self.track.track_id, statuses={"queued"})
+            queue_count = self.repository.count_trials(self.track.track_id, statuses={"queued"})
             self._one_shot_requested_generations = max(0, self.ready_queue_threshold - queue_count)
             self._one_shot_generation_finished = self._one_shot_requested_generations == 0
         self._generation_thread.start()
@@ -111,7 +124,7 @@ class TrackController:
         self._launch_executor.shutdown(wait=True, cancel_futures=False)
         if self.continuous:
             snapshot = self.result
-            self.orchestrator._emit(
+            _emit(
                 self.reporter,
                 "controller_stopped",
                 track_id=self.track.track_id,
@@ -157,19 +170,19 @@ class TrackController:
             return False
         if self.max_parallelism <= 0:
             return True
-        active_count = self.orchestrator.repository.count_trials(self.track.track_id, statuses=ACTIVE_STATUSES)
-        queue_count = self.orchestrator.repository.count_trials(self.track.track_id, statuses={"queued"})
+        active_count = self.repository.count_trials(self.track.track_id, statuses=ACTIVE_STATUSES)
+        queue_count = self.repository.count_trials(self.track.track_id, statuses={"queued"})
         return active_count >= self.max_parallelism or queue_count == 0
 
     def _desired_queue_threshold(self) -> int:
         if not self.continuous:
             return self.ready_queue_threshold
-        active_count = self.orchestrator.repository.count_trials(self.track.track_id, statuses=ACTIVE_STATUSES)
+        active_count = self.repository.count_trials(self.track.track_id, statuses=ACTIVE_STATUSES)
         return max(0, self.max_parallelism - active_count)
 
     def _ensure_dataset_manifest(self):
         if self._dataset_manifest is None:
-            self._dataset_manifest = self.orchestrator.dataset_manager.verify(self.track.dataset_id)
+            self._dataset_manifest = self.dataset_manager.verify(self.track.dataset_id)
         return self._dataset_manifest
 
     def _generation_loop(self) -> None:
@@ -178,7 +191,7 @@ class TrackController:
             started_payload: dict[str, Any] | None = None
             with self._condition:
                 if self._fill_cycle is None:
-                    queue_count = self.orchestrator.repository.count_trials(self.track.track_id, statuses={"queued"})
+                    queue_count = self.repository.count_trials(self.track.track_id, statuses={"queued"})
                     if self.continuous:
                         target_queue_count = self._desired_queue_threshold()
                         deficit = max(0, target_queue_count - queue_count)
@@ -188,7 +201,7 @@ class TrackController:
                     if deficit > 0:
                         self._fill_cycle = _FillCycle(
                             requested_generations=deficit,
-                            max_failures=deficit * self.orchestrator.GENERATION_FAILURE_LIMIT_MULTIPLIER,
+                            max_failures=deficit * self.generation_failure_limit_multiplier,
                         )
                         started_payload = {
                             "queued_count": queue_count,
@@ -212,13 +225,13 @@ class TrackController:
                     continue
 
             if started_payload is not None:
-                self.orchestrator._emit(self.reporter, "queue_fill_started", **started_payload)
+                _emit(self.reporter, "queue_fill_started", **started_payload)
 
             dataset_manifest = self._ensure_dataset_manifest()
             sampling_settings = self.track.policy_json.get("sampling_settings", {})
             scheduled_any = False
             for slot_index, generation_index, duplicate_retry_count in attempts_to_schedule:
-                scheduled = self.orchestrator._schedule_generation_attempt(
+                scheduled = self.generation.schedule_generation_attempt(
                     self._generation_executor,
                     self.track,
                     dataset_manifest,
@@ -234,7 +247,7 @@ class TrackController:
                 with self._condition:
                     self._pending_generations[future] = attempt
                     self._condition.notify_all()
-                self.orchestrator._emit(
+                _emit(
                     self.reporter,
                     "generation_scheduled",
                     slot_index=attempt.slot_index,
@@ -246,7 +259,7 @@ class TrackController:
             if not scheduled_any:
                 stopped_payload = self._finish_fill_cycle_if_ready(force=True)
                 if stopped_payload is not None:
-                    self.orchestrator._emit(self.reporter, stopped_payload["event"], **stopped_payload["payload"])
+                    _emit(self.reporter, stopped_payload["event"], **stopped_payload["payload"])
 
     def _generation_completion_loop(self) -> None:
         while not self._stop_event.is_set():
@@ -266,15 +279,15 @@ class TrackController:
             if self.max_parallelism <= 0:
                 should_wait = True
             else:
-                active_count = self.orchestrator.repository.count_trials(self.track.track_id, statuses=ACTIVE_STATUSES)
-                queue_count = self.orchestrator.repository.count_trials(self.track.track_id, statuses={"queued"})
+                active_count = self.repository.count_trials(self.track.track_id, statuses=ACTIVE_STATUSES)
+                queue_count = self.repository.count_trials(self.track.track_id, statuses={"queued"})
                 if active_count >= self.max_parallelism or queue_count <= 0:
                     should_wait = True
                 else:
                     with self._condition:
                         self._dispatch_in_progress = True
                         self._condition.notify_all()
-                    reserved = self.orchestrator.repository.reserve_trials(
+                    reserved = self.repository.reserve_trials(
                         track_id=self.track.track_id,
                         max_parallelism=self.max_parallelism,
                         dispatch_ttl_sec=int(self.track.policy_json["dispatch_ttl_sec"]),
@@ -287,16 +300,16 @@ class TrackController:
                     self._condition.notify_all()
                 continue
 
-            self.orchestrator._emit(
+            _emit(
                 self.reporter,
                 "launch_batch_started",
                 reserved_count=len(reserved),
                 max_parallelism=self.max_parallelism,
             )
             for trial in reserved:
-                self.orchestrator._emit(self.reporter, "trial_launch_started", trial_id=trial.trial_id)
+                _emit(self.reporter, "trial_launch_started", trial_id=trial.trial_id)
                 future = self._launch_executor.submit(
-                    self.orchestrator.launcher.launch_trial,
+                    self.launcher.launch_trial,
                     trial.trial_id,
                     trial.dispatch_token or "",
                     self.track.policy_json,
@@ -314,11 +327,11 @@ class TrackController:
             self._run_sweep(emit_always=False)
 
     def _run_sweep(self, *, emit_always: bool) -> None:
-        requeued, stale_dispatch = self.orchestrator.repository.sweep_expired_dispatches(
+        requeued, stale_dispatch = self.repository.sweep_expired_dispatches(
             track_id=self.track.track_id,
             max_dispatch_retries=int(self.track.policy_json["max_dispatch_retries"]),
         )
-        stale_active = self.orchestrator.repository.sweep_stale_active_trials(
+        stale_active = self.repository.sweep_stale_active_trials(
             track_id=self.track.track_id,
             stale_ttl_sec=int(self.track.policy_json["stale_ttl_sec"]),
         )
@@ -331,7 +344,7 @@ class TrackController:
                 self._result.stale_trial_ids.extend(stale_trial_ids)
                 self._condition.notify_all()
         if emit_always or requeued or stale_trial_ids:
-            self.orchestrator._emit(
+            _emit(
                 self.reporter,
                 "sweep_completed",
                 requeued_count=len(requeued),
@@ -339,9 +352,9 @@ class TrackController:
             )
 
     def _cancel_stale_modal_runs(self, stale_trial_ids: list[str]) -> None:
-        cancel_run = getattr(self.orchestrator.launcher, "cancel_run", None)
+        cancel_run = getattr(self.launcher, "cancel_run", None)
         for trial_id in stale_trial_ids:
-            trial = self.orchestrator.repository.get_trial(trial_id)
+            trial = self.repository.get_trial(trial_id)
             if trial is None:
                 continue
             launcher_metadata = dict((trial.provenance_json or {}).get("launcher") or {})
@@ -352,7 +365,7 @@ class TrackController:
             run_id = launcher_metadata.get("run_id")
             if not isinstance(run_id, str) or not run_id:
                 cancel_metadata["cancel_outcome"] = "skipped_no_run_id"
-                self.orchestrator.repository.record_trial_launcher_metadata(trial_id, cancel_metadata)
+                self.repository.record_trial_launcher_metadata(trial_id, cancel_metadata)
                 continue
 
             try:
@@ -364,7 +377,7 @@ class TrackController:
                 cancel_metadata["cancel_error"] = str(exc)
             else:
                 cancel_metadata["cancel_outcome"] = "requested"
-            self.orchestrator.repository.record_trial_launcher_metadata(trial_id, cancel_metadata)
+            self.repository.record_trial_launcher_metadata(trial_id, cancel_metadata)
 
     def _pending_generation_count(self) -> int:
         with self._lock:
@@ -387,10 +400,10 @@ class TrackController:
         except Exception as exc:
             with self._condition:
                 cycle.failures += 1
-                self._result = self.orchestrator._record_generation_attempt_failure(
+                self._result = self.generation.record_generation_attempt_failure(
                     track_id=self.track.track_id,
                     result=self._result,
-                    provenance_json=self.orchestrator._fallback_generation_provenance(
+                    provenance_json=self.generation.fallback_generation_provenance(
                         self.track,
                         attempt.context_trials,
                         generation_index=attempt.generation_index,
@@ -407,7 +420,7 @@ class TrackController:
                 completed = len(cycle.completed_slots)
                 requested = cycle.requested_generations
                 in_flight = len(self._pending_generations)
-            self.orchestrator._emit(
+            _emit(
                 self.reporter,
                 "generation_failed",
                 slot_index=attempt.slot_index,
@@ -422,12 +435,12 @@ class TrackController:
                 in_flight=in_flight,
             )
         else:
-            generated = self.orchestrator._normalize_generation_result(raw_generated)
+            generated = self.generation.normalize_generation_result(raw_generated)
             if not generated.succeeded:
                 error_info = dict(generated.error_info or {})
                 with self._condition:
                     cycle.failures += 1
-                    self._result = self.orchestrator._record_generation_attempt_failure(
+                    self._result = self.generation.record_generation_attempt_failure(
                         track_id=self.track.track_id,
                         result=self._result,
                         provenance_json=generated.provenance_json,
@@ -441,7 +454,7 @@ class TrackController:
                     completed = len(cycle.completed_slots)
                     requested = cycle.requested_generations
                     in_flight = len(self._pending_generations)
-                self.orchestrator._emit(
+                _emit(
                     self.reporter,
                     "generation_failed",
                     slot_index=attempt.slot_index,
@@ -458,11 +471,14 @@ class TrackController:
             else:
                 assert generated.source is not None
                 try:
-                    candidate_source = self.orchestrator._materialize_candidate_source(attempt.context_trials[0].source, generated.source)
+                    candidate_source = self.generation.materialize_candidate_source(
+                        attempt.context_trials[0].source,
+                        generated.source,
+                    )
                 except Exception as exc:
                     with self._condition:
                         cycle.failures += 1
-                        self._result = self.orchestrator._record_generation_attempt_failure(
+                        self._result = self.generation.record_generation_attempt_failure(
                             track_id=self.track.track_id,
                             result=self._result,
                             provenance_json=generated.provenance_json,
@@ -476,7 +492,7 @@ class TrackController:
                         completed = len(cycle.completed_slots)
                         requested = cycle.requested_generations
                         in_flight = len(self._pending_generations)
-                    self.orchestrator._emit(
+                    _emit(
                         self.reporter,
                         "generation_failed",
                         slot_index=attempt.slot_index,
@@ -491,7 +507,7 @@ class TrackController:
                         in_flight=in_flight,
                     )
                 else:
-                    generation_outcome = self.orchestrator._accept_generated_candidate(
+                    generation_outcome = self.generation.accept_generated_candidate(
                         track_id=self.track.track_id,
                         result=self._result,
                         generated=generated,
@@ -522,7 +538,7 @@ class TrackController:
                             "in_flight": in_flight,
                         }
                     )
-                    self.orchestrator._emit(self.reporter, generation_outcome["event"], **payload)
+                    _emit(self.reporter, generation_outcome["event"], **payload)
                     retry_needed = generation_outcome["event"] != "generation_accepted"
 
         with self._condition:
@@ -536,7 +552,7 @@ class TrackController:
             self._condition.notify_all()
 
         if stopped_payload is not None:
-            self.orchestrator._emit(self.reporter, stopped_payload["event"], **stopped_payload["payload"])
+            _emit(self.reporter, stopped_payload["event"], **stopped_payload["payload"])
 
     def _finish_fill_cycle_if_ready(self, *, force: bool = False) -> dict[str, Any] | None:
         cycle = self._fill_cycle
@@ -574,7 +590,7 @@ class TrackController:
                 with self._condition:
                     self._result.errors.append(f"launch_failed:{trial.trial_id}:{exc}")
                     self._condition.notify_all()
-                self.orchestrator._emit(
+                _emit(
                     self.reporter,
                     "trial_launch_failed",
                     trial_id=trial.trial_id,
@@ -583,11 +599,11 @@ class TrackController:
                 return
 
             if launch_metadata:
-                self.orchestrator.repository.record_trial_launcher_metadata(trial.trial_id, launch_metadata)
+                self.repository.record_trial_launcher_metadata(trial.trial_id, launch_metadata)
             with self._condition:
                 self._result.launched_trial_ids.append(trial.trial_id)
                 self._condition.notify_all()
-            self.orchestrator._emit(
+            _emit(
                 self.reporter,
                 "trial_launched",
                 trial_id=trial.trial_id,

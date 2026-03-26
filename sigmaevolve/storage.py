@@ -11,7 +11,6 @@ from sqlalchemy.engine import Connection, Engine
 from sigmaevolve.hashing import compute_script_hash, normalize_source
 from sigmaevolve.models import (
     ACTIVE_STATUSES,
-    ERROR_OUTCOMES,
     OUTCOME_DUPLICATE,
     OUTCOME_GENERATION_FAILED,
     OUTCOME_STALE,
@@ -32,111 +31,13 @@ from sigmaevolve.models import (
     now_utc,
 )
 from sigmaevolve.scoring import compute_score
-
-
-metadata = sa.MetaData()
-
-
-def normalize_database_url(database_url: str) -> str:
-    if database_url.startswith("postgres://"):
-        database_url = "postgresql://" + database_url[len("postgres://") :]
-    if database_url.startswith("postgresql://") and "+psycopg" not in database_url:
-        database_url = "postgresql+psycopg://" + database_url[len("postgresql://") :]
-    return database_url
-
-
-ALLOWED_GENERATION_BACKENDS = frozenset({"openrouter"})
-
-
-def _is_prompt_message(entry: object) -> bool:
-    if not isinstance(entry, dict):
-        return False
-    role = entry.get("role")
-    content = entry.get("content")
-    return isinstance(role, str) and bool(role.strip()) and isinstance(content, str) and bool(content.strip())
-
-
-def _validate_trial_provenance(provenance_json: dict[str, Any]) -> dict[str, Any]:
-    payload = dict(provenance_json or {})
-    backend = payload.get("backend")
-    if not isinstance(backend, str) or not backend.strip():
-        raise ValueError("Queued trials require provenance_json.backend.")
-    if backend == "baseline":
-        return payload
-    if backend not in ALLOWED_GENERATION_BACKENDS:
-        raise ValueError(
-            "Queued non-baseline trials must come from the recorded LLM prompting pipeline; "
-            f"unsupported backend {backend!r}."
-        )
-    model = payload.get("model")
-    if not isinstance(model, str) or not model.strip():
-        raise ValueError("LLM-generated trials require provenance_json.model.")
-    generation_config = payload.get("generation_config")
-    if not isinstance(generation_config, dict):
-        raise ValueError("LLM-generated trials require provenance_json.generation_config.")
-    request_messages = payload.get("request_messages")
-    if not isinstance(request_messages, list) or not request_messages:
-        raise ValueError("LLM-generated trials require non-empty provenance_json.request_messages.")
-    if not all(_is_prompt_message(entry) for entry in request_messages):
-        raise ValueError(
-            "LLM-generated trials require provenance_json.request_messages entries with string role and content."
-        )
-    context_trial_ids = payload.get("context_trial_ids")
-    if not isinstance(context_trial_ids, list):
-        raise ValueError("LLM-generated trials require provenance_json.context_trial_ids.")
-    candidate_kind = payload.get("candidate_kind")
-    if not isinstance(candidate_kind, str) or not candidate_kind.strip():
-        raise ValueError("LLM-generated trials require provenance_json.candidate_kind.")
-    return payload
-
-datasets_table = sa.Table(
-    "datasets",
-    metadata,
-    sa.Column("dataset_id", sa.String(255), primary_key=True),
-    sa.Column("manifest_path", sa.Text(), nullable=True),
-    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
-)
-
-tracks_table = sa.Table(
-    "tracks",
-    metadata,
-    sa.Column("track_id", sa.String(255), primary_key=True),
-    sa.Column("name", sa.String(255), nullable=True),
-    sa.Column("dataset_id", sa.String(255), sa.ForeignKey("datasets.dataset_id"), nullable=False),
-    sa.Column("policy_json", sa.JSON(), nullable=False),
-    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
-)
-
-trials_table = sa.Table(
-    "trials",
-    metadata,
-    sa.Column("trial_id", sa.String(255), primary_key=True),
-    sa.Column("track_id", sa.String(255), sa.ForeignKey("tracks.track_id"), nullable=False),
-    sa.Column("source", sa.Text(), nullable=False),
-    sa.Column("script_hash", sa.String(64), nullable=False),
-    sa.Column("provenance_json", sa.JSON(), nullable=False),
-    sa.Column("status", sa.String(32), nullable=False),
-    sa.Column("outcome_reason", sa.String(32), nullable=True),
-    sa.Column("dispatch_token", sa.String(255), nullable=True),
-    sa.Column("dispatch_deadline_at", sa.DateTime(timezone=True), nullable=True),
-    sa.Column("runner_id", sa.String(255), nullable=True),
-    sa.Column("heartbeat_at", sa.DateTime(timezone=True), nullable=True),
-    sa.Column("started_at", sa.DateTime(timezone=True), nullable=True),
-    sa.Column("finished_at", sa.DateTime(timezone=True), nullable=True),
-    sa.Column("metrics_json", sa.JSON(), nullable=True),
-    sa.Column("score", sa.Float(), nullable=False, server_default="0"),
-    sa.Column("error_json", sa.JSON(), nullable=True),
-    sa.Column("dispatch_attempts", sa.Integer(), nullable=False, server_default="0"),
-    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
-    sa.UniqueConstraint("track_id", "script_hash", name="uq_trials_track_script_hash"),
-)
-
-sa.Index("ix_trials_track_created_at_desc", trials_table.c.track_id, trials_table.c.created_at.desc())
-sa.Index(
-    "ix_trials_track_status_created_at_desc",
-    trials_table.c.track_id,
-    trials_table.c.status,
-    trials_table.c.created_at.desc(),
+from sigmaevolve.storage_schema import datasets_table, metadata, normalize_database_url, tracks_table, trials_table
+from sigmaevolve.storage_validation import (
+    build_generation_attempt_source,
+    has_error_signal,
+    prepare_error_payload,
+    status_for_outcome_reason,
+    validate_trial_provenance,
 )
 
 
@@ -188,105 +89,6 @@ def _trial_summary_sort_key(summary: TrialSummary) -> tuple[float, float, float]
     if time_to_best is None:
         time_to_best = float("inf")
     return (-accuracy, float(time_to_best), -summary.score)
-
-
-def _has_error_signal(payload: dict[str, Any] | None) -> bool:
-    if not payload:
-        return False
-    reason = payload.get("reason")
-    if isinstance(reason, str) and reason.strip():
-        return True
-    detail = payload.get("detail")
-    if isinstance(detail, str) and detail.strip():
-        return True
-    stderr = payload.get("stderr")
-    if isinstance(stderr, str) and stderr.strip():
-        return True
-    return payload.get("returncode") is not None
-
-
-def _build_generation_attempt_source(trial_id: str, outcome_reason: str) -> str:
-    return normalize_source(
-        "\n".join(
-            [
-                "# sigmaevolve generation attempt",
-                f"# trial_id: {trial_id}",
-                f"# outcome_reason: {outcome_reason}",
-                "# diagnostic_source: true",
-                "raise RuntimeError('diagnostic generation attempt source; see provenance_json.generation')",
-            ]
-        )
-        + "\n"
-    )
-
-
-def _status_for_outcome_reason(outcome_reason: str) -> str:
-    if outcome_reason in ERROR_OUTCOMES:
-        return TRIAL_STATUS_ERROR
-    return TRIAL_STATUS_FINISHED
-
-
-def _classify_error_type(outcome_reason: str, error_json: dict[str, Any] | None) -> str | None:
-    payload = dict(error_json or {})
-    explicit = payload.get("error_type")
-    if isinstance(explicit, str) and explicit.strip():
-        return explicit.strip()
-
-    reason = payload.get("reason")
-    if not isinstance(reason, str):
-        reason = None
-    finish_reason = payload.get("finish_reason")
-    native_finish_reason = payload.get("native_finish_reason")
-    reached_length_limit = (
-        (isinstance(finish_reason, str) and finish_reason == "length")
-        or (isinstance(native_finish_reason, str) and native_finish_reason == "length")
-    )
-
-    if outcome_reason == OUTCOME_GENERATION_FAILED:
-        if reason in {"candidate_materialization_failed", "generation_assertion_failed"} and reached_length_limit:
-            return "generation_output_truncated"
-        if reason in {"candidate_materialization_failed", "generation_assertion_failed"}:
-            return "generation_invalid_candidate"
-        if reason == "generator_exception":
-            return "generation_backend_exception"
-        if reason in {
-            "provider_http_error",
-            "provider_request_failed",
-            "provider_response_invalid_json",
-            "provider_response_missing_choices",
-            "provider_response_missing_content",
-        }:
-            return "generation_provider_failure"
-        return "generation_failed"
-
-    if outcome_reason == "crashed":
-        return "execution_crash"
-
-    if outcome_reason == "eval_failed":
-        if reason == "train_script_contract_violation":
-            return "execution_contract_violation"
-        if reason == "prediction_load_failed":
-            return "evaluation_artifact_error"
-        if reason == "predictions_missing":
-            return "evaluation_predictions_missing"
-        return "evaluation_failed"
-
-    if outcome_reason == OUTCOME_STALE:
-        if reason == "dispatch_deadline_expired":
-            return "dispatch_stale"
-        if reason == "heartbeat_stale":
-            return "runner_stale"
-        return "stale"
-
-    return None
-
-
-def _prepare_error_payload(outcome_reason: str, error_json: dict[str, Any] | None) -> dict[str, Any] | None:
-    payload = dict(error_json or {})
-    error_type = _classify_error_type(outcome_reason, payload)
-    if error_type:
-        payload["error_type"] = error_type
-    return payload or None
 
 
 def _row_to_trial_summary(row: sa.Row[Any]) -> TrialSummary:
@@ -428,7 +230,7 @@ class SQLAlchemyRepository:
         source: str,
         provenance_json: dict[str, Any],
     ) -> tuple[TrialRecord | None, bool]:
-        validated_provenance = _validate_trial_provenance(provenance_json)
+        validated_provenance = validate_trial_provenance(provenance_json)
         normalized_source = normalize_source(source)
         script_hash = compute_script_hash(normalized_source)
         created_at = now_utc()
@@ -480,9 +282,9 @@ class SQLAlchemyRepository:
     ) -> TrialRecord:
         if outcome_reason not in {OUTCOME_DUPLICATE, OUTCOME_GENERATION_FAILED}:
             raise ValueError(f"Unsupported generation attempt outcome_reason: {outcome_reason}")
-        validated_provenance = _validate_trial_provenance(provenance_json)
+        validated_provenance = validate_trial_provenance(provenance_json)
         trial_id = make_id("trial")
-        source = _build_generation_attempt_source(trial_id, outcome_reason)
+        source = build_generation_attempt_source(trial_id, outcome_reason)
         script_hash = compute_script_hash(source)
         created_at = now_utc()
         with self.transaction() as conn:
@@ -493,7 +295,7 @@ class SQLAlchemyRepository:
                     source=source,
                     script_hash=script_hash,
                     provenance_json=validated_provenance,
-                    status=_status_for_outcome_reason(outcome_reason),
+                    status=status_for_outcome_reason(outcome_reason),
                     outcome_reason=outcome_reason,
                     dispatch_token=None,
                     dispatch_deadline_at=None,
@@ -503,7 +305,7 @@ class SQLAlchemyRepository:
                     finished_at=created_at,
                     metrics_json=None,
                     score=0.0,
-                    error_json=_prepare_error_payload(outcome_reason, error_json),
+                    error_json=prepare_error_payload(outcome_reason, error_json),
                     dispatch_attempts=0,
                     created_at=created_at,
                 )
@@ -710,7 +512,7 @@ class SQLAlchemyRepository:
                         trials_table.c.runner_id == runner_id,
                     )
                 )
-                .values(heartbeat_at=now_utc(), error_json=payload if _has_error_signal(payload) else None)
+                .values(heartbeat_at=now_utc(), error_json=payload if has_error_signal(payload) else None)
             )
 
     def update_active_trial_metrics(self, trial_id: str, runner_id: str, metrics: dict[str, Any]) -> None:
@@ -758,7 +560,7 @@ class SQLAlchemyRepository:
         if metrics is None:
             score = 0.0
         persisted_error_info = dict(error_info) if error_info else None
-        if outcome_reason in SUCCESS_OUTCOMES and not _has_error_signal(persisted_error_info):
+        if outcome_reason in SUCCESS_OUTCOMES and not has_error_signal(persisted_error_info):
             persisted_error_info = None
         with self.transaction() as conn:
             where = [trials_table.c.trial_id == trial_id]
@@ -771,7 +573,7 @@ class SQLAlchemyRepository:
                 trial_id=trial_id,
                 where=where[1:],
                 values={
-                    "status": _status_for_outcome_reason(outcome_reason),
+                    "status": status_for_outcome_reason(outcome_reason),
                     "outcome_reason": outcome_reason,
                     "finished_at": now,
                     "dispatch_token": None,
@@ -779,7 +581,7 @@ class SQLAlchemyRepository:
                     "heartbeat_at": now,
                     "metrics_json": metrics,
                     "score": score,
-                    "error_json": _prepare_error_payload(outcome_reason, persisted_error_info),
+                    "error_json": prepare_error_payload(outcome_reason, persisted_error_info),
                 },
             )
             if not updated:
@@ -823,7 +625,7 @@ class SQLAlchemyRepository:
                             dispatch_token=None,
                             dispatch_deadline_at=None,
                             score=0.0,
-                            error_json=_prepare_error_payload(
+                            error_json=prepare_error_payload(
                                 OUTCOME_STALE,
                                 {"reason": "dispatch_deadline_expired"},
                             ),
@@ -863,7 +665,7 @@ class SQLAlchemyRepository:
                         outcome_reason=OUTCOME_STALE,
                         finished_at=now_utc(),
                         score=0.0,
-                        error_json=_prepare_error_payload(
+                        error_json=prepare_error_payload(
                             OUTCOME_STALE,
                             {"reason": "heartbeat_stale"},
                         ),

@@ -3,7 +3,7 @@
 ## Environment
 
 - Before concluding that SigmaEvolve credentials or runtime configuration are missing, check the user-scoped env file at `/Users/tsilva/.config/sigmaevolve/.env`.
-- This file may provide `SIGMAEVOLVE_DATABASE_URL`, `DATABASE_URL`, `OPENROUTER_API_KEY`, and other runtime settings even when those variables are not present in the current shell environment.
+- This file may provide `DATABASE_URL`, `OPENROUTER_API_KEY`, and other runtime settings even when those variables are not present in the current shell environment.
 - Do not print secret values back to the user. It is enough to confirm whether the required variables are available.
 
 ## Modal Runs
@@ -21,3 +21,5 @@
 
 - Keep `docs/DB.md` in sync with the live schema at all times.
 - Whenever tables, columns, constraints, or the expected contents of persisted JSON fields change, update `docs/DB.md` in the same change.
+- When creating or editing code, follow the hard rules in `docs/CODE_STYLE.md`.
+- Use the examples in `docs/CODE_STYLE.md` as reference patterns, not as templates to copy mechanically.

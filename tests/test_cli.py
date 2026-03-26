@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
+from sigmaevolve.cli_reporting import CliReconcileReporter
 from sigmaevolve.cli import main
 from sigmaevolve.models import DEFAULT_GENERATION_MODEL
 from sigmaevolve.storage import normalize_database_url
@@ -165,7 +166,7 @@ def test_cli_loads_env_file_for_defaults(tmp_path, monkeypatch):
         "\n".join(
             [
                 f"OPENROUTER_API_KEY=test-key",
-                f"SIGMAEVOLVE_SENTINEL=loaded",
+                f"SENTINEL=loaded",
                 f"UNRELATED_PATH={dataset_root}",
             ]
         )
@@ -181,11 +182,11 @@ def test_cli_loads_env_file_for_defaults(tmp_path, monkeypatch):
 
     monkeypatch.setattr(cli_module, "load_env_file", fake_loader)
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
-    monkeypatch.delenv("SIGMAEVOLVE_SENTINEL", raising=False)
+    monkeypatch.delenv("SENTINEL", raising=False)
 
     assert main(["--database-url", f"sqlite:///{db_path}", "--dataset-root", str(dataset_root), "list-trials", "missing"]) == 0
     assert os.environ["OPENROUTER_API_KEY"] == "test-key"
-    assert os.environ["SIGMAEVOLVE_SENTINEL"] == "loaded"
+    assert os.environ["SENTINEL"] == "loaded"
 
 
 def test_cli_modal_commands_call_support_helpers(tmp_path, monkeypatch):
@@ -210,6 +211,35 @@ def test_cli_modal_commands_call_support_helpers(tmp_path, monkeypatch):
 
     assert main(["--dataset-root", str(tmp_path / "datasets"), "modal-sync-dataset", "mnist:v1"]) == 0
     assert synced["dataset_id"] == "mnist:v1"
+
+
+def test_cli_reconcile_reporter_dispatch_table_logs_known_events_and_ignores_unknown(monkeypatch):
+    messages: list[str] = []
+
+    def fake_info(message, *args):
+        messages.append(message % args if args else message)
+
+    monkeypatch.setattr("sigmaevolve.cli_reporting.logger.info", fake_info)
+    reporter = CliReconcileReporter()
+
+    reporter(
+        "generation_failed",
+        {
+            "slot_index": 0,
+            "reason": "provider_response_missing_content",
+            "duplicate_retry_count": 1,
+            "detail": "empty",
+            "completed": 0,
+            "requested": 1,
+            "failures": 1,
+            "max_failures": 2,
+            "in_flight": 0,
+        },
+    )
+    reporter("unknown_event", {"ignored": True})
+
+    assert any("Generation failed for slot 1" in message for message in messages)
+    assert any("Queue fill [" in message for message in messages)
 
 
 def test_cli_launch_count_reports_progress_to_stderr(tmp_path, patched_cli_system):
@@ -339,7 +369,7 @@ def test_make_system_with_modal_launcher_uses_modal_proxy(monkeypatch, tmp_path)
 def test_database_url_defaults_from_env(monkeypatch):
     from sigmaevolve import cli as cli_module
 
-    monkeypatch.setenv("SIGMAEVOLVE_DATABASE_URL", "postgresql://example/db")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://example/db")
     parser = cli_module.build_parser()
     args = parser.parse_args(["list-trials", "track_1"])
     assert args.database_url == "postgresql://example/db"

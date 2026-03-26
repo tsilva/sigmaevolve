@@ -9,13 +9,13 @@ declare global {
 }
 
 export function hasDatabaseUrl(): boolean {
-  return Boolean(process.env.DATABASE_URL || process.env.SIGMAEVOLVE_DATABASE_URL);
+  return Boolean(process.env.DATABASE_URL);
 }
 
 function databaseUrl(): string {
-  const value = process.env.DATABASE_URL || process.env.SIGMAEVOLVE_DATABASE_URL;
+  const value = process.env.DATABASE_URL;
   if (!value) {
-    throw new Error("DATABASE_URL or SIGMAEVOLVE_DATABASE_URL is required.");
+    throw new Error("DATABASE_URL is required.");
   }
   return value;
 }

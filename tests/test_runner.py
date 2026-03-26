@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
 import logging
 import threading
 import time
 
+import numpy as np
 import pytest
 
 from sigmaevolve.models import CANDIDATE_KIND_STRATEGY_V1
@@ -500,6 +502,47 @@ def test_active_run_persists_live_metrics_before_finalization(repository, datase
     assert "val/loss" in active_payload
     assert "val/acc" in active_payload
     assert run.finished == {"exit_code": 0}
+
+
+def test_collect_active_metrics_payload_uses_eval_artifacts(repository, dataset_manager):
+    runner = RunnerService(repository=repository, dataset_manager=dataset_manager)
+    manifest = dataset_manager.prepare("mnist:v1")
+
+    eval_dir = dataset_manager.dataset_root / "active-metrics-evals"
+    eval_dir.mkdir(parents=True)
+    progress_path = eval_dir / "progress.json"
+    debug_path = eval_dir / "debug.json"
+
+    labels = np.load(manifest.validation_labels_path)
+    np.savez(
+        eval_dir / "eval-001.npz",
+        predictions=labels,
+        eval_index=1,
+        elapsed_time_sec=0.25,
+        epoch=1,
+        train_loss=0.1,
+        train_acc=1.0,
+        val_loss=0.2,
+        val_acc=1.0,
+    )
+    progress_path.write_text(json.dumps({"phase": "eval", "eval_index": 1, "last_completed_eval_sec": 0.25}))
+    debug_path.write_text(json.dumps({"eval_count": 1}))
+
+    metrics = runner._collect_active_metrics_payload(
+        eval_dir=eval_dir,
+        progress_path=progress_path,
+        debug_path=debug_path,
+        labels_path=manifest.validation_labels_path,
+        started_at=time.monotonic() - 0.3,
+    )
+
+    assert metrics is not None
+    assert metrics["accuracy"] == 1.0
+    assert metrics["best_accuracy"] == 1.0
+    assert metrics["best_eval_index"] == 1
+    assert metrics["eval_count"] == 1
+    assert metrics["last_phase"] == "eval"
+    assert "timed_out" not in metrics
 
 
 def test_rescore_updates_only_derived_score(repository, dataset_manager):

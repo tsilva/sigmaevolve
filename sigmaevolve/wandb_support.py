@@ -11,10 +11,6 @@ WANDB_ENV_KEYS = (
     "WANDB_PROJECT",
     "WANDB_ENTITY",
     "WANDB_BASE_URL",
-    "SIGMAEVOLVE_WANDB_API_KEY",
-    "SIGMAEVOLVE_WANDB_PROJECT",
-    "SIGMAEVOLVE_WANDB_ENTITY",
-    "SIGMAEVOLVE_WANDB_BASE_URL",
 )
 _DISALLOWED_WANDB_MODES = {"disabled", "dryrun", "offline"}
 
@@ -82,15 +78,15 @@ def resolve_wandb_settings() -> WandbSettings:
     if mode is not None and mode.lower() in _DISALLOWED_WANDB_MODES:
         raise RuntimeError("WANDB_MODE must allow remote sync; offline and disabled modes are not supported.")
 
-    api_key = _env_first("SIGMAEVOLVE_WANDB_API_KEY", "WANDB_API_KEY")
+    api_key = _env_first("WANDB_API_KEY")
     if api_key is None:
         raise RuntimeError("WANDB_API_KEY is required to log SigmaEvolve runs to Weights & Biases.")
 
     return WandbSettings(
         api_key=api_key,
-        project=_env_first("SIGMAEVOLVE_WANDB_PROJECT", "WANDB_PROJECT", default="sigmaevolve") or "sigmaevolve",
-        entity=_env_first("SIGMAEVOLVE_WANDB_ENTITY", "WANDB_ENTITY"),
-        base_url=_env_first("SIGMAEVOLVE_WANDB_BASE_URL", "WANDB_BASE_URL"),
+        project=_env_first("WANDB_PROJECT", default="sigmaevolve") or "sigmaevolve",
+        entity=_env_first("WANDB_ENTITY"),
+        base_url=_env_first("WANDB_BASE_URL"),
     )
 
 

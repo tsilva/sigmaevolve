@@ -177,13 +177,16 @@ def build_baseline_train_script() -> str:
             from __future__ import annotations
             import argparse
             import json
+            import logging
             import random
-            import sys
             import time
             from pathlib import Path
 
             import numpy as np
             import torch
+
+
+            logger = logging.getLogger(__name__)
 
 
             class TrainScriptContractError(RuntimeError):
@@ -501,7 +504,7 @@ def build_baseline_train_script() -> str:
                         }
                     )
                     write_json_atomic(debug_output_path, debug_payload)
-                    print(str(exc), file=sys.stderr)
+                    logger.error("%s", exc)
                     return 2
 
 
