@@ -132,10 +132,15 @@ class OpenRouterGenerationBackend:
                     weights.append(weight)
                 total_weight = sum(weights)
                 if total_weight <= 0:
-                    raise ValueError("generation_backend weighted_random selection requires a positive total probability.")
+                    raise ValueError(
+                        "generation_backend weighted_random selection requires "
+                        "a positive total probability."
+                    )
                 rng = random.Random(seed + index)
                 selected = dict(rng.choices(normalized_pool, weights=weights, k=1)[0])
-                selected["selection_probability"] = float(selected.get("probability", 1.0)) / total_weight
+                selected["selection_probability"] = (
+                    float(selected.get("probability", 1.0)) / total_weight
+                )
                 return selected
             return dict(model_pool[index % len(model_pool)])
         return {
@@ -461,7 +466,10 @@ class OpenRouterGenerationBackend:
         )
         if exhausted_reasoning_budget:
             error_info["error_type"] = "generation_reasoning_tokens_exhausted"
-            error_info["detail"] = "Provider exhausted the completion budget on reasoning without emitting assistant content."
+            error_info["detail"] = (
+                "Provider exhausted the completion budget on reasoning "
+                "without emitting assistant content."
+            )
         elif finish_reason == "length":
             error_info["error_type"] = "generation_output_truncated"
             error_info["detail"] = "Provider reached the completion limit before emitting assistant content."
@@ -509,7 +517,8 @@ class OpenRouterGenerationBackend:
         generation_policy = dict(track.policy_json["generation_backend"])
         generation_policy["_generation_index"] = generation_index + duplicate_retry_count
         selected_config = self._normalize_generation_config(generation_policy)
-        selected_config["temperature"] = float(selected_config.get("temperature", 0.2)) + (0.1 * duplicate_retry_count)
+        selected_temperature = float(selected_config.get("temperature", 0.2))
+        selected_config["temperature"] = selected_temperature + (0.1 * duplicate_retry_count)
         request_messages = self._build_prompt(
             track,
             dataset_manifest,
@@ -518,13 +527,17 @@ class OpenRouterGenerationBackend:
             selected_config,
         )
         if not self.api_key:
+            missing_api_key_error = {
+                "reason": "missing_api_key",
+                "detail": "OPENROUTER_API_KEY is required for OpenRouter generation.",
+            }
             return self._error_result(
                 selected_config=selected_config,
                 request_messages=request_messages,
                 context_trials=context_trials,
                 generation_index=generation_index,
                 duplicate_retry_count=duplicate_retry_count,
-                error_info={"reason": "missing_api_key", "detail": "OPENROUTER_API_KEY is required for OpenRouter generation."},
+                error_info=missing_api_key_error,
             )
         payload = {
             "model": selected_config["model"],

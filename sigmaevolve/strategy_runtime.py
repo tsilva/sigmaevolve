@@ -5,6 +5,7 @@ import importlib.util
 import json
 import logging
 import random
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -81,6 +82,7 @@ def load_strategy(strategy_path: Path) -> tuple[Any, Any, Any]:
     initialize = getattr(module, "initialize", None)
     train_window = getattr(module, "train_window", None)
     predict_validation = getattr(module, "predict_validation", None)
+
     missing = [
         name
         for name, value in (
@@ -92,6 +94,7 @@ def load_strategy(strategy_path: Path) -> tuple[Any, Any, Any]:
     ]
     if missing:
         raise StrategyContractError(f"Strategy is missing required callable exports: {', '.join(missing)}")
+
     return initialize, train_window, predict_validation
 
 
@@ -123,9 +126,15 @@ def _normalize_predictions(
         if np.issubdtype(array.dtype, np.floating):
             if num_classes == 2:
                 finite = array[np.isfinite(array)]
-                if finite.size and float(finite.min()) >= 0.0 and float(finite.max()) <= 1.0:
+                has_bounded_probabilities = (
+                    finite.size
+                    and float(finite.min()) >= 0.0
+                    and float(finite.max()) <= 1.0
+                )
+                if has_bounded_probabilities:
                     return (array >= 0.5).astype(np.int64)
                 return (array >= 0.0).astype(np.int64)
+
             raise StrategyContractError(
                 "predict_validation returned a 1D float array for a non-binary task; return class ids or logits."
             )

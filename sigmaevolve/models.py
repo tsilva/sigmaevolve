@@ -187,13 +187,17 @@ class TrackPolicy:
     )
 
     def to_dict(self) -> dict[str, Any]:
+        modal_gpu_preferences = None
+        if self.modal_gpu_preferences is not None:
+            modal_gpu_preferences = list(self.modal_gpu_preferences)
+
         return {
             "epochs": self.epochs,
             "dispatch_ttl_sec": self.dispatch_ttl_sec,
             "heartbeat_interval_sec": self.heartbeat_interval_sec,
             "stale_ttl_sec": self.stale_ttl_sec,
             "max_dispatch_retries": self.max_dispatch_retries,
-            "modal_gpu_preferences": list(self.modal_gpu_preferences) if self.modal_gpu_preferences is not None else None,
+            "modal_gpu_preferences": modal_gpu_preferences,
             "scorer_settings": dict(self.scorer_settings),
             "sampling_settings": dict(self.sampling_settings),
             "generation_backend": dict(self.generation_backend),
@@ -249,7 +253,11 @@ class TrialRecord:
 
     @property
     def succeeded(self) -> bool:
-        return self.status == TRIAL_STATUS_FINISHED and self.outcome_reason in SUCCESS_OUTCOMES and self.metrics_json is not None
+        is_finished = self.status == TRIAL_STATUS_FINISHED
+        has_success_outcome = self.outcome_reason in SUCCESS_OUTCOMES
+        has_metrics = self.metrics_json is not None
+
+        return is_finished and has_success_outcome and has_metrics
 
 
 @dataclass(frozen=True)

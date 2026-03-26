@@ -19,7 +19,11 @@ def require_modal():
     try:
         import modal  # type: ignore
     except ImportError as exc:
-        raise RuntimeError("Modal support requires the 'modal' package. Install it with: pip install '.[modal]'") from exc
+        raise RuntimeError(
+            "Modal support requires the 'modal' package. Install it with: "
+            "pip install '.[modal]'"
+        ) from exc
+
     return modal
 
 
@@ -28,7 +32,14 @@ class ModalSpawnResult:
     function_call: Any
     effective_gpu: str | None
 
-def _apply_runtime_options(handle: Any, *, modal, gpu: str | None = None, wandb_env: dict[str, str] | None = None):
+
+def _apply_runtime_options(
+    handle: Any,
+    *,
+    modal,
+    gpu: str | None = None,
+    wandb_env: dict[str, str] | None = None,
+):
     options: dict[str, Any] = {}
     if gpu is not None:
         options["gpu"] = gpu
@@ -36,6 +47,7 @@ def _apply_runtime_options(handle: Any, *, modal, gpu: str | None = None, wandb_
         options["secrets"] = [modal.Secret.from_dict(dict(wandb_env))]
     if not options:
         return handle
+
     return handle.with_options(**options)
 
 

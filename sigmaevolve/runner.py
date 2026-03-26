@@ -75,8 +75,16 @@ def _run_streamed_subprocess(command: list[str], timeout: float) -> _StreamedPro
 
     stdout_chunks: list[str] = []
     stderr_chunks: list[str] = []
-    stdout_thread = threading.Thread(target=_stream_pipe, args=(process.stdout, sys.stdout, stdout_chunks), daemon=True)
-    stderr_thread = threading.Thread(target=_stream_pipe, args=(process.stderr, sys.stderr, stderr_chunks), daemon=True)
+    stdout_thread = threading.Thread(
+        target=_stream_pipe,
+        args=(process.stdout, sys.stdout, stdout_chunks),
+        daemon=True,
+    )
+    stderr_thread = threading.Thread(
+        target=_stream_pipe,
+        args=(process.stderr, sys.stderr, stderr_chunks),
+        daemon=True,
+    )
     stdout_thread.start()
     stderr_thread.start()
 
@@ -113,7 +121,12 @@ class RunnerService:
         self.python_executable = python_executable or sys.executable
         self.hard_timeout_sec = float(hard_timeout_sec)
 
-    def _start_heartbeat(self, trial_id: str, runner_id: str, interval_sec: int) -> tuple[threading.Event, threading.Thread]:
+    def _start_heartbeat(
+        self,
+        trial_id: str,
+        runner_id: str,
+        interval_sec: int,
+    ) -> tuple[threading.Event, threading.Thread]:
         stop_event = threading.Event()
 
         def loop() -> None:
@@ -198,7 +211,11 @@ class RunnerService:
             debug_payload=debug_payload,
         )
 
-    def _apply_debug_metrics(self, metrics: dict[str, Any], debug_payload: dict[str, Any] | None) -> None:
+    def _apply_debug_metrics(
+        self,
+        metrics: dict[str, Any],
+        debug_payload: dict[str, Any] | None,
+    ) -> None:
         from sigmaevolve.runner_metrics import apply_debug_metrics
 
         apply_debug_metrics(metrics, debug_payload)

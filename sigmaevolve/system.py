@@ -38,14 +38,25 @@ class EvolutionSystem:
 
     def prepare_dataset(self, dataset_id: str) -> DatasetRecord:
         manifest = self.dataset_manager.prepare(dataset_id)
-        return self.repository.register_dataset(dataset_id=dataset_id, manifest_path=str(Path(manifest.root_dir) / "manifest.json"))
+        manifest_path = Path(manifest.root_dir) / "manifest.json"
+
+        return self.repository.register_dataset(
+            dataset_id=dataset_id,
+            manifest_path=str(manifest_path),
+        )
 
     def create_track(self, name: str | None, dataset_id: str, policy_json: dict) -> TrackRecord:
         if self.repository.get_dataset(dataset_id) is None:
             raise KeyError(f"Dataset must be prepared before track creation: {dataset_id}")
+
         policy = TrackPolicy.from_dict(policy_json)
-        track = self.repository.create_track(name=name, dataset_id=dataset_id, policy_json=policy.to_dict())
+        track = self.repository.create_track(
+            name=name,
+            dataset_id=dataset_id,
+            policy_json=policy.to_dict(),
+        )
         baseline_source = build_baseline_train_script()
+
         self.repository.create_queued_trial_if_absent(
             track_id=track.track_id,
             source=baseline_source,
@@ -131,15 +142,21 @@ def build_system(
     launcher=None,
 ) -> EvolutionSystem:
     dataset_root = Path(dataset_root)
-    providers = providers or {
+    default_providers = {
         "mnist:v1": TorchvisionClassificationProvider("mnist"),
         "fashion_mnist:v1": TorchvisionClassificationProvider("fashion_mnist"),
     }
+    effective_providers = providers or default_providers
+
     repository = SQLAlchemyRepository(database_url)
-    dataset_manager = DatasetManager(dataset_root=dataset_root, providers=providers)
+    dataset_manager = DatasetManager(
+        dataset_root=dataset_root,
+        providers=effective_providers,
+    )
     generator = OpenRouterGenerationBackend(api_key=openrouter_api_key)
     runner_service = RunnerService(repository=repository, dataset_manager=dataset_manager)
     launcher = launcher or RecordingLauncher()
+
     return EvolutionSystem(
         repository=repository,
         dataset_manager=dataset_manager,
