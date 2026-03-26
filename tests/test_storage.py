@@ -69,9 +69,6 @@ def test_track_and_trial_mutations_publish_dashboard_notifications(repository):
     )
     assert notifications[-1] == (track.track_id, "trial_changed")
 
-    repository.rescore(track_id=track.track_id, scorer_config={"primary_metric": "accuracy"})
-    assert notifications[-1] == (track.track_id, "trial_changed")
-
 
 def test_update_active_trial_metrics_updates_only_matching_active_runner_and_notifies(repository):
     repository.register_dataset("mnist:v1", "/tmp/manifest.json")

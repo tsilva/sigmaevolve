@@ -1017,7 +1017,7 @@ class RunnerService:
                     debug_payload=debug_payload,
                 )
                 outcome_reason = OUTCOME_TIMEOUT if timed_out else OUTCOME_SUCCEEDED
-                score = compute_score(metrics, outcome_reason, policy["scorer_settings"])
+                score = compute_score(metrics, policy["scorer_settings"])
                 error_info = {
                     "stdout": stdout,
                     "stderr": stderr,

@@ -450,6 +450,12 @@ def test_cli_rejects_removed_runtime_config_flags():
     with pytest.raises(SystemExit):
         parser.parse_args(["sample-context", "track_1"])
 
+    with pytest.raises(SystemExit):
+        parser.parse_args(["prepare-dataset", "mnist:v1"])
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["rescore", "--all-tracks", "--scorer-json", '{"primary_metric":"accuracy"}'])
+
 
 def test_cli_help_documents_env_runtime_config(capsys):
     from sigmaevolve import cli as cli_module

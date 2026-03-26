@@ -25,18 +25,6 @@ logger = logging.getLogger(f"{__name__}.stderr")
 stdout_logger = logging.getLogger(f"{__name__}.stdout")
 
 
-def json_arg(value: str | None) -> dict[str, Any]:
-    # Treat missing JSON flags as an empty object for downstream callers.
-    if not value:
-        return {}
-
-    # Reject non-object JSON payloads at parse time.
-    parsed = json.loads(value)
-    if not isinstance(parsed, dict):
-        raise argparse.ArgumentTypeError("JSON value must be an object.")
-    return parsed
-
-
 def load_track_definition(track_file: str) -> tuple[str | None, str, dict[str, Any]]:
     # Load and validate the top-level track definition envelope.
     parsed = json.loads(Path(track_file).read_text())
@@ -96,10 +84,6 @@ class CommandSpec:
     configure: Callable[[argparse.ArgumentParser], None]
 
 
-def _configure_prepare_dataset_parser(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("dataset_id")
-
-
 def _configure_create_track_parser(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "track_file",
@@ -142,29 +126,11 @@ def _configure_list_trials_parser(parser: argparse.ArgumentParser) -> None:
         help="Filter by one or more statuses.",
     )
 
-
-def _configure_rescore_parser(parser: argparse.ArgumentParser) -> None:
-    target = parser.add_mutually_exclusive_group(required=True)
-    target.add_argument("--track-id")
-    target.add_argument("--all-tracks", action="store_true")
-    parser.add_argument(
-        "--scorer-json",
-        required=True,
-        help='JSON object such as \'{"primary_metric":"accuracy"}\'.',
-    )
-
-
 def _configure_modal_sync_dataset_parser(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("dataset_id")
 
 
 COMMAND_SPECS = (
-    CommandSpec(
-        name="prepare-dataset",
-        help=argparse.SUPPRESS,
-        handler_name="prepare_dataset",
-        configure=_configure_prepare_dataset_parser,
-    ),
     CommandSpec(
         name="create-track",
         help="Create a track and seed the baseline trial.",
@@ -182,12 +148,6 @@ COMMAND_SPECS = (
         help="List trials for a track.",
         handler_name="list_trials",
         configure=_configure_list_trials_parser,
-    ),
-    CommandSpec(
-        name="rescore",
-        help="Rescore finished trials without rerunning training.",
-        handler_name="rescore",
-        configure=_configure_rescore_parser,
     ),
     CommandSpec(
         name="modal-deploy",
@@ -600,20 +560,6 @@ def _suggest_launch_command(args, track_id: str, *, count: int = 1) -> str:
     command.extend(["launch", track_id, str(count)])
     return shlex.join(command)
 
-
-def cmd_prepare_dataset(args) -> int:
-    system = _make_system(args)
-    record = system.prepare_dataset(args.dataset_id)
-    _print_json(
-        {
-            "dataset_id": record.dataset_id,
-            "manifest_path": record.manifest_path,
-            "created_at": record.created_at,
-        }
-    )
-    return 0
-
-
 def cmd_create_track(args) -> int:
     system = _make_system(args)
     logger.info("Loading track definition from %s.", args.track_file)
@@ -711,21 +657,6 @@ def cmd_list_trials(args) -> int:
     )
     return 0
 
-
-def cmd_rescore(args) -> int:
-    system = _make_system(args)
-    scorer_config = json_arg(args.scorer_json)
-    target = "all" if args.all_tracks else args.track_id
-    result = system.rescore(target, scorer_config)
-    _print_json(
-        {
-            "updated_trials": result.updated_trials,
-            "scorer_config": result.scorer_config,
-        }
-    )
-    return 0
-
-
 def cmd_modal_deploy(args) -> int:
     payload = deploy_modal_app(
         app_name=args.modal_app_name,
@@ -752,11 +683,9 @@ def cmd_modal_sync_dataset(args) -> int:
 def build_parser() -> argparse.ArgumentParser:
     return build_cli_parser(
         handlers={
-            "prepare_dataset": cmd_prepare_dataset,
             "create_track": cmd_create_track,
             "launch": cmd_launch,
             "list_trials": cmd_list_trials,
-            "rescore": cmd_rescore,
             "modal_deploy": cmd_modal_deploy,
             "modal_sync_dataset": cmd_modal_sync_dataset,
         }

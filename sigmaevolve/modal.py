@@ -34,21 +34,16 @@ def require_modal():
 @dataclass(frozen=True)
 class ModalSpawnResult:
     function_call: Any
-    effective_gpu: str | None
 
 
 def _apply_runtime_options(
     handle: Any,
     *,
     modal,
-    gpu: str | None = None,
     wandb_env: dict[str, str] | None = None,
 ):
-    # Collect the optional GPU and WandB settings before mutating the handle.
+    # Collect the optional WandB settings before mutating the handle.
     options: dict[str, Any] = {}
-    has_gpu_override = gpu is not None
-    if has_gpu_override:
-        options["gpu"] = gpu
     has_wandb_secret = bool(wandb_env)
     if has_wandb_secret:
         options["secrets"] = [modal.Secret.from_dict(dict(wandb_env))]
@@ -78,7 +73,7 @@ class _ModalClassProxy:
         self.environment_name = environment_name
         self.wandb_env = dict(wandb_env or {})
 
-    def spawn(self, trial_id: str, dispatch_token: str, gpu: str | None = None):
+    def spawn(self, trial_id: str, dispatch_token: str):
         # Resolve the deployed Modal class handle and apply runtime overrides.
         modal = require_modal()
         cls = modal.Cls.from_name(
@@ -89,7 +84,6 @@ class _ModalClassProxy:
         runtime_cls = _apply_runtime_options(
             cls,
             modal=modal,
-            gpu=gpu,
             wandb_env=self.wandb_env,
         )
         method = getattr(runtime_cls(), self.method_name)
@@ -102,7 +96,6 @@ class _ModalClassProxy:
                 database_url=self.database_url,
                 dataset_root=self.dataset_root,
             ),
-            effective_gpu=gpu,
         )
 
     def cancel(self, run_id: str) -> None:

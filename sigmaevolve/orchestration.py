@@ -785,56 +785,28 @@ class ModalRemoteLauncher:
         dispatch_token: str,
         launch_policy: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
-        # Normalize the optional GPU preference list before trying remote launches.
-        requested_gpus = (launch_policy or {}).get("modal_gpu_preferences")
-        if requested_gpus is None:
-            attempts: list[str | None] = [None]
-        elif isinstance(requested_gpus, list) and requested_gpus:
-            attempts = [str(gpu) for gpu in requested_gpus]
-        else:
-            raise ValueError(
-                "Track launch policy modal_gpu_preferences must be null or a non-empty list."
-            )
+        del launch_policy
 
-        failures: list[str] = []
-        attempted_gpus: list[str] = []
-        # Try each configured GPU option until one remote spawn succeeds.
-        for gpu in attempts:
-            if gpu is not None:
-                attempted_gpus.append(gpu)
+        # Launch one remote run and capture the metadata needed for observability.
+        spawn_result = self.modal_function.spawn(
+            trial_id=trial_id,
+            dispatch_token=dispatch_token,
+        )
+        function_call = getattr(spawn_result, "function_call", spawn_result)
+
+        metadata: dict[str, Any] = {"kind": "modal"}
+        object_id = getattr(function_call, "object_id", None)
+        if isinstance(object_id, str) and object_id:
+            metadata["run_id"] = object_id
+        get_dashboard_url = getattr(function_call, "get_dashboard_url", None)
+        if callable(get_dashboard_url):
             try:
-                spawn_result = self.modal_function.spawn(
-                    trial_id=trial_id,
-                    dispatch_token=dispatch_token,
-                    gpu=gpu,
-                )
-            except Exception as exc:
-                failures.append(f"{gpu or 'cpu'}: {exc}")
-                continue
-            function_call = getattr(spawn_result, "function_call", spawn_result)
-            effective_gpu = getattr(spawn_result, "effective_gpu", gpu)
-
-            # Assemble launcher metadata only after the remote call has succeeded.
-            metadata: dict[str, Any] = {
-                "kind": "modal",
-                "gpu_attempts": list(attempted_gpus),
-            }
-            if effective_gpu is not None:
-                metadata["gpu_selected"] = effective_gpu
-            object_id = getattr(function_call, "object_id", None)
-            if isinstance(object_id, str) and object_id:
-                metadata["run_id"] = object_id
-            get_dashboard_url = getattr(function_call, "get_dashboard_url", None)
-            if callable(get_dashboard_url):
-                try:
-                    run_url = get_dashboard_url()
-                except Exception:
-                    run_url = None
-                if isinstance(run_url, str) and run_url:
-                    metadata["run_url"] = run_url
-            return metadata
-
-        raise RuntimeError("Modal launch failed for all configured resources: " + "; ".join(failures))
+                run_url = get_dashboard_url()
+            except Exception:
+                run_url = None
+            if isinstance(run_url, str) and run_url:
+                metadata["run_url"] = run_url
+        return metadata
 
     def cancel_run(self, launcher_metadata: dict[str, Any]) -> None:
         run_id = launcher_metadata.get("run_id")
@@ -998,14 +970,11 @@ from sigmaevolve.generation import OpenRouterGenerationBackend
 from sigmaevolve.core import (
     CANDIDATE_KIND_STRATEGY_V1,
     DatasetRecord,
-    MigrationResult,
     TrackPolicy,
     TrackRecord,
     TrialRecord,
-    TrialSummary,
 )
 from sigmaevolve.execution import RunnerService
-from sigmaevolve.core import compute_score
 from sigmaevolve.storage import SQLAlchemyRepository
 
 
@@ -1092,9 +1061,6 @@ class EvolutionSystem:
             ready_queue_threshold=ready_queue_threshold,
         )
 
-    def sample_trial_context(self, track_id: str, limit: int) -> list[TrialSummary]:
-        return self.repository.sample_trial_context(track_id=track_id, limit=limit)
-
     def claim_trial(self, trial_id: str, dispatch_token: str, runner_id: str) -> TrialRecord | None:
         return self.repository.claim_trial(trial_id=trial_id, dispatch_token=dispatch_token, runner_id=runner_id)
 
@@ -1121,11 +1087,6 @@ class EvolutionSystem:
             score=score,
             error_info=error_info,
         )
-
-    def rescore(self, track_or_all, scorer_config: dict) -> MigrationResult:
-        track_id = None if track_or_all == "all" else track_or_all
-        return self.repository.rescore(track_id=track_id, scorer_config=scorer_config)
-
 
 def build_system(
     database_url: str,

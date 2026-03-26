@@ -53,11 +53,8 @@ def compute_classification_metrics(
 
 def compute_score(
     metrics: dict[str, Any] | None,
-    outcome_reason: str | None,
     scorer_config: dict[str, Any],
 ) -> float:
-    del outcome_reason
-
     # Fall back to zero when the trial never produced metrics.
     has_metrics = bool(metrics)
     if not has_metrics:
@@ -175,34 +172,10 @@ def _deep_merge_dict(base: dict[str, Any], override: dict[str, Any]) -> dict[str
     return merged
 
 
-def _normalize_modal_gpu_preferences(value: Any) -> list[str] | None:
-    # Validate the optional GPU preference list before storing it in policy JSON.
-    if value is None:
-        return None
-    if not isinstance(value, list):
-        raise ValueError(
-            "Track policy modal_gpu_preferences must be a list of GPU names or null."
-        )
-    if not value:
-        raise ValueError(
-            "Track policy modal_gpu_preferences must be null or a non-empty list."
-        )
-    normalized: list[str] = []
-
-    # Normalize each GPU label by trimming whitespace and rejecting empty entries.
-    for entry in value:
-        if not isinstance(entry, str):
-            raise ValueError(
-                "Track policy modal_gpu_preferences entries must be non-empty strings."
-            )
-        candidate = entry.strip()
-        if not candidate:
-            raise ValueError(
-                "Track policy modal_gpu_preferences entries must be non-empty strings."
-            )
-        normalized.append(candidate)
-    return normalized
-
+def _reject_removed_policy_fields(raw: dict[str, Any]) -> None:
+    # Fail fast when callers still send policy knobs that are no longer supported.
+    if "modal_gpu_preferences" in raw:
+        raise ValueError("Track policy modal_gpu_preferences is no longer supported.")
 
 @dataclass(frozen=True)
 class DatasetRecord:
@@ -270,7 +243,6 @@ class TrackPolicy:
     heartbeat_interval_sec: int = 15
     stale_ttl_sec: int = 120
     max_dispatch_retries: int = 2
-    modal_gpu_preferences: list[str] | None = None
     scorer_settings: dict[str, Any] = field(default_factory=lambda: {"primary_metric": "accuracy"})
     sampling_settings: dict[str, Any] = field(default_factory=lambda: {"seed": 0})
     generation_backend: dict[str, Any] = field(
@@ -284,17 +256,12 @@ class TrackPolicy:
 
     def to_dict(self) -> dict[str, Any]:
         # Copy mutable policy containers before returning the serialized shape.
-        modal_gpu_preferences = None
-        if self.modal_gpu_preferences is not None:
-            modal_gpu_preferences = list(self.modal_gpu_preferences)
-
         payload = {
             "epochs": self.epochs,
             "dispatch_ttl_sec": self.dispatch_ttl_sec,
             "heartbeat_interval_sec": self.heartbeat_interval_sec,
             "stale_ttl_sec": self.stale_ttl_sec,
             "max_dispatch_retries": self.max_dispatch_retries,
-            "modal_gpu_preferences": modal_gpu_preferences,
             "scorer_settings": dict(self.scorer_settings),
             "sampling_settings": dict(self.sampling_settings),
             "generation_backend": dict(self.generation_backend),
@@ -303,6 +270,8 @@ class TrackPolicy:
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "TrackPolicy":
+        _reject_removed_policy_fields(raw or {})
+
         # Merge overrides onto the default policy before coercing field types.
         base = cls()
         merged = _deep_merge_dict(base.to_dict(), raw or {})
@@ -314,7 +283,6 @@ class TrackPolicy:
             heartbeat_interval_sec=int(merged["heartbeat_interval_sec"]),
             stale_ttl_sec=int(merged["stale_ttl_sec"]),
             max_dispatch_retries=int(merged["max_dispatch_retries"]),
-            modal_gpu_preferences=_normalize_modal_gpu_preferences(merged.get("modal_gpu_preferences")),
             scorer_settings=dict(merged["scorer_settings"]),
             sampling_settings=dict(merged["sampling_settings"]),
             generation_backend=dict(merged["generation_backend"]),
@@ -396,9 +364,3 @@ class ReconcileResult:
     requeued_trial_ids: list[str] = field(default_factory=list)
     stale_trial_ids: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
-
-
-@dataclass(frozen=True)
-class MigrationResult:
-    updated_trials: int
-    scorer_config: dict[str, Any]

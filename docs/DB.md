@@ -29,7 +29,7 @@ Purpose: top-level evolution tracks. A track binds one dataset to one policy con
 | `track_id` | string | No | Primary key. Unique identifier for the track. |
 | `name` | string | Yes | Optional human-readable label shown in CLI and dashboard output. |
 | `dataset_id` | string | No | Foreign key to `datasets.dataset_id`. Identifies which dataset this track uses. |
-| `policy_json` | JSON | No | Persisted track policy. Common keys are `epochs`, `dispatch_ttl_sec`, `heartbeat_interval_sec`, `stale_ttl_sec`, `max_dispatch_retries`, `modal_gpu_preferences`, `scorer_settings`, `sampling_settings`, and `generation_backend`. |
+| `policy_json` | JSON | No | Persisted track policy. Common keys are `epochs`, `dispatch_ttl_sec`, `heartbeat_interval_sec`, `stale_ttl_sec`, `max_dispatch_retries`, `scorer_settings`, `sampling_settings`, and `generation_backend`. |
 | `created_at` | timestamptz | No | Timestamp for when the track was created. |
 
 ### `tracks.policy_json`
@@ -43,7 +43,6 @@ Common persisted keys:
 | `heartbeat_interval_sec` | Expected interval between runner heartbeats. |
 | `stale_ttl_sec` | How long an active trial may go without a heartbeat before it is marked stale. |
 | `max_dispatch_retries` | Maximum number of dispatch attempts before a dispatching trial is marked stale instead of requeued. |
-| `modal_gpu_preferences` | Optional ordered GPU preference list for Modal launches. |
 | `scorer_settings` | Scoring configuration used to derive `trials.score`, usually including `primary_metric`. |
 | `sampling_settings` | Configuration for parent-trial selection during generation. The persisted shape currently contains only the RNG seed. |
 | `generation_backend` | LLM generation backend configuration, including backend name, model selection policy, seed, and model pool entries. |
