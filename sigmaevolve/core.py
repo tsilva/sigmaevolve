@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-
-# ---- hashing.py ----
-
 import hashlib
 
 
@@ -22,8 +19,6 @@ def compute_script_hash(source: str) -> str:
     normalized = normalize_source(source)
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
-
-# ---- scoring.py ----
 
 from typing import Any
 
@@ -55,28 +50,21 @@ def compute_classification_metrics(
 
 def compute_score(
     metrics: dict[str, Any] | None,
-    scorer_config: dict[str, Any],
 ) -> float:
     # Fall back to zero when the trial never produced metrics.
     has_metrics = bool(metrics)
     if not has_metrics:
         return 0.0
 
-    # Resolve the configured metric before converting it to a float score.
-    primary_metric = scorer_config.get("primary_metric", "accuracy")
-    score_value = metrics.get(primary_metric)
+    # Rank persisted trials by validation accuracy only.
+    score_value = metrics.get("accuracy")
     if score_value is None:
-        raise ValueError(f"Primary metric {primary_metric!r} not present in metrics.")
+        raise ValueError("Accuracy is not present in metrics.")
 
     return float(score_value)
 
 
-# ---- runtime_config.py ----
-
 DEFAULT_TRIAL_HARD_TIMEOUT_SEC = 60 * 60
-
-
-# ---- models.py ----
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -183,13 +171,22 @@ def _reject_removed_policy_fields(raw: dict[str, Any]) -> None:
     # Fail fast when callers still send policy knobs that are no longer supported.
     if "modal_gpu_preferences" in raw:
         raise ValueError("Track policy modal_gpu_preferences is no longer supported.")
+    if "scorer_settings" in raw:
+        raise ValueError("Track policy scorer_settings is no longer supported.")
+    if "sampling_settings" in raw:
+        raise ValueError("Track policy sampling_settings is no longer supported.")
+
+    generation_backend = raw.get("generation_backend")
+    has_generation_backend = isinstance(generation_backend, dict)
+    if has_generation_backend and "backend" in generation_backend:
+        raise ValueError("Track policy generation_backend.backend is no longer supported.")
 
 
 @dataclass(frozen=True)
 class DatasetRecord:
     dataset_id: str
     manifest_path: str | None
-    created_at: datetime
+    created_at: datetime | None
 
 
 @dataclass(frozen=True)
@@ -251,11 +248,9 @@ class TrackPolicy:
     heartbeat_interval_sec: int = 15
     stale_ttl_sec: int = 120
     max_dispatch_retries: int = 2
-    scorer_settings: dict[str, Any] = field(default_factory=lambda: {"primary_metric": "accuracy"})
-    sampling_settings: dict[str, Any] = field(default_factory=lambda: {"seed": 0})
+    sampling_seed: int = 0
     generation_backend: dict[str, Any] = field(
         default_factory=lambda: {
-            "backend": "openrouter",
             "selection": DEFAULT_GENERATION_SELECTION,
             "seed": 0,
             "model_pool": [dict(entry) for entry in DEFAULT_GENERATION_MODEL_POOL],
@@ -270,8 +265,7 @@ class TrackPolicy:
             "heartbeat_interval_sec": self.heartbeat_interval_sec,
             "stale_ttl_sec": self.stale_ttl_sec,
             "max_dispatch_retries": self.max_dispatch_retries,
-            "scorer_settings": dict(self.scorer_settings),
-            "sampling_settings": dict(self.sampling_settings),
+            "sampling_seed": self.sampling_seed,
             "generation_backend": dict(self.generation_backend),
         }
         return payload
@@ -291,8 +285,7 @@ class TrackPolicy:
             heartbeat_interval_sec=int(merged["heartbeat_interval_sec"]),
             stale_ttl_sec=int(merged["stale_ttl_sec"]),
             max_dispatch_retries=int(merged["max_dispatch_retries"]),
-            scorer_settings=dict(merged["scorer_settings"]),
-            sampling_settings=dict(merged["sampling_settings"]),
+            sampling_seed=int(merged["sampling_seed"]),
             generation_backend=dict(merged["generation_backend"]),
         )
 
@@ -300,7 +293,6 @@ class TrackPolicy:
 @dataclass(frozen=True)
 class TrackRecord:
     track_id: str
-    name: str | None
     dataset_id: str
     policy_json: dict[str, Any]
     created_at: datetime
@@ -322,10 +314,13 @@ class TrialRecord:
     started_at: datetime | None
     finished_at: datetime | None
     metrics_json: dict[str, Any] | None
-    score: float
     error_json: dict[str, Any] | None
     dispatch_attempts: int
     created_at: datetime
+
+    @property
+    def score(self) -> float:
+        return compute_score(self.metrics_json)
 
     @property
     def succeeded(self) -> bool:
@@ -340,12 +335,15 @@ class TrialRecord:
 @dataclass(frozen=True)
 class TrialSummary:
     trial_id: str
-    score: float
     metrics_json: dict[str, Any] | None
     source: str
     provenance_json: dict[str, Any]
     outcome_reason: str | None = None
     error_json: dict[str, Any] | None = None
+
+    @property
+    def score(self) -> float:
+        return compute_score(self.metrics_json)
 
 
 @dataclass(frozen=True)

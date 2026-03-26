@@ -91,10 +91,8 @@ def make_policy(**overrides):
         "heartbeat_interval_sec": 1,
         "stale_ttl_sec": 1,
         "max_dispatch_retries": 1,
-        "scorer_settings": {"primary_metric": "accuracy"},
-        "sampling_settings": {"seed": 0},
+        "sampling_seed": 0,
         "generation_backend": {
-            "backend": "openrouter",
             "selection": "round_robin",
             "model_pool": [
                 {

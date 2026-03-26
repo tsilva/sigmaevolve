@@ -4,7 +4,6 @@ describe("dashboard row mappers", () => {
   it("maps aggregated track rows into track list items", () => {
     const mapped = mapTrackListItem({
       trackId: "track_1",
-      name: "mnist-baseline",
       datasetId: "mnist:v1",
       createdAt: "2026-03-20T15:00:00.000Z",
       totalTrials: "5",
@@ -21,7 +20,6 @@ describe("dashboard row mappers", () => {
 
     expect(mapped).toEqual({
       trackId: "track_1",
-      name: "mnist-baseline",
       datasetId: "mnist:v1",
       createdAt: "2026-03-20T15:00:00.000Z",
       totalTrials: 5,
@@ -41,7 +39,7 @@ describe("dashboard row mappers", () => {
     const mapped = mapTrialListItem({
       trialId: "trial_1",
       status: "active",
-      outcomeReason: null,
+      outcomeReason: "generation_failed",
       modalRunId: null,
       modalRunUrl: null,
       score: "0",
@@ -59,9 +57,9 @@ describe("dashboard row mappers", () => {
       finishedAt: null,
       durationSec: null,
       hasError: true,
-      errorType: "generation_invalid_candidate",
+      errorType: null,
       source: "print('hello')\n",
-      errorJson: { stderr: "boom" },
+      errorJson: { reason: "candidate_materialization_failed", stderr: "boom" },
       provenanceJson: {
         model: "google/gemini",
         request_messages: [],
@@ -77,7 +75,7 @@ describe("dashboard row mappers", () => {
     expect(mapped).toEqual({
       trialId: "trial_1",
       status: "active",
-      outcomeReason: null,
+      outcomeReason: "generation_failed",
       modalRunId: null,
       modalRunUrl: null,
       score: 0,
@@ -101,7 +99,7 @@ describe("dashboard row mappers", () => {
       generatedSource: "print('candidate')\n",
       generationAssertionsPassed: false,
       generationAssertionFailures: ["candidate modified immutable text outside evolve blocks"],
-      errorJson: { stderr: "boom" },
+      errorJson: { reason: "candidate_materialization_failed", stderr: "boom" },
       provenanceJson: {
         model: "google/gemini",
         request_messages: [],

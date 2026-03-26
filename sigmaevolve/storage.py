@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from datetime import datetime
 from datetime import timedelta
 import json
 from typing import Any, Iterable
@@ -23,17 +24,31 @@ from sigmaevolve.core import (
     TRIAL_STATUS_ERROR,
     TRIAL_STATUS_FINISHED,
     TRIAL_STATUS_QUEUED,
-    DatasetRecord,
+    TrackPolicy,
     TrackRecord,
     TrialRecord,
     TrialSummary,
     compute_script_hash,
-    compute_score,
     make_id,
     now_utc,
 )
 
 ALLOWED_GENERATION_BACKENDS = frozenset({"openrouter"})
+ALLOWED_METRIC_KEYS = frozenset(
+    {
+        "accuracy",
+        "val_loss",
+        "time_to_best_eval_sec",
+        "eval_count",
+        "timed_out",
+        "time_since_last_eval_sec",
+        "had_unscored_work_at_timeout",
+        "last_phase",
+    }
+)
+ALLOWED_ERROR_KEYS = frozenset({"reason", "detail", "stderr", "returncode", "finish_reason"})
+ALLOWED_LAUNCHER_KEYS = frozenset({"run_id", "run_url"})
+ALLOWED_WANDB_KEYS = frozenset({"project", "entity", "run_id", "run_name", "run_url"})
 
 metadata = sa.MetaData()
 
@@ -51,20 +66,11 @@ def normalize_database_url(database_url: str) -> str:
     return normalized_url
 
 
-datasets_table = sa.Table(
-    "datasets",
-    metadata,
-    sa.Column("dataset_id", sa.String(255), primary_key=True),
-    sa.Column("manifest_path", sa.Text(), nullable=True),
-    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
-)
-
 tracks_table = sa.Table(
     "tracks",
     metadata,
     sa.Column("track_id", sa.String(255), primary_key=True),
-    sa.Column("name", sa.String(255), nullable=True),
-    sa.Column("dataset_id", sa.String(255), sa.ForeignKey("datasets.dataset_id"), nullable=False),
+    sa.Column("dataset_id", sa.String(255), nullable=False),
     sa.Column("policy_json", sa.JSON(), nullable=False),
     sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
 )
@@ -86,7 +92,6 @@ trials_table = sa.Table(
     sa.Column("started_at", sa.DateTime(timezone=True), nullable=True),
     sa.Column("finished_at", sa.DateTime(timezone=True), nullable=True),
     sa.Column("metrics_json", sa.JSON(), nullable=True),
-    sa.Column("score", sa.Float(), nullable=False, server_default="0"),
     sa.Column("error_json", sa.JSON(), nullable=True),
     sa.Column("dispatch_attempts", sa.Integer(), nullable=False, server_default="0"),
     sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
@@ -205,25 +210,19 @@ def status_for_outcome_reason(outcome_reason: str) -> str:
 
 
 def classify_error_type(outcome_reason: str, error_json: dict[str, Any] | None) -> str | None:
-    # Honor an explicit stored error type before deriving one from lower-level fields.
     payload = dict(error_json or {})
-    explicit = payload.get("error_type")
-    if isinstance(explicit, str) and explicit.strip():
-        return explicit.strip()
-
-    # Normalize the shared classifier inputs used across outcome-specific branches.
     reason = payload.get("reason")
     if not isinstance(reason, str):
         reason = None
     finish_reason = payload.get("finish_reason")
-    native_finish_reason = payload.get("native_finish_reason")
-    reached_length_limit = (
-        (isinstance(finish_reason, str) and finish_reason == "length")
-        or (isinstance(native_finish_reason, str) and native_finish_reason == "length")
-    )
+    reached_length_limit = isinstance(finish_reason, str) and finish_reason == "length"
+    detail = payload.get("detail")
 
     # Classify generation failures by whether the issue came from output shape or provider behavior.
     if outcome_reason == OUTCOME_GENERATION_FAILED:
+        detail_mentions_reasoning = isinstance(detail, str) and "reasoning" in detail.lower()
+        if reason == "provider_response_missing_content" and reached_length_limit and detail_mentions_reasoning:
+            return "generation_reasoning_tokens_exhausted"
         if reason in {"candidate_materialization_failed", "generation_assertion_failed"} and reached_length_limit:
             return "generation_output_truncated"
         if reason in {"candidate_materialization_failed", "generation_assertion_failed"}:
@@ -262,21 +261,115 @@ def classify_error_type(outcome_reason: str, error_json: dict[str, Any] | None) 
     return None
 
 
-def prepare_error_payload(outcome_reason: str, error_json: dict[str, Any] | None) -> dict[str, Any] | None:
-    # Attach the derived error type while preserving any original error fields.
+def slim_metrics_payload(metrics_json: dict[str, Any] | None) -> dict[str, Any] | None:
+    # Persist only the metrics fields that still drive ranking or lightweight diagnostics.
+    payload = dict(metrics_json or {})
+    slimmed = {
+        key: value
+        for key, value in payload.items()
+        if key in ALLOWED_METRIC_KEYS and value is not None
+    }
+    return slimmed or None
+
+
+def slim_error_payload(error_json: dict[str, Any] | None) -> dict[str, Any] | None:
+    # Persist only the compact error fields used for operator debugging and read-time classification.
     payload = dict(error_json or {})
-    error_type = classify_error_type(outcome_reason, payload)
-    if error_type:
-        payload["error_type"] = error_type
-    return payload or None
+    slimmed = {
+        key: value
+        for key, value in payload.items()
+        if key in ALLOWED_ERROR_KEYS and value is not None
+    }
+    if not has_error_signal(slimmed):
+        return None
+    return slimmed
 
 
-def _row_to_dataset(row: sa.Row[Any]) -> DatasetRecord:
-    return DatasetRecord(
-        dataset_id=row.dataset_id,
-        manifest_path=row.manifest_path,
-        created_at=row.created_at,
+def slim_provenance_payload(provenance_json: dict[str, Any], *, outcome_reason: str | None = None) -> dict[str, Any]:
+    # Rebuild the persisted provenance shape so only audit-relevant fields remain.
+    payload = dict(provenance_json or {})
+    slimmed: dict[str, Any] = {}
+
+    # Keep the shared top-level provenance identifiers first.
+    for key in ("backend", "model", "candidate_kind"):
+        value = payload.get(key)
+        if value is not None:
+            slimmed[key] = value
+
+    generation_config = payload.get("generation_config")
+    if isinstance(generation_config, dict):
+        slimmed["generation_config"] = dict(generation_config)
+
+    request_messages = payload.get("request_messages")
+    if isinstance(request_messages, list):
+        slimmed["request_messages"] = list(request_messages)
+
+    context_trial_ids = payload.get("context_trial_ids")
+    if isinstance(context_trial_ids, list):
+        slimmed["context_trial_ids"] = list(context_trial_ids)
+
+    launcher = payload.get("launcher")
+    if isinstance(launcher, dict):
+        slim_launcher = {
+            key: value
+            for key, value in launcher.items()
+            if key in ALLOWED_LAUNCHER_KEYS and value is not None
+        }
+        if slim_launcher:
+            slimmed["launcher"] = slim_launcher
+
+    wandb = payload.get("wandb")
+    if isinstance(wandb, dict):
+        slim_wandb = {
+            key: value
+            for key, value in wandb.items()
+            if key in ALLOWED_WANDB_KEYS and value is not None
+        }
+        if slim_wandb:
+            slimmed["wandb"] = slim_wandb
+
+    generation = payload.get("generation")
+    has_generation = isinstance(generation, dict)
+    response_text = generation.get("response_text") if has_generation else None
+    should_persist_response_text = (
+        outcome_reason == OUTCOME_GENERATION_FAILED
+        and isinstance(response_text, str)
+        and bool(response_text.strip())
     )
+    if should_persist_response_text:
+        slimmed["generation"] = {"response_text": response_text}
+
+    return slimmed
+
+
+def normalize_legacy_track_policy(policy_json: dict[str, Any] | None) -> dict[str, Any]:
+    # Rewrite the legacy policy shape into the reduced persisted contract.
+    payload = dict(policy_json or {})
+
+    sampling_settings = payload.pop("sampling_settings", None)
+    if "sampling_seed" not in payload and isinstance(sampling_settings, dict):
+        payload["sampling_seed"] = int(sampling_settings.get("seed", 0))
+
+    payload.pop("scorer_settings", None)
+
+    generation_backend = dict(payload.get("generation_backend") or {})
+    generation_backend.pop("backend", None)
+    if generation_backend:
+        payload["generation_backend"] = generation_backend
+
+    return TrackPolicy.from_dict(payload).to_dict()
+
+
+def coerce_timestamp(value: Any) -> Any:
+    # Rebuild ISO8601 timestamps into datetime objects for the reduced schema inserts.
+    if isinstance(value, str):
+        return datetime.fromisoformat(value)
+    return value
+
+
+def prepare_error_payload(outcome_reason: str, error_json: dict[str, Any] | None) -> dict[str, Any] | None:
+    payload = slim_error_payload(error_json)
+    return payload or None
 
 
 def _copy_json_dict(value: dict[str, Any] | None) -> dict[str, Any]:
@@ -292,7 +385,6 @@ def _copy_optional_json_dict(value: dict[str, Any] | None) -> dict[str, Any] | N
 def _row_to_track(row: sa.Row[Any]) -> TrackRecord:
     return TrackRecord(
         track_id=row.track_id,
-        name=row.name,
         dataset_id=row.dataset_id,
         policy_json=dict(row.policy_json),
         created_at=row.created_at,
@@ -315,7 +407,6 @@ def _row_to_trial(row: sa.Row[Any]) -> TrialRecord:
         started_at=row.started_at,
         finished_at=row.finished_at,
         metrics_json=_copy_optional_json_dict(row.metrics_json),
-        score=float(row.score or 0.0),
         error_json=_copy_optional_json_dict(row.error_json),
         dispatch_attempts=int(row.dispatch_attempts),
         created_at=row.created_at,
@@ -323,7 +414,7 @@ def _row_to_trial(row: sa.Row[Any]) -> TrialRecord:
 
 
 def _trial_summary_sort_key(summary: TrialSummary) -> tuple[float, float, float]:
-    # Rank by accuracy first, then faster time-to-best, then final score.
+    # Rank by accuracy first, then faster time-to-best, then a stable derived score.
     metrics = summary.metrics_json or {}
     accuracy = float(metrics.get("accuracy") or 0.0)
     time_to_best = metrics.get("time_to_best_eval_sec")
@@ -336,7 +427,6 @@ def _trial_summary_sort_key(summary: TrialSummary) -> tuple[float, float, float]
 def _row_to_trial_summary(row: sa.Row[Any]) -> TrialSummary:
     return TrialSummary(
         trial_id=row.trial_id,
-        score=float(row.score or 0.0),
         metrics_json=_copy_optional_json_dict(row.metrics_json),
         source=row.source,
         provenance_json=_copy_json_dict(row.provenance_json),
@@ -449,7 +539,6 @@ class SQLAlchemyRepository:
         *,
         trial_id: str,
         outcome_reason: str,
-        score: float,
         error_json: dict[str, Any] | None,
         metrics_json: dict[str, Any] | None = None,
         finished_at: Any | None = None,
@@ -460,11 +549,10 @@ class SQLAlchemyRepository:
             "status": status_for_outcome_reason(outcome_reason),
             "outcome_reason": outcome_reason,
             "finished_at": finished_at if finished_at is not None else now_utc(),
-            "score": score,
             "error_json": prepare_error_payload(outcome_reason, error_json),
         }
         if metrics_json is not None or outcome_reason in TERMINAL_OUTCOMES:
-            values["metrics_json"] = metrics_json
+            values["metrics_json"] = slim_metrics_payload(metrics_json)
         if extra_values:
             values.update(extra_values)
         conn.execute(
@@ -473,53 +561,81 @@ class SQLAlchemyRepository:
             .values(**values)
         )
 
-    def register_dataset(self, dataset_id: str, manifest_path: str | None) -> DatasetRecord:
-        # Upsert the dataset manifest path while preserving the latest registration time.
-        created_at = now_utc()
+    def _reflect_table_rows(self, conn: Connection, table_name: str) -> list[dict[str, Any]]:
+        # Materialize reflected rows into plain dicts before destructive migration steps.
+        reflected_metadata = sa.MetaData()
+        reflected_metadata.reflect(bind=conn, only=[table_name])
+        table = reflected_metadata.tables.get(table_name)
+        if table is None:
+            return []
+        rows = conn.execute(sa.select(table)).mappings().all()
+        return [dict(row) for row in rows]
+
+    def _drop_legacy_tables(self, conn: Connection) -> None:
+        # Drop old tables in dependency order before recreating the reduced schema.
+        for table_name in ("datasets", "trials", "tracks"):
+            conn.execute(sa.text(f"DROP TABLE IF EXISTS {table_name}"))
+
+    def migrate_reduced_schema(self) -> dict[str, int]:
         with self.transaction() as conn:
-            if self.engine.dialect.name == "sqlite":
-                conn.execute(
-                    sa.insert(datasets_table)
-                    .values(
-                        dataset_id=dataset_id,
-                        manifest_path=manifest_path,
-                        created_at=created_at,
-                    )
-                    .prefix_with("OR REPLACE")
+            track_rows = self._reflect_table_rows(conn, "tracks")
+            trial_rows = self._reflect_table_rows(conn, "trials")
+
+            normalized_tracks = [
+                {
+                    "track_id": str(row["track_id"]),
+                    "dataset_id": str(row["dataset_id"]),
+                    "policy_json": normalize_legacy_track_policy(dict(row.get("policy_json") or {})),
+                    "created_at": coerce_timestamp(row["created_at"]),
+                }
+                for row in track_rows
+            ]
+
+            normalized_trials = []
+            for row in trial_rows:
+                outcome_reason = row.get("outcome_reason")
+                normalized_trials.append(
+                    {
+                        "trial_id": str(row["trial_id"]),
+                        "track_id": str(row["track_id"]),
+                        "source": str(row["source"]),
+                        "script_hash": str(row["script_hash"]),
+                        "provenance_json": slim_provenance_payload(
+                            dict(row.get("provenance_json") or {}),
+                            outcome_reason=outcome_reason,
+                        ),
+                        "status": str(row["status"]),
+                        "outcome_reason": outcome_reason,
+                        "dispatch_token": row.get("dispatch_token"),
+                        "dispatch_deadline_at": coerce_timestamp(row.get("dispatch_deadline_at")),
+                        "runner_id": row.get("runner_id"),
+                        "heartbeat_at": coerce_timestamp(row.get("heartbeat_at")),
+                        "started_at": coerce_timestamp(row.get("started_at")),
+                        "finished_at": coerce_timestamp(row.get("finished_at")),
+                        "metrics_json": slim_metrics_payload(dict(row.get("metrics_json") or {})),
+                        "error_json": prepare_error_payload(
+                            str(outcome_reason) if outcome_reason is not None else "",
+                            dict(row.get("error_json") or {}),
+                        ),
+                        "dispatch_attempts": int(row.get("dispatch_attempts") or 0),
+                        "created_at": coerce_timestamp(row["created_at"]),
+                    }
                 )
-            else:
-                existing = conn.execute(
-                    sa.select(datasets_table).where(datasets_table.c.dataset_id == dataset_id)
-                ).fetchone()
-                if existing:
-                    conn.execute(
-                        sa.update(datasets_table)
-                        .where(datasets_table.c.dataset_id == dataset_id)
-                        .values(manifest_path=manifest_path, created_at=created_at)
-                    )
-                else:
-                    conn.execute(
-                        sa.insert(datasets_table).values(
-                            dataset_id=dataset_id,
-                            manifest_path=manifest_path,
-                            created_at=created_at,
-                        )
-                    )
 
-            # Reload the canonical row shape before returning the record.
-            row = conn.execute(
-                sa.select(datasets_table).where(datasets_table.c.dataset_id == dataset_id)
-            ).one()
-        return _row_to_dataset(row)
+            self._drop_legacy_tables(conn)
+            metadata.create_all(conn)
 
-    def get_dataset(self, dataset_id: str) -> DatasetRecord | None:
-        with self.engine.connect() as conn:
-            row = conn.execute(
-                sa.select(datasets_table).where(datasets_table.c.dataset_id == dataset_id)
-            ).fetchone()
-        return _row_to_dataset(row) if row else None
+            if normalized_tracks:
+                conn.execute(sa.insert(tracks_table), normalized_tracks)
+            if normalized_trials:
+                conn.execute(sa.insert(trials_table), normalized_trials)
 
-    def create_track(self, name: str | None, dataset_id: str, policy_json: dict[str, Any]) -> TrackRecord:
+        return {
+            "migrated_tracks": len(normalized_tracks),
+            "migrated_trials": len(normalized_trials),
+        }
+
+    def create_track(self, dataset_id: str, policy_json: dict[str, Any]) -> TrackRecord:
         # Create a fresh track id and persist the track metadata in one transaction.
         track_id = make_id("track")
         created_at = now_utc()
@@ -527,7 +643,6 @@ class SQLAlchemyRepository:
             conn.execute(
                 sa.insert(tracks_table).values(
                     track_id=track_id,
-                    name=name,
                     dataset_id=dataset_id,
                     policy_json=policy_json,
                     created_at=created_at,
@@ -551,7 +666,7 @@ class SQLAlchemyRepository:
         provenance_json: dict[str, Any],
     ) -> tuple[TrialRecord | None, bool]:
         # Normalize provenance and source before checking for duplicate scripts.
-        validated_provenance = validate_trial_provenance(provenance_json)
+        validated_provenance = slim_provenance_payload(validate_trial_provenance(provenance_json))
         normalized_source = normalize_source(source)
         script_hash = compute_script_hash(normalized_source)
         created_at = now_utc()
@@ -586,7 +701,6 @@ class SQLAlchemyRepository:
                     started_at=None,
                     finished_at=None,
                     metrics_json=None,
-                    score=0.0,
                     error_json=None,
                     dispatch_attempts=0,
                     created_at=created_at,
@@ -609,7 +723,10 @@ class SQLAlchemyRepository:
             raise ValueError(f"Unsupported generation attempt outcome_reason: {outcome_reason}")
 
         # Materialize the diagnostic source and terminal row payload once up front.
-        validated_provenance = validate_trial_provenance(provenance_json)
+        validated_provenance = slim_provenance_payload(
+            validate_trial_provenance(provenance_json),
+            outcome_reason=outcome_reason,
+        )
         trial_id = make_id("trial")
         source = build_generation_attempt_source(trial_id, outcome_reason)
         script_hash = compute_script_hash(source)
@@ -632,7 +749,6 @@ class SQLAlchemyRepository:
                     started_at=None,
                     finished_at=created_at,
                     metrics_json=None,
-                    score=0.0,
                     error_json=prepare_error_payload(outcome_reason, error_json),
                     dispatch_attempts=0,
                     created_at=created_at,
@@ -656,6 +772,21 @@ class SQLAlchemyRepository:
     def _record_trial_provenance_section(self, trial_id: str, section: str, payload: dict[str, Any]) -> None:
         # Merge the section payload into the stored provenance document.
         payload = dict(payload)
+        if section == "launcher":
+            payload = {
+                key: value
+                for key, value in payload.items()
+                if key in ALLOWED_LAUNCHER_KEYS and value is not None
+            }
+        elif section == "wandb":
+            payload = {
+                key: value
+                for key, value in payload.items()
+                if key in ALLOWED_WANDB_KEYS and value is not None
+            }
+        if not payload:
+            return
+
         with self.transaction() as conn:
             row = conn.execute(
                 sa.select(trials_table.c.track_id, trials_table.c.provenance_json).where(
@@ -675,6 +806,7 @@ class SQLAlchemyRepository:
                 updated_provenance_json[section] = merged_section
             else:
                 updated_provenance_json[section] = payload
+            updated_provenance_json = slim_provenance_payload(updated_provenance_json)
             if updated_provenance_json == provenance_json:
                 return
 
@@ -861,7 +993,7 @@ class SQLAlchemyRepository:
 
     def heartbeat_trial(self, trial_id: str, runner_id: str, meta: dict[str, Any] | None = None) -> None:
         # Refresh the heartbeat and persist only error-bearing metadata payloads.
-        payload = dict(meta or {})
+        payload = slim_error_payload(meta)
         with self.transaction() as conn:
             conn.execute(
                 sa.update(trials_table)
@@ -872,12 +1004,12 @@ class SQLAlchemyRepository:
                         trials_table.c.runner_id == runner_id,
                     )
                 )
-                .values(heartbeat_at=now_utc(), error_json=payload if has_error_signal(payload) else None)
+                .values(heartbeat_at=now_utc(), error_json=payload)
             )
 
     def update_active_trial_metrics(self, trial_id: str, runner_id: str, metrics: dict[str, Any]) -> None:
         # Skip writes when the active trial already has the same metrics payload.
-        payload = dict(metrics or {})
+        payload = slim_metrics_payload(metrics)
         with self.transaction() as conn:
             row = conn.execute(
                 sa.select(trials_table.c.track_id, trials_table.c.metrics_json).where(
@@ -915,14 +1047,11 @@ class SQLAlchemyRepository:
         runner_id: str | None,
         outcome_reason: str,
         metrics: dict[str, Any] | None,
-        score: float,
         error_info: dict[str, Any] | None,
     ) -> None:
         # Reject outcome reasons that do not map to terminal storage states.
         if outcome_reason not in TERMINAL_OUTCOMES:
             raise ValueError(f"Unsupported outcome_reason: {outcome_reason}")
-        if metrics is None:
-            score = 0.0
 
         # Drop empty error payloads for successful trials so dashboards stay clean.
         persisted_error_info = dict(error_info) if error_info else None
@@ -950,8 +1079,7 @@ class SQLAlchemyRepository:
                     "heartbeat_at": now,
                     "status": status_for_outcome_reason(outcome_reason),
                     "outcome_reason": outcome_reason,
-                    "metrics_json": metrics,
-                    "score": score,
+                    "metrics_json": slim_metrics_payload(metrics),
                     "error_json": prepare_error_payload(outcome_reason, persisted_error_info),
                 },
             )
@@ -996,7 +1124,6 @@ class SQLAlchemyRepository:
                         conn,
                         trial_id=row.trial_id,
                         outcome_reason=OUTCOME_STALE,
-                        score=0.0,
                         error_json={"reason": "dispatch_deadline_expired"},
                         finished_at=now,
                         extra_values={
@@ -1036,7 +1163,6 @@ class SQLAlchemyRepository:
                     conn,
                     trial_id=row.trial_id,
                     outcome_reason=OUTCOME_STALE,
-                    score=0.0,
                     error_json={"reason": "heartbeat_stale"},
                 )
                 stale.append(row.trial_id)

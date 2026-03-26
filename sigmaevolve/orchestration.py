@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-
-# ---- controller.py ----
-
 import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -14,6 +11,7 @@ from sigmaevolve.core import (
     ACTIVE_STATUSES,
     CANDIDATE_KIND_STRATEGY_V1,
     DatasetRecord,
+    OUTCOME_STALE,
     ReconcileResult,
     TrackPolicy,
     TrackRecord,
@@ -312,14 +310,14 @@ class TrackController:
 
         # Schedule each generation attempt against the verified dataset manifest.
         dataset_manifest = self._ensure_dataset_manifest()
-        sampling_settings = self.track.policy_json.get("sampling_settings", {})
+        sampling_seed = int(self.track.policy_json.get("sampling_seed", 0))
         scheduled_any = False
         for slot_index, generation_index, duplicate_retry_count in attempts_to_schedule:
             scheduled = self.generation.schedule_generation_attempt(
                 self._generation_executor,
                 self.track,
                 dataset_manifest,
-                sampling_settings,
+                sampling_seed,
                 slot_index=slot_index,
                 generation_index=generation_index,
                 duplicate_retry_count=duplicate_retry_count,
@@ -463,31 +461,27 @@ class TrackController:
             provenance_json = trial.provenance_json or {}
             launcher_json = provenance_json.get("launcher") or {}
             launcher_metadata = dict(launcher_json)
-            # Ignore stale trials that were not launched through Modal.
-            if launcher_metadata.get("kind") != "modal":
-                continue
 
-            # Record cancellation metadata even when the launcher cannot cancel remotely.
-            cancel_metadata = {"cancel_attempted_at": now_utc().isoformat()}
             run_id = launcher_metadata.get("run_id")
-            # Persist the skip outcome when the remote run id is unavailable.
             if not isinstance(run_id, str) or not run_id:
-                cancel_metadata["cancel_outcome"] = "skipped_no_run_id"
-                self.repository.record_trial_launcher_metadata(trial_id, cancel_metadata)
                 continue
 
-            # Request cancellation and persist the outcome for later inspection.
             try:
                 # Reject launchers that cannot cancel remote runs.
                 if not callable(cancel_run):
                     raise RuntimeError("Active launcher does not support remote cancellation.")
                 cancel_run(launcher_metadata)
             except Exception as exc:
-                cancel_metadata["cancel_outcome"] = "failed"
-                cancel_metadata["cancel_error"] = str(exc)
-            else:
-                cancel_metadata["cancel_outcome"] = "requested"
-            self.repository.record_trial_launcher_metadata(trial_id, cancel_metadata)
+                self.repository.finalize_trial(
+                    trial_id=trial_id,
+                    runner_id=None,
+                    outcome_reason=OUTCOME_STALE,
+                    metrics=trial.metrics_json,
+                    error_info={
+                        "reason": "heartbeat_stale",
+                        "detail": str(exc),
+                    },
+                )
 
     def _pending_generation_count(self) -> int:
         with self._lock:
@@ -777,9 +771,6 @@ class TrackController:
                 self._condition.notify_all()
 
 
-# ---- launchers.py ----
-
-
 class RunnerLauncher(Protocol):
     def launch_trial(
         self,
@@ -855,9 +846,6 @@ class ModalRemoteLauncher:
         self.modal_function.cancel(run_id)
 
 
-# ---- orchestrator.py ----
-
-
 def emit_report_event(
     reporter: Callable[[str, dict[str, Any]], None] | None,
     event: str,
@@ -881,24 +869,24 @@ class Orchestrator:
     def _sample_successful_context_trials(
         self,
         track_id: str,
-        sampling_settings: dict[str, Any],
+        sampling_seed: int,
         generation_index: int,
     ):
         return self.generation.sample_successful_context_trials(
             track_id,
-            sampling_settings,
+            sampling_seed,
             generation_index,
         )
 
     def _sample_generation_context_trials(
         self,
         track_id: str,
-        sampling_settings: dict[str, Any],
+        sampling_seed: int,
         generation_index: int,
     ):
         return self.generation.sample_generation_context_trials(
             track_id,
-            sampling_settings,
+            sampling_seed,
             generation_index,
         )
 
@@ -1003,8 +991,6 @@ class Orchestrator:
         return result
 
 
-# ---- system.py ----
-
 class EvolutionSystem:
     def __init__(
         self,
@@ -1022,24 +1008,17 @@ class EvolutionSystem:
         self.orchestrator = Orchestrator(repository, dataset_manager, generator, launcher)
 
     def prepare_dataset(self, dataset_id: str) -> DatasetRecord:
-        # Prepare the dataset locally before registering its manifest path.
-        manifest = self.dataset_manager.prepare(dataset_id)
-        manifest_path = Path(manifest.root_dir) / "manifest.json"
+        # Prepare the dataset locally and return the current manifest location.
+        self.dataset_manager.prepare(dataset_id)
+        return self.dataset_manager.to_record(dataset_id)
 
-        return self.repository.register_dataset(
-            dataset_id=dataset_id,
-            manifest_path=str(manifest_path),
-        )
-
-    def create_track(self, name: str | None, dataset_id: str, policy_json: dict) -> TrackRecord:
-        # Refuse to create tracks against datasets that were never prepared.
-        if self.repository.get_dataset(dataset_id) is None:
-            raise KeyError(f"Dataset must be prepared before track creation: {dataset_id}")
+    def create_track(self, dataset_id: str, policy_json: dict) -> TrackRecord:
+        # Refuse to create tracks against datasets whose on-disk manifests are not valid.
+        self.dataset_manager.verify(dataset_id)
 
         # Persist the normalized track policy before seeding the baseline trial.
         policy = TrackPolicy.from_dict(policy_json)
         track = self.repository.create_track(
-            name=name,
             dataset_id=dataset_id,
             policy_json=policy.to_dict(),
         )
@@ -1103,7 +1082,6 @@ class EvolutionSystem:
         runner_id: str,
         outcome_reason: str,
         metrics: dict | None,
-        score: float,
         error_info: dict | None,
     ) -> None:
         self.repository.finalize_trial(
@@ -1111,7 +1089,6 @@ class EvolutionSystem:
             runner_id=runner_id,
             outcome_reason=outcome_reason,
             metrics=metrics,
-            score=score,
             error_info=error_info,
         )
 

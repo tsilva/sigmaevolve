@@ -19,13 +19,14 @@ from sigmaevolve.modal import (
     sync_dataset_to_modal,
 )
 from sigmaevolve.orchestration import InlineRunnerLauncher, build_system
+from sigmaevolve.storage import classify_error_type
 
 
 logger = logging.getLogger(f"{__name__}.stderr")
 stdout_logger = logging.getLogger(f"{__name__}.stdout")
 
 
-def load_track_definition(track_file: str) -> tuple[str | None, str, dict[str, Any]]:
+def load_track_definition(track_file: str) -> tuple[str, dict[str, Any]]:
     # Load and validate the top-level track definition envelope.
     parsed = json.loads(Path(track_file).read_text())
 
@@ -33,19 +34,16 @@ def load_track_definition(track_file: str) -> tuple[str | None, str, dict[str, A
     if not isinstance(parsed, dict):
         raise argparse.ArgumentTypeError("Track file must contain a JSON object.")
 
-    # Extract the required dataset identifier and optional track name.
+    # Extract the required dataset identifier before reading any policy fields.
     dataset_id = parsed.get("dataset_id")
 
     # Reject missing or empty dataset identifiers early.
     if not isinstance(dataset_id, str) or not dataset_id:
         raise argparse.ArgumentTypeError("Track file must include a non-empty string dataset_id.")
 
-    raw_name = parsed.get("name")
-
-    # Validate the optional track name only when the field is present.
-    if raw_name is not None and not isinstance(raw_name, str):
-        raise argparse.ArgumentTypeError("Track file name must be a string when provided.")
-    name = raw_name if isinstance(raw_name, str) else None
+    # Reject the removed track label field so new configs only use the reduced contract.
+    if "name" in parsed:
+        raise argparse.ArgumentTypeError("Track file name is no longer supported.")
 
     # Support either an explicit policy object or legacy top-level policy fields.
     policy = parsed.get("policy")
@@ -64,14 +62,14 @@ def load_track_definition(track_file: str) -> tuple[str | None, str, dict[str, A
 
     # Preserve legacy top-level fields when no explicit policy object is present.
     else:
-        excluded_fields = {"dataset_id", "name"}
+        excluded_fields = {"dataset_id"}
         policy_json = {
             key: value
             for key, value in parsed.items()
             if key not in excluded_fields
         }
 
-    return name, dataset_id, policy_json
+    return dataset_id, policy_json
 
 
 def positive_int(value: str) -> int:
@@ -105,7 +103,7 @@ class CommandSpec:
 def _configure_create_track_parser(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "track_file",
-        help="Path to a JSON file containing dataset_id, optional name, and track policy fields.",
+        help="Path to a JSON file containing dataset_id and track policy fields.",
     )
 
 
@@ -179,6 +177,12 @@ COMMAND_SPECS = (
         help="Upload a prepared dataset to the Modal dataset volume.",
         handler_name="modal_sync_dataset",
         configure=_configure_modal_sync_dataset_parser,
+    ),
+    CommandSpec(
+        name="migrate-schema",
+        help="Rewrite an existing database into the reduced schema.",
+        handler_name="migrate_schema",
+        configure=lambda parser: None,
     ),
 )
 
@@ -538,13 +542,11 @@ def _print_json(payload: Any) -> None:
 
 
 def _ensure_dataset_prepared(system, dataset_id: str) -> tuple[Any, bool]:
-    dataset = system.repository.get_dataset(dataset_id)
-    has_dataset_record = dataset is not None
-    has_manifest_path = has_dataset_record and dataset.manifest_path is not None
-    manifest_exists = has_manifest_path and Path(dataset.manifest_path).exists()
-    manifest_missing = not has_dataset_record or not has_manifest_path or not manifest_exists
+    dataset = system.dataset_manager.to_record(dataset_id)
+    manifest_path = Path(system.dataset_manager.manifest_path_for(dataset_id))
+    manifest_missing = not manifest_path.exists()
 
-    # Prepare the dataset when the repository record or manifest is incomplete.
+    # Prepare the dataset when the on-disk manifest is missing.
     if manifest_missing:
         return system.prepare_dataset(dataset_id), True
     return dataset, False
@@ -581,9 +583,7 @@ def _trial_diagnostics(metrics_json: dict[str, Any] | None) -> dict[str, Any]:
     metrics = metrics_json or {}
     return {
         "accuracy": metrics.get("accuracy"),
-        "best_accuracy": metrics.get("best_accuracy", metrics.get("accuracy")),
         "time_to_best_eval_sec": metrics.get("time_to_best_eval_sec"),
-        "last_completed_eval_sec": metrics.get("last_completed_eval_sec"),
         "timed_out": metrics.get("timed_out", False),
         "time_since_last_eval_sec": metrics.get("time_since_last_eval_sec"),
         "had_unscored_work_at_timeout": metrics.get("had_unscored_work_at_timeout", False),
@@ -604,7 +604,7 @@ def _suggest_launch_command(args, track_id: str, *, count: int = 1) -> str:
 def cmd_create_track(args) -> int:
     system = _make_system(args)
     logger.info("Loading track definition from %s.", args.track_file)
-    name, dataset_id, policy = load_track_definition(args.track_file)
+    dataset_id, policy = load_track_definition(args.track_file)
     logger.info("Ensuring dataset %s is prepared.", dataset_id)
     dataset, prepared_now = _ensure_dataset_prepared(system, dataset_id)
 
@@ -615,13 +615,12 @@ def cmd_create_track(args) -> int:
         logger.info("Reusing prepared dataset %s at %s.", dataset_id, dataset.manifest_path)
 
     logger.info("Creating track for dataset %s and seeding the baseline trial.", dataset_id)
-    track = system.create_track(name, dataset_id, policy)
+    track = system.create_track(dataset_id, policy)
     logger.info("Created track %s.", track.track_id)
     logger.info("Run it with:\n%s", _suggest_launch_command(args, track.track_id))
     _print_json(
         {
             "track_id": track.track_id,
-            "name": track.name,
             "dataset_id": track.dataset_id,
             "policy_json": track.policy_json,
             "created_at": track.created_at,
@@ -689,6 +688,7 @@ def cmd_list_trials(args) -> int:
                 "status": trial.status,
                 "outcome_reason": trial.outcome_reason,
                 "score": trial.score,
+                "error_type": classify_error_type(trial.outcome_reason or "", trial.error_json),
                 **_trial_diagnostics(trial.metrics_json),
                 "dispatch_attempts": trial.dispatch_attempts,
                 "runner_id": trial.runner_id,
@@ -729,6 +729,13 @@ def cmd_modal_sync_dataset(args) -> int:
     return 0
 
 
+def cmd_migrate_schema(args) -> int:
+    system = _make_system(args)
+    payload = system.repository.migrate_reduced_schema()
+    _print_json(payload)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     return build_cli_parser(
         handlers={
@@ -737,6 +744,7 @@ def build_parser() -> argparse.ArgumentParser:
             "list_trials": cmd_list_trials,
             "modal_deploy": cmd_modal_deploy,
             "modal_sync_dataset": cmd_modal_sync_dataset,
+            "migrate_schema": cmd_migrate_schema,
         }
     )
 

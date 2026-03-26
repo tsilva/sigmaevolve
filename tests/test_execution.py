@@ -1,6 +1,3 @@
-# ---- test_runner.py ----
-
-
 import json
 import logging
 import threading
@@ -23,6 +20,7 @@ from sigmaevolve.orchestration import (
     EvolutionSystem,
     InlineRunnerLauncher,
 )
+from sigmaevolve.storage import classify_error_type
 from tests.support import make_llm_provenance
 
 
@@ -179,6 +177,10 @@ def build_inline_system(repository, dataset_manager, hard_timeout_sec=5.0):
     return EvolutionSystem(repository, dataset_manager, None, InlineRunnerLauncher(runner), runner)
 
 
+def _create_track(system, policy_json: dict | None = None, dataset_id: str = "mnist:v1"):
+    return system.create_track(dataset_id, policy_json or {})
+
+
 def finalize_baseline(system, track_id):
     baseline = system.repository.list_trials(track_id)[0]
     system.repository.finalize_trial(
@@ -186,7 +188,6 @@ def finalize_baseline(system, track_id):
         runner_id=None,
         outcome_reason="stale",
         metrics=None,
-        score=0.0,
         error_info={"reason": "test_setup"},
     )
 
@@ -229,15 +230,12 @@ def test_heartbeat_thread_retries_after_transient_failure():
 def test_successful_run_produces_metrics_and_score(repository, dataset_manager):
     system = build_inline_system(repository, dataset_manager)
     system.prepare_dataset("mnist:v1")
-    track = system.create_track("runner", "mnist:v1", {"epochs": 2})
+    track = _create_track(system, {"epochs": 2})
     finalize_baseline(system, track.track_id)
     finished = _run_trial(system, track.track_id, SUCCESS_BLOCK)
     assert finished.outcome_reason == "succeeded"
     assert finished.metrics_json["accuracy"] >= 0.0
-    assert finished.metrics_json["train_loss"] >= 0.0
-    assert 0.0 <= finished.metrics_json["train_acc"] <= 1.0
     assert finished.metrics_json["val_loss"] >= 0.0
-    assert finished.metrics_json["val_acc"] == pytest.approx(finished.metrics_json["accuracy"])
     assert finished.metrics_json["eval_count"] == 2
     assert finished.score == finished.metrics_json["accuracy"]
     assert finished.error_json is None
@@ -246,7 +244,7 @@ def test_successful_run_produces_metrics_and_score(repository, dataset_manager):
 def test_successful_run_creates_wandb_experiment(repository, dataset_manager, fake_wandb):
     system = build_inline_system(repository, dataset_manager)
     system.prepare_dataset("mnist:v1")
-    track = system.create_track("wandb", "mnist:v1", {"epochs": 2})
+    track = _create_track(system, {"epochs": 2})
     finalize_baseline(system, track.track_id)
     finished = _run_trial(system, track.track_id, SUCCESS_BLOCK)
 
@@ -261,22 +259,22 @@ def test_successful_run_creates_wandb_experiment(repository, dataset_manager, fa
     terminal_entries = [entry for entry in run.logged if entry["payload"]["trial_state"] == "terminal"]
     assert terminal_entries
     terminal_payload = terminal_entries[-1]["payload"]
-    assert terminal_payload["train/loss"] == pytest.approx(finished.metrics_json["train_loss"])
-    assert terminal_payload["train/acc"] == pytest.approx(finished.metrics_json["train_acc"])
+    assert terminal_payload["train/loss"] >= 0.0
+    assert 0.0 <= terminal_payload["train/acc"] <= 1.0
     assert terminal_payload["val/loss"] == pytest.approx(finished.metrics_json["val_loss"])
-    assert terminal_payload["val/acc"] == pytest.approx(finished.metrics_json["val_acc"])
+    assert terminal_payload["val/acc"] == pytest.approx(finished.metrics_json["accuracy"])
     assert run.summary["outcome_reason"] == "succeeded"
-    assert run.summary["train/loss"] == pytest.approx(finished.metrics_json["train_loss"])
-    assert run.summary["train/acc"] == pytest.approx(finished.metrics_json["train_acc"])
+    assert run.summary["train/loss"] >= 0.0
+    assert 0.0 <= run.summary["train/acc"] <= 1.0
     assert run.summary["val/loss"] == pytest.approx(finished.metrics_json["val_loss"])
-    assert run.summary["val/acc"] == pytest.approx(finished.metrics_json["val_acc"])
+    assert run.summary["val/acc"] == pytest.approx(finished.metrics_json["accuracy"])
     assert run.finished == {"exit_code": 0}
 
 
 def test_successful_run_with_custom_data_block(repository, dataset_manager):
     system = build_inline_system(repository, dataset_manager)
     system.prepare_dataset("mnist:v1")
-    track = system.create_track("data-block", "mnist:v1", {"epochs": 2})
+    track = _create_track(system, {"epochs": 2})
     finalize_baseline(system, track.track_id)
     finished = _run_trial(
         system,
@@ -291,7 +289,7 @@ def test_successful_run_with_custom_data_block(repository, dataset_manager):
 def test_successful_run_with_custom_optimization_block(repository, dataset_manager):
     system = build_inline_system(repository, dataset_manager)
     system.prepare_dataset("mnist:v1")
-    track = system.create_track("optimization-block", "mnist:v1", {"epochs": 2})
+    track = _create_track(system, {"epochs": 2})
     finalize_baseline(system, track.track_id)
     finished = _run_trial(
         system,
@@ -306,7 +304,7 @@ def test_successful_run_with_custom_optimization_block(repository, dataset_manag
 def test_timeout_with_no_completed_eval_finalizes_with_zero_score(repository, dataset_manager):
     system = build_inline_system(repository, dataset_manager, hard_timeout_sec=0.3)
     system.prepare_dataset("mnist:v1")
-    track = system.create_track("timeout", "mnist:v1", {"epochs": 3})
+    track = _create_track(system, {"epochs": 3})
     finalize_baseline(system, track.track_id)
     finished = _run_trial(system, track.track_id, TIMEOUT_BLOCK)
     assert finished.outcome_reason == "timeout"
@@ -317,14 +315,13 @@ def test_timeout_with_no_completed_eval_finalizes_with_zero_score(repository, da
 def test_timeout_with_completed_eval_keeps_best_score(repository, dataset_manager):
     system = build_inline_system(repository, dataset_manager, hard_timeout_sec=1.5)
     system.prepare_dataset("mnist:v1")
-    track = system.create_track("timeout-salvaged", "mnist:v1", {"epochs": 4})
+    track = _create_track(system, {"epochs": 4})
     finalize_baseline(system, track.track_id)
     finished = _run_trial(system, track.track_id, SALVAGED_TIMEOUT_BLOCK)
     assert finished.outcome_reason == "timeout"
     assert finished.score == finished.metrics_json["accuracy"]
     assert finished.metrics_json["timed_out"] is True
     assert finished.metrics_json["accuracy"] == 1.0
-    assert finished.metrics_json["best_eval_index"] == 2
     assert finished.metrics_json["had_unscored_work_at_timeout"] is True
     assert finished.metrics_json["time_since_last_eval_sec"] > 0.0
     assert finished.error_json is None
@@ -333,34 +330,30 @@ def test_timeout_with_completed_eval_keeps_best_score(repository, dataset_manage
 def test_equal_accuracy_uses_lower_time_to_best_eval_as_tiebreaker(repository, dataset_manager):
     system = build_inline_system(repository, dataset_manager, hard_timeout_sec=1.5)
     system.prepare_dataset("mnist:v1")
-    track = system.create_track("tiebreak", "mnist:v1", {"epochs": 4})
+    track = _create_track(system, {"epochs": 4})
     finalize_baseline(system, track.track_id)
     finished = _run_trial(system, track.track_id, TIEBREAKER_BLOCK)
     assert finished.outcome_reason == "timeout"
     assert finished.metrics_json["accuracy"] == 1.0
     assert finished.metrics_json["time_to_best_eval_sec"] == pytest.approx(0.05, abs=0.08)
-    assert finished.metrics_json["best_eval_index"] == 1
-    assert finished.metrics_json["last_completed_eval_index"] == 2
+    assert finished.metrics_json["eval_count"] == 2
 
 
 def test_run_stops_early_when_validation_accuracy_plateaus(repository, dataset_manager):
     system = build_inline_system(repository, dataset_manager)
     system.prepare_dataset("mnist:v1")
-    track = system.create_track("early-stop", "mnist:v1", {"epochs": 5})
+    track = _create_track(system, {"epochs": 5})
     finalize_baseline(system, track.track_id)
     finished = _run_trial(system, track.track_id, EARLY_STOP_BLOCK)
     assert finished.outcome_reason == "succeeded"
-    assert finished.metrics_json["early_stopped"] is True
-    assert finished.metrics_json["early_stopping_patience"] == 2
-    assert finished.metrics_json["early_stop_epoch"] == 3
-    assert finished.metrics_json["epochs_completed"] == 3
     assert finished.metrics_json["eval_count"] == 3
+    assert finished.metrics_json["last_phase"] == "finished"
 
 
 def test_crash_finalizes_with_zero_score(repository, dataset_manager):
     system = build_inline_system(repository, dataset_manager)
     system.prepare_dataset("mnist:v1")
-    track = system.create_track("crash", "mnist:v1", {})
+    track = _create_track(system)
     finalize_baseline(system, track.track_id)
     finished = _run_trial(system, track.track_id, CRASH_BLOCK)
     assert finished.status == "error"
@@ -371,20 +364,20 @@ def test_crash_finalizes_with_zero_score(repository, dataset_manager):
 def test_missing_required_exports_finalizes_as_eval_failed(repository, dataset_manager):
     system = build_inline_system(repository, dataset_manager)
     system.prepare_dataset("mnist:v1")
-    track = system.create_track("eval", "mnist:v1", {})
+    track = _create_track(system)
     finalize_baseline(system, track.track_id)
     finished = _run_trial(system, track.track_id, MISSING_EXPORT_BLOCK)
     assert finished.status == "error"
     assert finished.outcome_reason == "eval_failed"
     assert finished.error_json["reason"] == "train_script_contract_violation"
-    assert finished.error_json["error_type"] == "execution_contract_violation"
+    assert classify_error_type(finished.outcome_reason or "", finished.error_json) == "execution_contract_violation"
     assert finished.score == 0.0
 
 
 def test_run_streams_child_output_to_parent_logs(repository, dataset_manager, capsys):
     system = build_inline_system(repository, dataset_manager)
     system.prepare_dataset("mnist:v1")
-    track = system.create_track("logging", "mnist:v1", {"epochs": 1})
+    track = _create_track(system, {"epochs": 1})
     finalize_baseline(system, track.track_id)
     finished = _run_trial(system, track.track_id, LOGGING_BLOCK)
     captured = capsys.readouterr()
@@ -396,7 +389,7 @@ def test_run_streams_child_output_to_parent_logs(repository, dataset_manager, ca
 def test_run_emits_lifecycle_logs(repository, dataset_manager, caplog):
     system = build_inline_system(repository, dataset_manager)
     system.prepare_dataset("mnist:v1")
-    track = system.create_track("lifecycle-logging", "mnist:v1", {"epochs": 1})
+    track = _create_track(system, {"epochs": 1})
     finalize_baseline(system, track.track_id)
     with caplog.at_level(logging.INFO, logger="sigmaevolve.execution"):
         finished = _run_trial(system, track.track_id, SUCCESS_BLOCK)
@@ -412,7 +405,7 @@ def test_run_emits_lifecycle_logs(repository, dataset_manager, caplog):
 def test_run_uses_unbuffered_python_for_child_process(repository, dataset_manager, monkeypatch):
     system = build_inline_system(repository, dataset_manager)
     system.prepare_dataset("mnist:v1")
-    track = system.create_track("unbuffered-child", "mnist:v1", {"epochs": 1})
+    track = _create_track(system, {"epochs": 1})
     finalize_baseline(system, track.track_id)
     reserved_source = build_candidate_train_script(SUCCESS_BLOCK)
     _, created = system.repository.create_queued_trial_if_absent(
@@ -447,7 +440,7 @@ def test_run_uses_unbuffered_python_for_child_process(repository, dataset_manage
 def test_active_run_persists_live_metrics_before_finalization(repository, dataset_manager, fake_wandb):
     system = build_inline_system(repository, dataset_manager)
     system.prepare_dataset("mnist:v1")
-    track = system.create_track("live-metrics", "mnist:v1", {"epochs": 3})
+    track = _create_track(system, {"epochs": 3})
     finalize_baseline(system, track.track_id)
     _, created = system.repository.create_queued_trial_if_absent(
         track.track_id,
@@ -479,11 +472,7 @@ def test_active_run_persists_live_metrics_before_finalization(repository, datase
     assert active_snapshot is not None
     assert active_snapshot.finished_at is None
     assert active_snapshot.metrics_json["accuracy"] == 1.0
-    assert active_snapshot.metrics_json["best_accuracy"] == 1.0
-    assert active_snapshot.metrics_json["train_loss"] >= 0.0
-    assert 0.0 <= active_snapshot.metrics_json["train_acc"] <= 1.0
     assert active_snapshot.metrics_json["val_loss"] >= 0.0
-    assert active_snapshot.metrics_json["val_acc"] == pytest.approx(active_snapshot.metrics_json["accuracy"])
     assert active_snapshot.metrics_json["eval_count"] >= 1
     assert active_snapshot.metrics_json["last_phase"] in {"train", "eval", "finished"}
     assert "timed_out" not in active_snapshot.metrics_json

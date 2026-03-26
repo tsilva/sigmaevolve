@@ -4,8 +4,13 @@ import json
 from types import SimpleNamespace
 
 import pytest
+import sqlalchemy as sa
 
-from sigmaevolve.storage import trials_table
+from sigmaevolve.storage import (
+    classify_error_type,
+    tracks_table,
+    trials_table,
+)
 from tests.support import make_llm_provenance
 
 
@@ -23,6 +28,16 @@ def _capture_dashboard_notifications(repository):
         lambda conn, track_id, reason: notifications.append((track_id, reason))
     )
     return notifications
+
+
+def _create_track(repository):
+    return repository.create_track(dataset_id="mnist:v1", policy_json={})
+
+
+def test_fresh_schema_bootstrap_creates_only_tracks_and_trials(repository):
+    inspector = sa.inspect(repository.engine)
+
+    assert sorted(inspector.get_table_names()) == ["tracks", "trials"]
 
 
 def test_dashboard_notify_is_postgres_only(repository):
@@ -45,13 +60,9 @@ def test_dashboard_notify_is_postgres_only(repository):
 
 
 def test_track_and_trial_mutations_publish_dashboard_notifications(repository):
-    repository.register_dataset("mnist:v1", "/tmp/manifest.json")
-
     notifications = _capture_dashboard_notifications(repository)
 
-    track = repository.create_track(
-        name="dashboard", dataset_id="mnist:v1", policy_json={}
-    )
+    track = _create_track(repository)
     assert notifications[-1] == (track.track_id, "track_changed")
 
     trial, created = repository.create_queued_trial_if_absent(
@@ -63,15 +74,11 @@ def test_track_and_trial_mutations_publish_dashboard_notifications(repository):
     assert trial is not None
     assert notifications[-1] == (track.track_id, "trial_changed")
 
-    reserved = repository.reserve_trials(
-        track.track_id, max_parallelism=1, dispatch_ttl_sec=60, limit=1
-    )
+    reserved = repository.reserve_trials(track.track_id, max_parallelism=1, dispatch_ttl_sec=60, limit=1)
     assert len(reserved) == 1
     assert notifications[-1] == (track.track_id, "trial_changed")
 
-    claimed = repository.claim_trial(
-        reserved[0].trial_id, reserved[0].dispatch_token, "runner-1"
-    )
+    claimed = repository.claim_trial(reserved[0].trial_id, reserved[0].dispatch_token, "runner-1")
     assert claimed is not None
     assert notifications[-1] == (track.track_id, "trial_changed")
 
@@ -80,22 +87,14 @@ def test_track_and_trial_mutations_publish_dashboard_notifications(repository):
         runner_id="runner-1",
         outcome_reason="succeeded",
         metrics={"accuracy": 0.75},
-        score=0.75,
         error_info=None,
     )
     assert notifications[-1] == (track.track_id, "trial_changed")
 
 
-def test_update_active_trial_metrics_updates_only_matching_active_runner_and_notifies(
-    repository,
-):
-    repository.register_dataset("mnist:v1", "/tmp/manifest.json")
-
+def test_update_active_trial_metrics_updates_only_matching_active_runner_and_notifies(repository):
     notifications = _capture_dashboard_notifications(repository)
-
-    track = repository.create_track(
-        name="live-metrics", dataset_id="mnist:v1", policy_json={}
-    )
+    track = _create_track(repository)
     trial, created = repository.create_queued_trial_if_absent(
         track_id=track.track_id,
         source="print('candidate')\n",
@@ -104,18 +103,14 @@ def test_update_active_trial_metrics_updates_only_matching_active_runner_and_not
     assert created is True
     assert trial is not None
 
-    reserved = repository.reserve_trials(
-        track.track_id, max_parallelism=1, dispatch_ttl_sec=60, limit=1
-    )
-    claimed = repository.claim_trial(
-        reserved[0].trial_id, reserved[0].dispatch_token, "runner-1"
-    )
+    reserved = repository.reserve_trials(track.track_id, max_parallelism=1, dispatch_ttl_sec=60, limit=1)
+    claimed = repository.claim_trial(reserved[0].trial_id, reserved[0].dispatch_token, "runner-1")
     assert claimed is not None
 
     repository.update_active_trial_metrics(
         trial_id=claimed.trial_id,
         runner_id="runner-1",
-        metrics={"accuracy": 0.5, "eval_count": 1, "last_phase": "train"},
+        metrics={"accuracy": 0.5, "eval_count": 1, "last_phase": "train", "best_accuracy": 0.5},
     )
     updated = repository.get_trial(claimed.trial_id)
     assert updated is not None
@@ -134,13 +129,11 @@ def test_update_active_trial_metrics_updates_only_matching_active_runner_and_not
     )
     assert len(notifications) == notify_count
 
-    notify_count = len(notifications)
     repository.update_active_trial_metrics(
         trial_id=claimed.trial_id,
         runner_id="runner-2",
         metrics={"accuracy": 0.9},
     )
-    assert len(notifications) == notify_count
     unchanged = repository.get_trial(claimed.trial_id)
     assert unchanged is not None
     assert unchanged.metrics_json == {
@@ -150,12 +143,8 @@ def test_update_active_trial_metrics_updates_only_matching_active_runner_and_not
     }
 
 
-def test_finalize_trial_overwrites_interim_active_metrics(repository):
-    repository.register_dataset("mnist:v1", "/tmp/manifest.json")
-    track = repository.create_track(
-        name="final-metrics", dataset_id="mnist:v1", policy_json={}
-    )
-
+def test_finalize_trial_overwrites_interim_metrics_and_slims_payload(repository):
+    track = _create_track(repository)
     trial, created = repository.create_queued_trial_if_absent(
         track_id=track.track_id,
         source="print('candidate')\n",
@@ -164,12 +153,8 @@ def test_finalize_trial_overwrites_interim_active_metrics(repository):
     assert created is True
     assert trial is not None
 
-    reserved = repository.reserve_trials(
-        track.track_id, max_parallelism=1, dispatch_ttl_sec=60, limit=1
-    )
-    claimed = repository.claim_trial(
-        reserved[0].trial_id, reserved[0].dispatch_token, "runner-1"
-    )
+    reserved = repository.reserve_trials(track.track_id, max_parallelism=1, dispatch_ttl_sec=60, limit=1)
+    claimed = repository.claim_trial(reserved[0].trial_id, reserved[0].dispatch_token, "runner-1")
     assert claimed is not None
 
     repository.update_active_trial_metrics(
@@ -181,8 +166,13 @@ def test_finalize_trial_overwrites_interim_active_metrics(repository):
         trial_id=claimed.trial_id,
         runner_id="runner-1",
         outcome_reason="succeeded",
-        metrics={"accuracy": 0.75, "eval_count": 2, "timed_out": False},
-        score=0.75,
+        metrics={
+            "accuracy": 0.75,
+            "eval_count": 2,
+            "timed_out": False,
+            "best_eval_index": 2,
+            "process_elapsed_sec": 12.0,
+        },
         error_info=None,
     )
 
@@ -197,41 +187,8 @@ def test_finalize_trial_overwrites_interim_active_metrics(repository):
     assert updated.score == 0.75
 
 
-def test_failed_trials_persist_error_status_and_error_type(repository):
-    repository.register_dataset("mnist:v1", "/tmp/manifest.json")
-    track = repository.create_track(
-        name="errors", dataset_id="mnist:v1", policy_json={}
-    )
-
-    trial, created = repository.create_queued_trial_if_absent(
-        track_id=track.track_id,
-        source="print('candidate')\n",
-        provenance_json=make_llm_provenance(model="worker"),
-    )
-    assert created is True
-    assert trial is not None
-
-    repository.finalize_trial(
-        trial_id=trial.trial_id,
-        runner_id=None,
-        outcome_reason="crashed",
-        metrics=None,
-        score=0.0,
-        error_info={"reason": "boom"},
-    )
-
-    updated = repository.get_trial(trial.trial_id)
-    assert updated is not None
-    assert updated.status == "error"
-    assert updated.error_json == {"reason": "boom", "error_type": "execution_crash"}
-
-
-def test_eval_failed_prediction_load_is_classified_as_artifact_error(repository):
-    repository.register_dataset("mnist:v1", "/tmp/manifest.json")
-    track = repository.create_track(
-        name="errors", dataset_id="mnist:v1", policy_json={}
-    )
-
+def test_failed_trials_persist_compact_error_payload_and_classify_on_read(repository):
+    track = _create_track(repository)
     trial, created = repository.create_queued_trial_if_absent(
         track_id=track.track_id,
         source="print('candidate')\n",
@@ -245,8 +202,13 @@ def test_eval_failed_prediction_load_is_classified_as_artifact_error(repository)
         runner_id=None,
         outcome_reason="eval_failed",
         metrics=None,
-        score=0.0,
-        error_info={"reason": "prediction_load_failed"},
+        error_info={
+            "reason": "prediction_load_failed",
+            "detail": "missing predictions.npy",
+            "stderr": "trace",
+            "returncode": 1,
+            "native_finish_reason": "length",
+        },
     )
 
     updated = repository.get_trial(trial.trial_id)
@@ -254,48 +216,38 @@ def test_eval_failed_prediction_load_is_classified_as_artifact_error(repository)
     assert updated.status == "error"
     assert updated.error_json == {
         "reason": "prediction_load_failed",
-        "error_type": "evaluation_artifact_error",
+        "detail": "missing predictions.npy",
+        "stderr": "trace",
+        "returncode": 1,
     }
+    assert classify_error_type(updated.outcome_reason or "", updated.error_json) == "evaluation_artifact_error"
 
 
-def test_generation_attempt_trial_uses_specific_error_type_when_present(repository):
-    repository.register_dataset("mnist:v1", "/tmp/manifest.json")
-    track = repository.create_track(
-        name="generation-errors", dataset_id="mnist:v1", policy_json={}
-    )
+def test_generation_attempt_trial_persists_slim_failure_provenance(repository):
+    track = _create_track(repository)
 
     trial = repository.create_generation_attempt_trial(
         track_id=track.track_id,
-        provenance_json=make_llm_provenance(model="worker"),
-        outcome_reason="generation_failed",
-        error_json={
-            "reason": "provider_response_missing_content",
-            "error_type": "generation_reasoning_tokens_exhausted",
-        },
-    )
-
-    assert trial.status == "error"
-    assert trial.error_json == {
-        "reason": "provider_response_missing_content",
-        "error_type": "generation_reasoning_tokens_exhausted",
-    }
-
-
-def test_generation_attempt_trial_classifies_length_limited_invalid_candidate_as_truncated(
-    repository,
-):
-    repository.register_dataset("mnist:v1", "/tmp/manifest.json")
-    track = repository.create_track(
-        name="generation-errors", dataset_id="mnist:v1", policy_json={}
-    )
-
-    trial = repository.create_generation_attempt_trial(
-        track_id=track.track_id,
-        provenance_json=make_llm_provenance(model="worker"),
+        provenance_json=make_llm_provenance(
+            model="worker",
+            generation_index=3,
+            duplicate_retry_count=2,
+            provider_response_id="resp_1",
+            generation={
+                "system_prompt": "system",
+                "user_prompt": "user",
+                "response_text": "partial response",
+                "generated_source": "print('x')\n",
+                "assertions_passed": False,
+                "assertion_failures": ["bad patch"],
+            },
+        ),
         outcome_reason="generation_failed",
         error_json={
             "reason": "candidate_materialization_failed",
             "finish_reason": "length",
+            "native_finish_reason": "length",
+            "error_type": "generation_output_truncated",
         },
     )
 
@@ -303,18 +255,26 @@ def test_generation_attempt_trial_classifies_length_limited_invalid_candidate_as
     assert trial.error_json == {
         "reason": "candidate_materialization_failed",
         "finish_reason": "length",
-        "error_type": "generation_output_truncated",
+    }
+    assert classify_error_type(trial.outcome_reason or "", trial.error_json) == "generation_output_truncated"
+    assert trial.provenance_json == {
+        "backend": "openrouter",
+        "model": "worker",
+        "candidate_kind": "strategy_v1",
+        "generation_config": {
+            "model": "worker",
+            "temperature": 0.1,
+            "max_tokens": 1500,
+        },
+        "request_messages": make_llm_provenance(model="worker")["request_messages"],
+        "context_trial_ids": ["trial_parent"],
+        "generation": {"response_text": "partial response"},
     }
 
 
-def test_record_trial_launcher_metadata_merges_into_provenance_and_notifies(repository):
-    repository.register_dataset("mnist:v1", "/tmp/manifest.json")
-
+def test_record_trial_launcher_metadata_merges_filtered_keys_and_notifies(repository):
     notifications = _capture_dashboard_notifications(repository)
-
-    track = repository.create_track(
-        name="launcher", dataset_id="mnist:v1", policy_json={}
-    )
+    track = _create_track(repository)
     trial, created = repository.create_queued_trial_if_absent(
         track_id=track.track_id,
         source="print('candidate')\n",
@@ -334,9 +294,7 @@ def test_record_trial_launcher_metadata_merges_into_provenance_and_notifies(repo
     updated = repository.get_trial(trial.trial_id)
 
     assert updated is not None
-    assert updated.provenance_json["backend"] == "openrouter"
     assert updated.provenance_json["launcher"] == {
-        "kind": "modal",
         "run_id": "fc-123",
         "run_url": "https://modal.com/apps/test/runs/fc-123",
     }
@@ -353,20 +311,14 @@ def test_record_trial_launcher_metadata_merges_into_provenance_and_notifies(repo
 
     assert updated is not None
     assert updated.provenance_json["launcher"] == {
-        "kind": "modal",
         "run_id": "fc-123",
         "run_url": "https://modal.com/apps/test/runs/fc-123",
-        "cancel_outcome": "requested",
-        "cancel_attempted_at": "2026-03-24T12:00:00+00:00",
     }
 
 
-def test_record_trial_wandb_metadata_merges_into_provenance_and_notifies(repository):
-    repository.register_dataset("mnist:v1", "/tmp/manifest.json")
-
+def test_record_trial_wandb_metadata_merges_filtered_keys_and_notifies(repository):
     notifications = _capture_dashboard_notifications(repository)
-
-    track = repository.create_track(name="wandb", dataset_id="mnist:v1", policy_json={})
+    track = _create_track(repository)
     trial, created = repository.create_queued_trial_if_absent(
         track_id=track.track_id,
         source="print('candidate')\n",
@@ -379,8 +331,10 @@ def test_record_trial_wandb_metadata_merges_into_provenance_and_notifies(reposit
         trial.trial_id,
         {
             "project": "sigmaevolve",
+            "entity": "team",
             "run_id": "wandb-run-1",
             "run_url": "https://wandb.example/sigmaevolve/wandb-run-1",
+            "artifact_id": "ignored",
         },
     )
     updated = repository.get_trial(trial.trial_id)
@@ -388,26 +342,11 @@ def test_record_trial_wandb_metadata_merges_into_provenance_and_notifies(reposit
     assert updated is not None
     assert updated.provenance_json["wandb"] == {
         "project": "sigmaevolve",
+        "entity": "team",
         "run_id": "wandb-run-1",
         "run_url": "https://wandb.example/sigmaevolve/wandb-run-1",
     }
     assert notifications[-1] == (track.track_id, "trial_changed")
-
-    repository.record_trial_wandb_metadata(
-        trial.trial_id,
-        {
-            "run_name": "track_1:trial_1",
-        },
-    )
-    updated = repository.get_trial(trial.trial_id)
-
-    assert updated is not None
-    assert updated.provenance_json["wandb"] == {
-        "project": "sigmaevolve",
-        "run_id": "wandb-run-1",
-        "run_url": "https://wandb.example/sigmaevolve/wandb-run-1",
-        "run_name": "track_1:trial_1",
-    }
 
 
 def test_trial_indexes_exist():
@@ -427,13 +366,8 @@ def test_trial_indexes_exist():
     assert "created_at" in rendered[2]
 
 
-def test_sample_trial_context_includes_scored_timeouts_and_uses_time_to_best_eval_tiebreak(
-    repository,
-):
-    repository.register_dataset("mnist:v1", "/tmp/manifest.json")
-    track = repository.create_track(
-        name="context", dataset_id="mnist:v1", policy_json={}
-    )
+def test_sample_trial_context_includes_scored_timeouts_and_uses_time_to_best_eval_tiebreak(repository):
+    track = _create_track(repository)
 
     fast_timeout, _ = repository.create_queued_trial_if_absent(
         track.track_id,
@@ -452,7 +386,6 @@ def test_sample_trial_context_includes_scored_timeouts_and_uses_time_to_best_eva
         runner_id=None,
         outcome_reason="timeout",
         metrics={"accuracy": 0.9, "time_to_best_eval_sec": 1.0},
-        score=0.9,
         error_info=None,
     )
     repository.finalize_trial(
@@ -460,7 +393,6 @@ def test_sample_trial_context_includes_scored_timeouts_and_uses_time_to_best_eva
         runner_id=None,
         outcome_reason="succeeded",
         metrics={"accuracy": 0.9, "time_to_best_eval_sec": 3.0},
-        score=0.9,
         error_info=None,
     )
 
@@ -473,10 +405,7 @@ def test_sample_trial_context_includes_scored_timeouts_and_uses_time_to_best_eva
 
 
 def test_create_queued_trial_rejects_non_llm_candidate_provenance(repository):
-    repository.register_dataset("mnist:v1", "/tmp/manifest.json")
-    track = repository.create_track(
-        name="guardrail", dataset_id="mnist:v1", policy_json={}
-    )
+    track = _create_track(repository)
 
     with pytest.raises(ValueError, match="recorded LLM prompting pipeline"):
         repository.create_queued_trial_if_absent(
@@ -487,10 +416,7 @@ def test_create_queued_trial_rejects_non_llm_candidate_provenance(repository):
 
 
 def test_runner_finalize_does_not_overwrite_stale_terminal_state(repository):
-    repository.register_dataset("mnist:v1", "/tmp/manifest.json")
-    track = repository.create_track(
-        name="stale-guard", dataset_id="mnist:v1", policy_json={}
-    )
+    track = _create_track(repository)
     trial, created = repository.create_queued_trial_if_absent(
         track_id=track.track_id,
         source="print('candidate')\n",
@@ -499,12 +425,8 @@ def test_runner_finalize_does_not_overwrite_stale_terminal_state(repository):
     assert created is True
     assert trial is not None
 
-    reserved = repository.reserve_trials(
-        track.track_id, max_parallelism=1, dispatch_ttl_sec=60, limit=1
-    )
-    claimed = repository.claim_trial(
-        reserved[0].trial_id, reserved[0].dispatch_token, "runner-1"
-    )
+    reserved = repository.reserve_trials(track.track_id, max_parallelism=1, dispatch_ttl_sec=60, limit=1)
+    claimed = repository.claim_trial(reserved[0].trial_id, reserved[0].dispatch_token, "runner-1")
     assert claimed is not None
 
     with repository.transaction() as conn:
@@ -523,7 +445,6 @@ def test_runner_finalize_does_not_overwrite_stale_terminal_state(repository):
         runner_id="runner-1",
         outcome_reason="succeeded",
         metrics={"accuracy": 1.0},
-        score=1.0,
         error_info=None,
     )
     updated = repository.get_trial(claimed.trial_id)
@@ -532,3 +453,215 @@ def test_runner_finalize_does_not_overwrite_stale_terminal_state(repository):
     assert updated.status == "finished"
     assert updated.outcome_reason == "stale"
     assert updated.error_json == {"reason": "heartbeat_stale"}
+
+
+def test_migrate_reduced_schema_rewrites_old_tables(repository):
+    with repository.transaction() as conn:
+        conn.execute(sa.text("DROP TABLE IF EXISTS trials"))
+        conn.execute(sa.text("DROP TABLE IF EXISTS tracks"))
+        conn.execute(sa.text("DROP TABLE IF EXISTS datasets"))
+        conn.execute(
+            sa.text(
+                """
+                CREATE TABLE datasets (
+                    dataset_id TEXT PRIMARY KEY,
+                    manifest_path TEXT,
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
+        )
+        conn.execute(
+            sa.text(
+                """
+                CREATE TABLE tracks (
+                    track_id TEXT PRIMARY KEY,
+                    name TEXT,
+                    dataset_id TEXT NOT NULL,
+                    policy_json JSON NOT NULL,
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
+        )
+        conn.execute(
+            sa.text(
+                """
+                CREATE TABLE trials (
+                    trial_id TEXT PRIMARY KEY,
+                    track_id TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    script_hash TEXT NOT NULL,
+                    provenance_json JSON NOT NULL,
+                    status TEXT NOT NULL,
+                    outcome_reason TEXT,
+                    dispatch_token TEXT,
+                    dispatch_deadline_at TEXT,
+                    runner_id TEXT,
+                    heartbeat_at TEXT,
+                    started_at TEXT,
+                    finished_at TEXT,
+                    metrics_json JSON,
+                    score FLOAT NOT NULL DEFAULT 0,
+                    error_json JSON,
+                    dispatch_attempts INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
+        )
+        conn.execute(
+            sa.text(
+                """
+                INSERT INTO tracks (track_id, name, dataset_id, policy_json, created_at)
+                VALUES (
+                    'track_1',
+                    'legacy',
+                    'mnist:v1',
+                    :policy_json,
+                    '2026-03-26T10:00:00+00:00'
+                )
+                """
+            ),
+            {
+                "policy_json": json.dumps(
+                    {
+                        "epochs": 3,
+                        "scorer_settings": {"primary_metric": "accuracy"},
+                        "sampling_settings": {"seed": 7},
+                        "generation_backend": {
+                            "backend": "openrouter",
+                            "selection": "round_robin",
+                            "model_pool": [{"model": "test/model", "temperature": 0.1, "max_tokens": 1500}],
+                        },
+                    }
+                )
+            },
+        )
+        conn.execute(
+            sa.text(
+                """
+                INSERT INTO trials (
+                    trial_id, track_id, source, script_hash, provenance_json, status, outcome_reason,
+                    metrics_json, score, error_json, dispatch_attempts, created_at
+                ) VALUES (
+                    'trial_1',
+                    'track_1',
+                    'print(''candidate'')\n',
+                    'hash_1',
+                    :provenance_json,
+                    'error',
+                    'generation_failed',
+                    :metrics_json,
+                    0.91,
+                    :error_json,
+                    2,
+                    '2026-03-26T10:01:00+00:00'
+                )
+                """
+            ),
+            {
+                "provenance_json": json.dumps(
+                    {
+                        **make_llm_provenance(model="worker"),
+                        "provider_response_id": "resp_1",
+                        "launcher": {
+                            "kind": "modal",
+                            "run_id": "fc-123",
+                            "run_url": "https://modal.com/apps/test/runs/fc-123",
+                            "cancel_outcome": "requested",
+                        },
+                        "generation": {
+                            "system_prompt": "system",
+                            "user_prompt": "user",
+                            "response_text": "partial response",
+                            "generated_source": "print('candidate')\n",
+                        },
+                    }
+                ),
+                "metrics_json": json.dumps(
+                    {
+                        "accuracy": 0.91,
+                        "val_loss": 0.12,
+                        "best_eval_index": 2,
+                        "process_elapsed_sec": 14.0,
+                    }
+                ),
+                "error_json": json.dumps(
+                    {
+                        "reason": "candidate_materialization_failed",
+                        "detail": "bad patch",
+                        "finish_reason": "length",
+                        "native_finish_reason": "length",
+                        "error_type": "generation_output_truncated",
+                    }
+                ),
+            },
+        )
+
+    payload = repository.migrate_reduced_schema()
+    assert payload == {"migrated_tracks": 1, "migrated_trials": 1}
+
+    inspector = sa.inspect(repository.engine)
+    assert sorted(inspector.get_table_names()) == ["tracks", "trials"]
+    assert {column["name"] for column in inspector.get_columns("tracks")} == {
+        "track_id",
+        "dataset_id",
+        "policy_json",
+        "created_at",
+    }
+    assert {column["name"] for column in inspector.get_columns("trials")} == {
+        "trial_id",
+        "track_id",
+        "source",
+        "script_hash",
+        "provenance_json",
+        "status",
+        "outcome_reason",
+        "dispatch_token",
+        "dispatch_deadline_at",
+        "runner_id",
+        "heartbeat_at",
+        "started_at",
+        "finished_at",
+        "metrics_json",
+        "error_json",
+        "dispatch_attempts",
+        "created_at",
+    }
+
+    migrated_track = repository.get_track("track_1")
+    assert migrated_track is not None
+    assert migrated_track.policy_json["sampling_seed"] == 7
+    assert "scorer_settings" not in migrated_track.policy_json
+    assert "sampling_settings" not in migrated_track.policy_json
+    assert "backend" not in migrated_track.policy_json["generation_backend"]
+
+    migrated_trial = repository.get_trial("trial_1")
+    assert migrated_trial is not None
+    assert migrated_trial.metrics_json == {
+        "accuracy": 0.91,
+        "val_loss": 0.12,
+    }
+    assert migrated_trial.error_json == {
+        "reason": "candidate_materialization_failed",
+        "detail": "bad patch",
+        "finish_reason": "length",
+    }
+    assert migrated_trial.provenance_json == {
+        "backend": "openrouter",
+        "model": "worker",
+        "candidate_kind": "strategy_v1",
+        "generation_config": {
+            "model": "worker",
+            "temperature": 0.1,
+            "max_tokens": 1500,
+        },
+        "request_messages": make_llm_provenance(model="worker")["request_messages"],
+        "context_trial_ids": ["trial_parent"],
+        "launcher": {
+            "run_id": "fc-123",
+            "run_url": "https://modal.com/apps/test/runs/fc-123",
+        },
+        "generation": {"response_text": "partial response"},
+    }

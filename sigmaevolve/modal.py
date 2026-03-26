@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-
-# ---- modal_support.py ----
-
 import logging
 import os
 from dataclasses import dataclass
@@ -211,9 +208,6 @@ def sync_dataset_to_modal(
         "volume_name": volume_name,
         "environment_name": environment_name,
     }
-
-
-# ---- modal_app.py ----
 
 
 logging.basicConfig(

@@ -81,7 +81,6 @@ export async function listTrackSummaries(): Promise<TrackListItem[]> {
     `
       select
         t.track_id as "trackId",
-        t.name,
         t.dataset_id as "datasetId",
         t.created_at as "createdAt",
         coalesce(stats.total_trials, 0)::int as "totalTrials",
@@ -117,12 +116,16 @@ export async function listTrackSummaries(): Promise<TrackListItem[]> {
       left join lateral (
         select
           trial_id as best_trial_id,
-          score as best_score
+          nullif(metrics_json ->> 'accuracy', '')::double precision as best_score
         from trials
         where track_id = t.track_id
           and status = 'finished'
           and metrics_json is not null
-        order by score desc, finished_at desc nulls last, created_at desc, trial_id desc
+        order by
+          nullif(metrics_json ->> 'accuracy', '')::double precision desc nulls last,
+          finished_at desc nulls last,
+          created_at desc,
+          trial_id desc
         limit 1
       ) best on true
       order by "lastActivityAt" desc, t.created_at desc
@@ -203,10 +206,9 @@ export async function listTrials(
         outcome_reason as "outcomeReason",
         provenance_json -> 'launcher' ->> 'run_id' as "modalRunId",
         provenance_json -> 'launcher' ->> 'run_url' as "modalRunUrl",
-        score,
+        coalesce(nullif(metrics_json ->> 'accuracy', '')::double precision, 0) as score,
         source,
         error_json as "errorJson",
-        error_json ->> 'error_type' as "errorType",
         provenance_json as "provenanceJson",
         nullif(metrics_json ->> 'accuracy', '')::double precision as accuracy,
         nullif(metrics_json ->> 'time_to_best_eval_sec', '')::double precision as "timeToBestEvalSec",
