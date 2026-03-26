@@ -590,6 +590,29 @@ class OpenRouterGenerationBackend:
             EVOLVE_BLOCK_END=EVOLVE_BLOCK_END,
         )
 
+    def _build_prompt_context_text(
+        self,
+        track: TrackRecord,
+        dataset_manifest: DatasetManifest,
+    ) -> str:
+        prompt_context: dict[str, object] = {
+            "dataset_id": track.dataset_id,
+            "split_sizes": dict(dataset_manifest.split_sizes),
+        }
+        epochs = track.policy_json.get("epochs")
+        if epochs is not None:
+            prompt_context["epochs"] = epochs
+
+        dataset_metadata: dict[str, object] = {}
+        for key in ("num_classes", "feature_shape", "feature_dtype", "label_dtype"):
+            value = dataset_manifest.metadata.get(key)
+            if value is not None:
+                dataset_metadata[key] = value
+        if dataset_metadata:
+            prompt_context["dataset_metadata"] = dataset_metadata
+
+        return "\n".join(self._format_mapping(prompt_context))
+
     def _build_user_prompt_text(
         self,
         track: TrackRecord,
@@ -598,7 +621,8 @@ class OpenRouterGenerationBackend:
         negative_trials: list[TrialSummary],
         selected_config: dict[str, object],
     ) -> str:
-        del track, dataset_manifest, negative_trials, selected_config
+        del negative_trials, selected_config
+        task_context_text = self._build_prompt_context_text(track, dataset_manifest)
 
         # Split the context into the current program and optional prior examples.
         current_program = context_trials[0] if context_trials else None
@@ -635,6 +659,7 @@ class OpenRouterGenerationBackend:
             current_program_text = "None."
         return _render_prompt_template(
             "user.md",
+            task_context=task_context_text,
             prior_programs=prior_programs_text,
             current_program=current_program_text,
         )
