@@ -1410,11 +1410,14 @@ def _run_harness(config: dict[str, Any]) -> int:
     eval_index = 0
     last_completed_eval_sec: float | None = None
     debug_payload: dict[str, Any] = {"timed_out": False, "eval_count": 0}
+    num_classes = (
+        int(dataset_metadata["num_classes"])
+        if "num_classes" in dataset_metadata
+        else None
+    )
 
-    try:
-        # Load the candidate strategy and validate its required entry points first.
-        initialize, train_window, predict_validation = load_strategy(strategy_path)
-        init_ctx = _build_context(
+    def _build_epoch_context(epoch_index: int) -> StrategyContext:
+        return _build_context(
             train_features=train_features,
             train_labels=train_labels,
             validation_features=validation_features,
@@ -1422,10 +1425,15 @@ def _run_harness(config: dict[str, Any]) -> int:
             random_seed=random_seed,
             device=device,
             num_epochs=num_epochs,
-            epoch_index=0,
+            epoch_index=epoch_index,
             hard_timeout_sec=hard_timeout_sec,
             start_time=start_time,
         )
+
+    try:
+        # Load the candidate strategy and validate its required entry points first.
+        initialize, train_window, predict_validation = load_strategy(strategy_path)
+        init_ctx = _build_epoch_context(0)
         state = initialize(init_ctx)
 
         # Reject strategies that return an unexpected state container.
@@ -1445,18 +1453,7 @@ def _run_harness(config: dict[str, Any]) -> int:
         # Alternate between train and eval work while keeping progress updates durable.
         for epoch_index in range(num_epochs):
             elapsed_before = time.monotonic() - start_time
-            train_ctx = _build_context(
-                train_features=train_features,
-                train_labels=train_labels,
-                validation_features=validation_features,
-                dataset_metadata=dataset_metadata,
-                random_seed=random_seed,
-                device=device,
-                num_epochs=num_epochs,
-                epoch_index=epoch_index,
-                hard_timeout_sec=hard_timeout_sec,
-                start_time=start_time,
-            )
+            train_ctx = _build_epoch_context(epoch_index)
             _write_progress(
                 progress_path,
                 phase="train",
@@ -1468,18 +1465,7 @@ def _run_harness(config: dict[str, Any]) -> int:
 
             train_window(train_ctx, state)
 
-            predict_ctx = _build_context(
-                train_features=train_features,
-                train_labels=train_labels,
-                validation_features=validation_features,
-                dataset_metadata=dataset_metadata,
-                random_seed=random_seed,
-                device=device,
-                num_epochs=num_epochs,
-                epoch_index=epoch_index,
-                hard_timeout_sec=hard_timeout_sec,
-                start_time=start_time,
-            )
+            predict_ctx = _build_epoch_context(epoch_index)
             _write_progress(
                 progress_path,
                 phase="eval",
@@ -1492,9 +1478,7 @@ def _run_harness(config: dict[str, Any]) -> int:
             predictions = _normalize_predictions(
                 raw_predictions,
                 num_examples=int(validation_features.shape[0]),
-                num_classes=int(dataset_metadata["num_classes"])
-                if "num_classes" in dataset_metadata
-                else None,
+                num_classes=num_classes,
             )
             eval_index += 1
             elapsed_after_eval = time.monotonic() - start_time

@@ -527,6 +527,39 @@ class TrackController:
         stopped_payload: dict[str, Any] | None = None
         next_retry: tuple[int, int, int] | None = None
 
+        def _cycle_snapshot() -> dict[str, int]:
+            return {
+                "failures": cycle.failures,
+                "max_failures": cycle.max_failures,
+                "completed": len(cycle.completed_slots),
+                "requested": cycle.requested_generations,
+                "in_flight": len(self._pending_generations),
+            }
+
+        def _record_generation_failure(
+            *,
+            provenance_json: dict[str, Any],
+            reason: str,
+            detail: str | None,
+            extra_error_json: dict[str, Any] | None = None,
+            result_error: str | None = None,
+        ) -> dict[str, int]:
+            nonlocal retry_needed
+
+            with self._condition:
+                cycle.failures += 1
+                self._result = self.generation.record_generation_attempt_failure(
+                    track_id=self.track.track_id,
+                    result=self._result,
+                    provenance_json=provenance_json,
+                    reason=reason,
+                    detail=detail,
+                    extra_error_json=extra_error_json,
+                    result_error=result_error,
+                )
+                retry_needed = True
+                return _cycle_snapshot()
+
         try:
             raw_generated = future.result()
         except Exception as exc:
@@ -534,28 +567,18 @@ class TrackController:
             failure_reason = "generator_exception"
             failure_detail = str(exc)
             failure_error_json = {"exception_type": type(exc).__name__}
-            with self._condition:
-                cycle.failures += 1
-                self._result = self.generation.record_generation_attempt_failure(
-                    track_id=self.track.track_id,
-                    result=self._result,
-                    provenance_json=self.generation.fallback_generation_provenance(
-                        self.track,
-                        attempt.context_trials,
-                        generation_index=attempt.generation_index,
-                        duplicate_retry_count=attempt.duplicate_retry_count,
-                    ),
-                    reason=failure_reason,
-                    detail=failure_detail,
-                    extra_error_json=failure_error_json,
-                    result_error=failure_detail,
-                )
-                retry_needed = True
-                failures = cycle.failures
-                max_failures = cycle.max_failures
-                completed = len(cycle.completed_slots)
-                requested = cycle.requested_generations
-                in_flight = len(self._pending_generations)
+            snapshot = _record_generation_failure(
+                provenance_json=self.generation.fallback_generation_provenance(
+                    self.track,
+                    attempt.context_trials,
+                    generation_index=attempt.generation_index,
+                    duplicate_retry_count=attempt.duplicate_retry_count,
+                ),
+                reason=failure_reason,
+                detail=failure_detail,
+                extra_error_json=failure_error_json,
+                result_error=failure_detail,
+            )
             _emit(
                 self.reporter,
                 "generation_failed",
@@ -564,11 +587,7 @@ class TrackController:
                 duplicate_retry_count=attempt.duplicate_retry_count,
                 reason=failure_reason,
                 detail=failure_detail,
-                failures=failures,
-                max_failures=max_failures,
-                completed=completed,
-                requested=requested,
-                in_flight=in_flight,
+                **snapshot,
             )
         else:
             # Normalize provider output before deciding how to record the attempt.
@@ -583,22 +602,12 @@ class TrackController:
                     if error_info.get("detail") is not None
                     else None
                 )
-                with self._condition:
-                    cycle.failures += 1
-                    self._result = self.generation.record_generation_attempt_failure(
-                        track_id=self.track.track_id,
-                        result=self._result,
-                        provenance_json=generated.provenance_json,
-                        reason=failure_reason,
-                        detail=failure_detail,
-                        extra_error_json=error_info,
-                    )
-                    retry_needed = True
-                    failures = cycle.failures
-                    max_failures = cycle.max_failures
-                    completed = len(cycle.completed_slots)
-                    requested = cycle.requested_generations
-                    in_flight = len(self._pending_generations)
+                snapshot = _record_generation_failure(
+                    provenance_json=generated.provenance_json,
+                    reason=failure_reason,
+                    detail=failure_detail,
+                    extra_error_json=error_info,
+                )
                 _emit(
                     self.reporter,
                     "generation_failed",
@@ -607,11 +616,7 @@ class TrackController:
                     duplicate_retry_count=attempt.duplicate_retry_count,
                     reason=failure_reason,
                     detail=failure_detail or "",
-                    failures=failures,
-                    max_failures=max_failures,
-                    completed=completed,
-                    requested=requested,
-                    in_flight=in_flight,
+                    **snapshot,
                 )
             else:
                 assert generated.source is not None
@@ -626,24 +631,12 @@ class TrackController:
                     failure_reason = "candidate_materialization_failed"
                     failure_detail = str(exc)
                     failure_error = f"invalid_mutation:{exc}"
-                    with self._condition:
-                        cycle.failures += 1
-                        self._result = (
-                            self.generation.record_generation_attempt_failure(
-                                track_id=self.track.track_id,
-                                result=self._result,
-                                provenance_json=generated.provenance_json,
-                                reason=failure_reason,
-                                detail=failure_detail,
-                                result_error=failure_error,
-                            )
-                        )
-                        retry_needed = True
-                        failures = cycle.failures
-                        max_failures = cycle.max_failures
-                        completed = len(cycle.completed_slots)
-                        requested = cycle.requested_generations
-                        in_flight = len(self._pending_generations)
+                    snapshot = _record_generation_failure(
+                        provenance_json=generated.provenance_json,
+                        reason=failure_reason,
+                        detail=failure_detail,
+                        result_error=failure_error,
+                    )
                     _emit(
                         self.reporter,
                         "generation_failed",
@@ -652,11 +645,7 @@ class TrackController:
                         duplicate_retry_count=attempt.duplicate_retry_count,
                         reason=failure_reason,
                         detail=failure_detail,
-                        failures=failures,
-                        max_failures=max_failures,
-                        completed=completed,
-                        requested=requested,
-                        in_flight=in_flight,
+                        **snapshot,
                     )
                 else:
                     # Let the generation backend decide whether the candidate was accepted.
@@ -674,22 +663,14 @@ class TrackController:
                             self._condition.notify_all()
                         else:
                             cycle.failures += 1
-                        failures = cycle.failures
-                        max_failures = cycle.max_failures
-                        completed = len(cycle.completed_slots)
-                        requested = cycle.requested_generations
-                        in_flight = len(self._pending_generations)
+                        snapshot = _cycle_snapshot()
                     payload = dict(generation_outcome["payload"])
                     payload.update(
                         {
                             "slot_index": attempt.slot_index,
                             "generation_index": attempt.generation_index,
                             "duplicate_retry_count": attempt.duplicate_retry_count,
-                            "failures": failures,
-                            "max_failures": max_failures,
-                            "completed": completed,
-                            "requested": requested,
-                            "in_flight": in_flight,
+                            **snapshot,
                         }
                     )
                     _emit(self.reporter, generation_outcome["event"], **payload)
