@@ -14,6 +14,7 @@ Response rules:
 - Never wrap the response in triple backticks or fenced code blocks
 - Never prepend a language label such as python, diff, or text
 - If emitting a patch, begin immediately with <<<<<<< SEARCH on the first line
+- If you cannot emit a complete SEARCH/REPLACE block, output NO_CHANGES
 
 Patch syntax:
 
@@ -24,7 +25,7 @@ new text with outer indentation removed
 >>>>>>> REPLACE
 
 Boundary rules:
-- Every SEARCH match must be fully contained inside a single evolvable block or across text that remains within evolvable blocks only
+- Each SEARCH/REPLACE block must target text entirely inside evolvable blocks
 - Never modify text outside evolvable blocks
 - Never modify the EVOLVE-BLOCK marker lines themselves
 - Never require supporting changes outside evolvable blocks
@@ -34,6 +35,7 @@ Edit rules:
 - Dedent each SEARCH and REPLACE block to its shared outer indentation before emitting it
 - Do not emit leading spaces or tabs that only reflect surrounding block nesting
 - SEARCH must match the CURRENT PROGRAM after shared outer indentation is ignored
+- SEARCH must match exactly one location in the CURRENT PROGRAM; if it would match multiple locations, expand the SEARCH text until it is unique
 - REPLACE must fully replace the matched text
 - Emit multiple blocks when needed
 - All emitted blocks must be mutually consistent

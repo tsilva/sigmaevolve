@@ -237,9 +237,15 @@ def test_openrouter_generation_uses_model_pool_round_robin(monkeypatch):
         "If emitting a patch, begin immediately with <<<<<<< SEARCH on the first line"
         in system_prompt
     )
+    assert "If you cannot emit a complete SEARCH/REPLACE block, output NO_CHANGES" in (
+        system_prompt
+    )
     assert (
         "Do not emit leading spaces or tabs that only reflect surrounding block nesting"
         in system_prompt
+    )
+    assert (
+        "SEARCH must match exactly one location in the CURRENT PROGRAM" in system_prompt
     )
     assert not first_prompt.lstrip().startswith("{")
     assert "PRIOR PROGRAMS:" in first_prompt

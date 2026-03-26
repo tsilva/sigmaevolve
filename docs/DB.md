@@ -95,9 +95,9 @@ Optional persisted keys:
 | --- | --- |
 | `launcher` | Slim launcher metadata. Only `run_id` and `run_url` are persisted. |
 | `wandb` | Slim Weights & Biases metadata. Persisted keys are `project`, `entity`, `run_id`, `run_name`, and `run_url`. |
-| `generation` | Present only for `generation_failed` rows when raw provider output must be preserved. The persisted shape contains only `response_text`. |
+| `generation` | Present when a non-empty raw provider response was captured. The persisted shape contains only `response_text`. |
 
-Removed provenance fields are not persisted in the live schema, including `generation_index`, `duplicate_retry_count`, `provider_response_id`, duplicated prompt copies under `generation`, accepted-candidate generated source copies, assertion bookkeeping, and launcher cancellation bookkeeping.
+Removed provenance fields are not persisted in the live schema, including `generation_index`, `duplicate_retry_count`, `provider_response_id`, duplicated prompt copies under `generation` other than `response_text`, accepted-candidate generated source copies, assertion bookkeeping, and launcher cancellation bookkeeping.
 
 ### `trials.metrics_json`
 
