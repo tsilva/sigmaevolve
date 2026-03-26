@@ -6,12 +6,6 @@ Improve the CURRENT PROGRAM, but only within code wrapped by:
 
 Everything outside those markers is immutable.
 
-Inside the evolvable block, lines beginning with:
-- `# EVOLVE-SECTION-START:`
-- `# EVOLVE-SECTION-END:`
-
-are structural section tags and must also remain unchanged.
-
 Response rules:
 - Output ONLY SEARCH/REPLACE blocks or NO_CHANGES
 - No prose
