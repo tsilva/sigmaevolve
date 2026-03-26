@@ -5,6 +5,7 @@ This guide is optimized for agent compliance first and human review second. Pref
 ## Hard Rules
 
 - Structure non-trivial functions in a readable order: validate inputs, run the main logic, then build the return value.
+- Keep imports at the top of the file unless there is a clear reason to lazy load them.
 - Prefer early returns over nested conditionals when a failed condition means the function should stop.
 - Add a short intent comment immediately above every `if`, `elif`, and `else` branch explaining what that branch does.
 - Introduce named intermediate variables for non-trivial expressions, boolean conditions, and transformed values before combining them.
@@ -122,6 +123,33 @@ Why this version is preferred:
 - Each branch documents intent before the reader parses branch mechanics.
 - The blank line above each comment keeps comments visually distinct from code.
 - Reviewers can scan branch structure without reverse-engineering why each branch exists.
+
+### Keep imports at file scope unless lazy loading is intentional
+
+Bad:
+
+```python
+def format_metrics(metrics: dict[str, float]) -> str:
+    import json
+
+    return json.dumps(metrics, sort_keys=True)
+```
+
+Good:
+
+```python
+import json
+
+
+def format_metrics(metrics: dict[str, float]) -> str:
+    return json.dumps(metrics, sort_keys=True)
+```
+
+Why this version is preferred:
+
+- Dependencies stay visible at the top of the file.
+- Reviewers do not need to scan function bodies to understand what the module needs.
+- Lazy loading remains a deliberate exception for cases such as optional dependencies, startup cost, or import-cycle avoidance.
 
 ### Prefer early returns over nested control flow
 

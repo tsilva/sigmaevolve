@@ -276,7 +276,6 @@ from sigmaevolve.core import (
     TRIAL_STATUS_FINISHED,
     TRIAL_STATUS_QUEUED,
     DatasetRecord,
-    MigrationResult,
     TrackRecord,
     TrialRecord,
     TrialSummary,
@@ -1058,28 +1057,3 @@ class SQLAlchemyRepository:
             if stale:
                 self._notify_dashboard(conn, track_id=track_id, reason="trial_changed")
         return stale
-
-    def rescore(self, track_id: str | None, scorer_config: dict[str, Any]) -> MigrationResult:
-        # Recompute scores for all terminal trials in the requested scope.
-        updated = 0
-        touched_track_ids: set[str] = set()
-        with self.transaction() as conn:
-            stmt = sa.select(trials_table).where(trials_table.c.status.in_(sorted(TERMINAL_STATUSES)))
-            if track_id is not None:
-                stmt = stmt.where(trials_table.c.track_id == track_id)
-            rows = conn.execute(stmt).fetchall()
-            for row in rows:
-                # Persist the rescored value and remember which tracks changed.
-                new_score = compute_score(row.metrics_json, row.outcome_reason, scorer_config)
-                conn.execute(
-                    sa.update(trials_table)
-                    .where(trials_table.c.trial_id == row.trial_id)
-                    .values(score=new_score)
-                )
-                updated += 1
-                touched_track_ids.add(row.track_id)
-
-            # Emit one dashboard notification per changed track.
-            for touched_track_id in sorted(touched_track_ids):
-                self._notify_dashboard(conn, track_id=touched_track_id, reason="trial_changed")
-        return MigrationResult(updated_trials=updated, scorer_config=dict(scorer_config))
