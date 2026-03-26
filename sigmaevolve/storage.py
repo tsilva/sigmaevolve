@@ -10,11 +10,15 @@ metadata = sa.MetaData()
 
 
 def normalize_database_url(database_url: str) -> str:
-    if database_url.startswith("postgres://"):
-        database_url = "postgresql://" + database_url[len("postgres://") :]
-    if database_url.startswith("postgresql://") and "+psycopg" not in database_url:
-        database_url = "postgresql+psycopg://" + database_url[len("postgresql://") :]
-    return database_url
+    # Accept historical postgres:// URLs by rewriting them to SQLAlchemy's canonical form.
+    normalized_url = database_url
+    if normalized_url.startswith("postgres://"):
+        normalized_url = "postgresql://" + normalized_url[len("postgres://") :]
+
+    # Default PostgreSQL connections to the psycopg driver when no driver is specified.
+    if normalized_url.startswith("postgresql://") and "+psycopg" not in normalized_url:
+        normalized_url = "postgresql+psycopg://" + normalized_url[len("postgresql://") :]
+    return normalized_url
 
 
 datasets_table = sa.Table(
@@ -98,23 +102,32 @@ def _is_prompt_message(entry: object) -> bool:
 
 
 def validate_trial_provenance(provenance_json: dict[str, Any]) -> dict[str, Any]:
+    # Copy the caller payload before enforcing the persisted provenance contract.
     payload = dict(provenance_json or {})
     backend = payload.get("backend")
     if not isinstance(backend, str) or not backend.strip():
         raise ValueError("Queued trials require provenance_json.backend.")
+
+    # Allow the system-seeded baseline candidate to bypass LLM request requirements.
     if backend == "baseline":
         return payload
+
+    # Reject non-baseline candidates that did not come from a supported generation backend.
     if backend not in ALLOWED_GENERATION_BACKENDS:
         raise ValueError(
             "Queued non-baseline trials must come from the recorded LLM prompting pipeline; "
             f"unsupported backend {backend!r}."
         )
+
+    # Require the model and generation config needed to audit candidate provenance.
     model = payload.get("model")
     if not isinstance(model, str) or not model.strip():
         raise ValueError("LLM-generated trials require provenance_json.model.")
     generation_config = payload.get("generation_config")
     if not isinstance(generation_config, dict):
         raise ValueError("LLM-generated trials require provenance_json.generation_config.")
+
+    # Require the prompt message history used to produce the generated candidate.
     request_messages = payload.get("request_messages")
     if not isinstance(request_messages, list) or not request_messages:
         raise ValueError("LLM-generated trials require non-empty provenance_json.request_messages.")
@@ -122,6 +135,8 @@ def validate_trial_provenance(provenance_json: dict[str, Any]) -> dict[str, Any]
         raise ValueError(
             "LLM-generated trials require provenance_json.request_messages entries with string role and content."
         )
+
+    # Require the track-context metadata that shaped the generation request.
     context_trial_ids = payload.get("context_trial_ids")
     if not isinstance(context_trial_ids, list):
         raise ValueError("LLM-generated trials require provenance_json.context_trial_ids.")
@@ -132,8 +147,11 @@ def validate_trial_provenance(provenance_json: dict[str, Any]) -> dict[str, Any]
 
 
 def has_error_signal(payload: dict[str, Any] | None) -> bool:
+    # Treat missing or empty payloads as the absence of an error signal.
     if not payload:
         return False
+
+    # Recognize explicit textual error fields before falling back to a return code.
     reason = payload.get("reason")
     if isinstance(reason, str) and reason.strip():
         return True
@@ -147,18 +165,16 @@ def has_error_signal(payload: dict[str, Any] | None) -> bool:
 
 
 def build_generation_attempt_source(trial_id: str, outcome_reason: str) -> str:
-    return normalize_source(
-        "\n".join(
-            [
-                "# sigmaevolve generation attempt",
-                f"# trial_id: {trial_id}",
-                f"# outcome_reason: {outcome_reason}",
-                "# diagnostic_source: true",
-                "raise RuntimeError('diagnostic generation attempt source; see provenance_json.generation')",
-            ]
-        )
-        + "\n"
-    )
+    # Build a minimal diagnostic source file that points reviewers back to provenance_json.
+    lines = [
+        "# sigmaevolve generation attempt",
+        f"# trial_id: {trial_id}",
+        f"# outcome_reason: {outcome_reason}",
+        "# diagnostic_source: true",
+        "raise RuntimeError('diagnostic generation attempt source; see provenance_json.generation')",
+    ]
+    source = "\n".join(lines) + "\n"
+    return normalize_source(source)
 
 
 def status_for_outcome_reason(outcome_reason: str) -> str:
@@ -168,11 +184,13 @@ def status_for_outcome_reason(outcome_reason: str) -> str:
 
 
 def classify_error_type(outcome_reason: str, error_json: dict[str, Any] | None) -> str | None:
+    # Honor an explicit stored error type before deriving one from lower-level fields.
     payload = dict(error_json or {})
     explicit = payload.get("error_type")
     if isinstance(explicit, str) and explicit.strip():
         return explicit.strip()
 
+    # Normalize the shared classifier inputs used across outcome-specific branches.
     reason = payload.get("reason")
     if not isinstance(reason, str):
         reason = None
@@ -183,6 +201,7 @@ def classify_error_type(outcome_reason: str, error_json: dict[str, Any] | None) 
         or (isinstance(native_finish_reason, str) and native_finish_reason == "length")
     )
 
+    # Classify generation failures by whether the issue came from output shape or provider behavior.
     if outcome_reason == OUTCOME_GENERATION_FAILED:
         if reason in {"candidate_materialization_failed", "generation_assertion_failed"} and reached_length_limit:
             return "generation_output_truncated"
@@ -200,6 +219,7 @@ def classify_error_type(outcome_reason: str, error_json: dict[str, Any] | None) 
             return "generation_provider_failure"
         return "generation_failed"
 
+    # Map execution-time failures to more precise runner or evaluation buckets.
     if outcome_reason == "crashed":
         return "execution_crash"
     if outcome_reason == "eval_failed":
@@ -210,6 +230,8 @@ def classify_error_type(outcome_reason: str, error_json: dict[str, Any] | None) 
         if reason == "predictions_missing":
             return "evaluation_predictions_missing"
         return "evaluation_failed"
+
+    # Split stale outcomes by whether dispatching or the active runner stopped making progress.
     if outcome_reason == OUTCOME_STALE:
         if reason == "dispatch_deadline_expired":
             return "dispatch_stale"
@@ -220,6 +242,7 @@ def classify_error_type(outcome_reason: str, error_json: dict[str, Any] | None) 
 
 
 def prepare_error_payload(outcome_reason: str, error_json: dict[str, Any] | None) -> dict[str, Any] | None:
+    # Attach the derived error type while preserving any original error fields.
     payload = dict(error_json or {})
     error_type = classify_error_type(outcome_reason, payload)
     if error_type:
@@ -260,6 +283,7 @@ from sigmaevolve.core import (
     now_utc,
 )
 from sigmaevolve.core import compute_score
+
 
 def _row_to_dataset(row: sa.Row[Any]) -> DatasetRecord:
     return DatasetRecord(
@@ -389,6 +413,69 @@ class SQLAlchemyRepository:
             if track_id is not None:
                 self._notify_dashboard(conn, track_id=track_id, reason="trial_changed")
         return int(result.rowcount)
+
+    def _load_trial_row(
+        self,
+        conn: Connection,
+        *,
+        trial_id: str,
+        columns: tuple[Any, ...] | None = None,
+    ) -> sa.Row[Any] | None:
+        selected_columns = columns or (trials_table,)
+        stmt = sa.select(*selected_columns).where(trials_table.c.trial_id == trial_id)
+        return conn.execute(stmt).fetchone()
+
+    def _mutate_trial(
+        self,
+        conn: Connection,
+        *,
+        trial_id: str,
+        values: dict[str, Any],
+        where: list[Any] | None = None,
+        row_columns: tuple[Any, ...] | None = None,
+        notify: bool = True,
+    ) -> sa.Row[Any] | None:
+        # Apply the state-sensitive update before reloading the requested row shape.
+        updated = self._update_trial_state(
+            conn,
+            trial_id=trial_id,
+            values=values,
+            where=where,
+            notify=notify,
+        )
+        if updated != 1:
+            return None
+        return self._load_trial_row(conn, trial_id=trial_id, columns=row_columns)
+
+    def _set_terminal_trial_state(
+        self,
+        conn: Connection,
+        *,
+        trial_id: str,
+        outcome_reason: str,
+        score: float,
+        error_json: dict[str, Any] | None,
+        metrics_json: dict[str, Any] | None = None,
+        finished_at: Any | None = None,
+        extra_values: dict[str, Any] | None = None,
+    ) -> None:
+        # Persist the normalized terminal payload used by finalize and stale sweeps.
+        values = {
+            "status": status_for_outcome_reason(outcome_reason),
+            "outcome_reason": outcome_reason,
+            "finished_at": finished_at if finished_at is not None else now_utc(),
+            "score": score,
+            "error_json": prepare_error_payload(outcome_reason, error_json),
+        }
+        if metrics_json is not None or outcome_reason in TERMINAL_OUTCOMES:
+            values["metrics_json"] = metrics_json
+        if extra_values:
+            values.update(extra_values)
+        conn.execute(
+            sa.update(trials_table)
+            .where(trials_table.c.trial_id == trial_id)
+            .values(**values)
+        )
 
     def register_dataset(self, dataset_id: str, manifest_path: str | None) -> DatasetRecord:
         # Upsert the dataset manifest path while preserving the latest registration time.
@@ -749,7 +836,7 @@ class SQLAlchemyRepository:
         # Claim only trials that are still dispatching with the expected token.
         with self.transaction() as conn:
             now = now_utc()
-            updated = self._update_trial_state(
+            row = self._mutate_trial(
                 conn,
                 trial_id=trial_id,
                 where=[
@@ -763,9 +850,8 @@ class SQLAlchemyRepository:
                     "heartbeat_at": now,
                 },
             )
-            if updated != 1:
+            if row is None:
                 return None
-            row = conn.execute(sa.select(trials_table).where(trials_table.c.trial_id == trial_id)).one()
         return _row_to_trial(row)
 
     def heartbeat_trial(self, trial_id: str, runner_id: str, meta: dict[str, Any] | None = None) -> None:
@@ -847,23 +933,23 @@ class SQLAlchemyRepository:
 
             # Clear dispatch state and persist terminal metrics in one update.
             now = now_utc()
-            updated = self._update_trial_state(
+            row = self._mutate_trial(
                 conn,
                 trial_id=trial_id,
                 where=state_filters,
                 values={
-                    "status": status_for_outcome_reason(outcome_reason),
-                    "outcome_reason": outcome_reason,
                     "finished_at": now,
                     "dispatch_token": None,
                     "dispatch_deadline_at": None,
                     "heartbeat_at": now,
+                    "status": status_for_outcome_reason(outcome_reason),
+                    "outcome_reason": outcome_reason,
                     "metrics_json": metrics,
                     "score": score,
                     "error_json": prepare_error_payload(outcome_reason, persisted_error_info),
                 },
             )
-            if not updated:
+            if row is None:
                 return
 
     def sweep_expired_dispatches(self, track_id: str, max_dispatch_retries: int) -> tuple[list[str], list[str]]:
@@ -899,21 +985,17 @@ class SQLAlchemyRepository:
                     requeued.append(row.trial_id)
                 else:
                     # Mark exhausted dispatch attempts as stale terminal failures.
-                    conn.execute(
-                        sa.update(trials_table)
-                        .where(trials_table.c.trial_id == row.trial_id)
-                        .values(
-                            status=TRIAL_STATUS_ERROR,
-                            outcome_reason=OUTCOME_STALE,
-                            finished_at=now,
-                            dispatch_token=None,
-                            dispatch_deadline_at=None,
-                            score=0.0,
-                            error_json=prepare_error_payload(
-                                OUTCOME_STALE,
-                                {"reason": "dispatch_deadline_expired"},
-                            ),
-                        )
+                    self._set_terminal_trial_state(
+                        conn,
+                        trial_id=row.trial_id,
+                        outcome_reason=OUTCOME_STALE,
+                        score=0.0,
+                        error_json={"reason": "dispatch_deadline_expired"},
+                        finished_at=now,
+                        extra_values={
+                            "dispatch_token": None,
+                            "dispatch_deadline_at": None,
+                        },
                     )
                     stale.append(row.trial_id)
             if requeued or stale:
@@ -943,19 +1025,12 @@ class SQLAlchemyRepository:
             ).fetchall()
             for row in rows:
                 # Convert stale active trials into terminal stale failures.
-                conn.execute(
-                    sa.update(trials_table)
-                    .where(trials_table.c.trial_id == row.trial_id)
-                    .values(
-                        status=TRIAL_STATUS_ERROR,
-                        outcome_reason=OUTCOME_STALE,
-                        finished_at=now_utc(),
-                        score=0.0,
-                        error_json=prepare_error_payload(
-                            OUTCOME_STALE,
-                            {"reason": "heartbeat_stale"},
-                        ),
-                    )
+                self._set_terminal_trial_state(
+                    conn,
+                    trial_id=row.trial_id,
+                    outcome_reason=OUTCOME_STALE,
+                    score=0.0,
+                    error_json={"reason": "heartbeat_stale"},
                 )
                 stale.append(row.trial_id)
             if stale:

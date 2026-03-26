@@ -604,29 +604,23 @@ class RunnerService:
             except Exception:
                 logger.warning("Disposing repository engine after failure also failed.", exc_info=True)
 
-    def _read_progress(self, progress_path: Path) -> dict[str, Any] | None:
-        # Return None for missing or malformed progress payloads.
-        if not progress_path.exists():
+    def _read_json_object(self, path: Path) -> dict[str, Any] | None:
+        # Return None for missing or malformed debug payloads.
+        if not path.exists():
             return None
         try:
-            payload = json.loads(progress_path.read_text())
+            payload = json.loads(path.read_text())
         except (OSError, json.JSONDecodeError):
             return None
         if not isinstance(payload, dict):
             return None
         return payload
 
+    def _read_progress(self, progress_path: Path) -> dict[str, Any] | None:
+        return self._read_json_object(progress_path)
+
     def _read_debug_payload(self, debug_path: Path) -> dict[str, Any] | None:
-        # Return None for missing or malformed debug payloads.
-        if not debug_path.exists():
-            return None
-        try:
-            payload = json.loads(debug_path.read_text())
-        except (OSError, json.JSONDecodeError):
-            return None
-        if not isinstance(payload, dict):
-            return None
-        return payload
+        return self._read_json_object(debug_path)
 
     def _load_eval_artifacts(
         self,
@@ -853,6 +847,24 @@ class RunnerService:
                         sort_keys=True,
                     )
                 )
+                def finalize_outcome(
+                    outcome_reason: str,
+                    *,
+                    metrics: dict[str, Any] | None,
+                    score: float,
+                    error_info: dict[str, Any] | None,
+                ) -> None:
+                    self._finalize_trial(
+                        trial_id=trial.trial_id,
+                        runner_id=runner_id,
+                        outcome_reason=outcome_reason,
+                        metrics=metrics,
+                        score=score,
+                        error_info=error_info,
+                        wandb_run_logger=wandb_run_logger,
+                    )
+                    logger.info("Finalized trial %s with outcome=%s.", trial.trial_id, outcome_reason)
+
                 try:
                     wandb_run_logger = WandbRunLogger(
                         repository=self.repository,
@@ -930,16 +942,12 @@ class RunnerService:
                             "timed_out": timed_out,
                             "progress": progress_payload,
                         }
-                        self._finalize_trial(
-                            trial_id=trial.trial_id,
-                            runner_id=runner_id,
-                            outcome_reason=OUTCOME_EVAL_FAILED,
+                        finalize_outcome(
+                            OUTCOME_EVAL_FAILED,
                             metrics=None,
                             score=0.0,
                             error_info=error_info,
-                            wandb_run_logger=wandb_run_logger,
                         )
-                        logger.info("Finalized trial %s with outcome=%s.", trial.trial_id, OUTCOME_EVAL_FAILED)
                         return
                     error_info = {
                         "stdout": stdout,
@@ -948,16 +956,12 @@ class RunnerService:
                         "timed_out": timed_out,
                         "progress": progress_payload,
                     }
-                    self._finalize_trial(
-                        trial_id=trial.trial_id,
-                        runner_id=runner_id,
-                        outcome_reason=OUTCOME_CRASHED,
+                    finalize_outcome(
+                        OUTCOME_CRASHED,
                         metrics=None,
                         score=0.0,
                         error_info=error_info,
-                        wandb_run_logger=wandb_run_logger,
                     )
-                    logger.info("Finalized trial %s with outcome=%s.", trial.trial_id, OUTCOME_CRASHED)
                     return
 
                 try:
@@ -974,16 +978,12 @@ class RunnerService:
                         "stderr": stderr,
                         "progress": progress_payload,
                     }
-                    self._finalize_trial(
-                        trial_id=trial.trial_id,
-                        runner_id=runner_id,
-                        outcome_reason=OUTCOME_EVAL_FAILED,
+                    finalize_outcome(
+                        OUTCOME_EVAL_FAILED,
                         metrics=None,
                         score=0.0,
                         error_info=error_info,
-                        wandb_run_logger=wandb_run_logger,
                     )
-                    logger.info("Finalized trial %s with outcome=%s.", trial.trial_id, OUTCOME_EVAL_FAILED)
                     return
 
                 if not artifacts:
@@ -996,16 +996,12 @@ class RunnerService:
                         "progress": progress_payload,
                         "eval_dir": str(eval_dir),
                     }
-                    self._finalize_trial(
-                        trial_id=trial.trial_id,
-                        runner_id=runner_id,
-                        outcome_reason=outcome_reason,
+                    finalize_outcome(
+                        outcome_reason,
                         metrics=None,
                         score=0.0,
                         error_info=error_info,
-                        wandb_run_logger=wandb_run_logger,
                     )
-                    logger.info("Finalized trial %s with outcome=%s.", trial.trial_id, outcome_reason)
                     return
 
                 metrics = self._build_metrics_payload(

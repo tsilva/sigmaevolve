@@ -17,6 +17,7 @@ class DatasetProvider(Protocol):
 
 
 def _sha256_file(path: Path) -> str:
+    # Hash files in chunks so large dataset artifacts do not spike memory usage.
     digest = hashlib.sha256()
     with path.open("rb") as handle:
         while True:
@@ -28,6 +29,7 @@ def _sha256_file(path: Path) -> str:
 
 
 def _fingerprint(dataset_id: str, checksums: dict[str, str]) -> str:
+    # Fingerprint the dataset id together with the artifact checksum map.
     payload = json.dumps({"dataset_id": dataset_id, "checksums": checksums}, sort_keys=True)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
@@ -55,6 +57,7 @@ class ArrayDatasetProvider:
     metadata: dict[str, object] | None = None
 
     def materialize(self, dataset_id: str, output_dir: Path) -> DatasetManifest:
+        # Define the output layout for the dataset manifest and split artifacts.
         output_dir.mkdir(parents=True, exist_ok=True)
         manifest_path = output_dir / "manifest.json"
         train_path = output_dir / "train.npz"
@@ -63,12 +66,14 @@ class ArrayDatasetProvider:
         test_path = output_dir / "test_inputs.npz"
         test_labels_path = output_dir / "test_labels.npy"
 
+        # Write the train, validation, and test splits to disk.
         _write_training_split(train_path, self.train_features, self.train_labels)
         _write_input_split(val_path, self.validation_features)
         _write_labels(val_labels_path, self.validation_labels)
         _write_input_split(test_path, self.test_features)
         _write_labels(test_labels_path, self.test_labels)
 
+        # Compute checksums and default metadata for the persisted artifacts.
         checksums = {
             "train_split": _sha256_file(train_path),
             "validation_split": _sha256_file(val_path),
@@ -83,6 +88,7 @@ class ArrayDatasetProvider:
         if self.train_labels.size and "num_classes" not in metadata:
             metadata["num_classes"] = int(np.max(self.train_labels)) + 1
 
+        # Build and persist the manifest that describes the prepared dataset.
         manifest = DatasetManifest(
             dataset_id=dataset_id,
             root_dir=str(output_dir),
@@ -109,11 +115,13 @@ class TorchvisionClassificationProvider:
         self.dataset_name = dataset_name
 
     def materialize(self, dataset_id: str, output_dir: Path) -> DatasetManifest:
+        # Import torchvision lazily so non-torchvision workflows still work.
         try:
             from torchvision import datasets
         except ImportError as exc:
             raise RuntimeError("torchvision is required to materialize torchvision datasets.") from exc
 
+        # Download the raw dataset and resolve the torchvision class to use.
         output_dir.mkdir(parents=True, exist_ok=True)
         manifest_path = output_dir / "manifest.json"
         dataset_cls = {"mnist": datasets.MNIST, "fashion_mnist": datasets.FashionMNIST}[self.dataset_name]
@@ -126,12 +134,14 @@ class TorchvisionClassificationProvider:
         test_features = np.asarray(test_ds.data, dtype=np.float32) / 255.0
         test_labels = np.asarray(test_ds.targets, dtype=np.int64)
 
+        # Split the tail of the training set into the validation partition.
         validation_size = 5000
         validation_features = train_features[-validation_size:]
         validation_labels = train_labels[-validation_size:]
         train_features = train_features[:-validation_size]
         train_labels = train_labels[:-validation_size]
 
+        # Delegate artifact writing to the array-backed provider implementation.
         provider = ArrayDatasetProvider(
             train_features=train_features,
             train_labels=train_labels,
@@ -159,15 +169,19 @@ class DatasetManager:
         return self.dataset_root / self.safe_dir_name(dataset_id) / "manifest.json"
 
     def prepare(self, dataset_id: str) -> DatasetManifest:
+        # Resolve the provider before materializing the dataset into its target directory.
         provider = self.providers.get(dataset_id)
         if provider is None:
             raise KeyError(f"No dataset provider registered for {dataset_id!r}.")
         dataset_dir = self.manifest_path_for(dataset_id).parent
         manifest = provider.materialize(dataset_id, dataset_dir)
+
+        # Rewrite the manifest through the manager path so the on-disk location is canonical.
         self.manifest_path_for(dataset_id).write_text(json.dumps(manifest.to_dict(), indent=2, sort_keys=True))
         return manifest
 
     def load_manifest(self, dataset_id: str) -> DatasetManifest:
+        # Load the manifest file and re-anchor every artifact path to the local dataset directory.
         manifest_path = self.manifest_path_for(dataset_id)
         if not manifest_path.exists():
             raise FileNotFoundError(f"Dataset manifest not found for {dataset_id!r}: {manifest_path}")
@@ -189,6 +203,7 @@ class DatasetManager:
         )
 
     def verify(self, dataset_id: str) -> DatasetManifest:
+        # Check that every declared dataset artifact exists and matches its checksum.
         manifest = self.load_manifest(dataset_id)
         paths = {
             "train_split": Path(manifest.train_split_path),
@@ -204,11 +219,14 @@ class DatasetManager:
             expected = manifest.checksums[key]
             if checksum != expected:
                 raise ValueError(f"Checksum mismatch for {key} in {dataset_id!r}: {checksum} != {expected}")
+
+        # Recompute the manifest fingerprint after the artifact checks succeed.
         fingerprint = _fingerprint(dataset_id, manifest.checksums)
         if fingerprint != manifest.fingerprint:
             raise ValueError(f"Fingerprint mismatch for {dataset_id!r}.")
         return manifest
 
     def to_record(self, dataset_id: str) -> DatasetRecord:
+        # Convert the manager path into the lightweight dataset record shape.
         manifest_path = self.manifest_path_for(dataset_id)
         return DatasetRecord(dataset_id=dataset_id, manifest_path=str(manifest_path), created_at=None)  # type: ignore[arg-type]
