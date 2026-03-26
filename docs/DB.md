@@ -45,7 +45,7 @@ Common persisted keys:
 | `max_dispatch_retries` | Maximum number of dispatch attempts before a dispatching trial is marked stale instead of requeued. |
 | `modal_gpu_preferences` | Optional ordered GPU preference list for Modal launches. |
 | `scorer_settings` | Scoring configuration used to derive `trials.score`, usually including `primary_metric`. |
-| `sampling_settings` | Configuration for parent-trial selection during generation, such as strategy, `top_k`, and RNG seed. |
+| `sampling_settings` | Configuration for parent-trial selection during generation. The persisted shape currently contains only the RNG seed. |
 | `generation_backend` | LLM generation backend configuration, including backend name, model selection policy, seed, and model pool entries. |
 
 ## `trials`

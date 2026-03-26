@@ -13,11 +13,11 @@ if str(ROOT) not in sys.path:
 
 from sigmaevolve.datasets import ArrayDatasetProvider, DatasetManager
 from sigmaevolve.generation import FixedGenerationBackend
-from sigmaevolve.orchestration import RecordingLauncher
 from sigmaevolve.execution import RunnerService
 from sigmaevolve.storage import SQLAlchemyRepository
 from sigmaevolve.orchestration import EvolutionSystem
 from sigmaevolve.generation import build_candidate_train_script, build_model_block
+from tests.support import RecordingLauncherDouble
 
 
 @pytest.fixture
@@ -87,7 +87,7 @@ def make_policy(**overrides):
         "stale_ttl_sec": 1,
         "max_dispatch_retries": 1,
         "scorer_settings": {"primary_metric": "accuracy"},
-        "sampling_settings": {"strategy": "top_then_random", "top_k": 3, "seed": 0},
+        "sampling_settings": {"seed": 0},
         "generation_backend": {
             "backend": "openrouter",
             "selection": "round_robin",
@@ -145,7 +145,7 @@ def dataset_manager(tmp_path, providers):
 
 @pytest.fixture
 def system(repository, dataset_manager):
-    launcher = RecordingLauncher()
+    launcher = RecordingLauncherDouble()
     generator = FixedGenerationBackend(
         source=build_candidate_train_script(
             build_model_block(

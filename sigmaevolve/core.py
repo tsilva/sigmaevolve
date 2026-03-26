@@ -1,45 +1,6 @@
 from __future__ import annotations
 
 
-# ---- env.py ----
-
-import os
-from pathlib import Path
-
-
-DEFAULT_ENV_PATH = Path.home() / ".config" / "sigmaevolve" / ".env"
-
-
-def load_env_file(path: str | Path | None = None, *, override: bool = False) -> None:
-    # Resolve the default user-scoped env file and exit quietly when it is absent.
-    env_path = Path(path) if path is not None else DEFAULT_ENV_PATH
-    if not env_path.exists():
-        return
-
-    # Parse simple shell-style KEY=VALUE lines while ignoring blanks and comments.
-    for raw_line in env_path.read_text().splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#"):
-            continue
-        if line.startswith("export "):
-            line = line[len("export ") :].strip()
-        if "=" not in line:
-            continue
-
-        # Normalize the key/value tokens before applying optional quote stripping.
-        key, value = line.split("=", 1)
-        key = key.strip()
-        value = value.strip()
-        if not key:
-            continue
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
-            value = value[1:-1]
-
-        # Respect the caller's override policy when mutating the process environment.
-        if override or key not in os.environ:
-            os.environ[key] = value
-
-
 # ---- hashing.py ----
 
 import hashlib
@@ -311,9 +272,7 @@ class TrackPolicy:
     max_dispatch_retries: int = 2
     modal_gpu_preferences: list[str] | None = None
     scorer_settings: dict[str, Any] = field(default_factory=lambda: {"primary_metric": "accuracy"})
-    sampling_settings: dict[str, Any] = field(
-        default_factory=lambda: {"strategy": "top_then_random", "top_k": 3, "seed": 0}
-    )
+    sampling_settings: dict[str, Any] = field(default_factory=lambda: {"seed": 0})
     generation_backend: dict[str, Any] = field(
         default_factory=lambda: {
             "backend": "openrouter",

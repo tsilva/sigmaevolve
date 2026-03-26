@@ -12,10 +12,6 @@ def build_baseline_train_script() -> str:
     return normalize_source(template_source)
 
 
-def build_baseline_linear_classifier() -> str:
-    return build_baseline_train_script()
-
-
 # ---- evolve_blocks.py ----
 
 import os

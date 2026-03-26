@@ -697,10 +697,9 @@ class TrackController:
         return {"event": event, "payload": payload}
 
     def _on_launch_complete(self, future: Future[Any]) -> None:
-        # Remove the completed launch future before handling its result.
+        # Keep the completed future registered until launch bookkeeping is finished.
         with self._condition:
-            trial = self._launch_futures.pop(future, None)
-            self._condition.notify_all()
+            trial = self._launch_futures.get(future)
         if trial is None:
             return
 
@@ -717,20 +716,23 @@ class TrackController:
                 trial_id=trial.trial_id,
                 detail=str(exc),
             )
-            return
-
-        # Persist launcher metadata and mark the trial as launched.
-        if launch_metadata:
-            self.repository.record_trial_launcher_metadata(trial.trial_id, launch_metadata)
-        with self._condition:
-            self._result.launched_trial_ids.append(trial.trial_id)
-            self._condition.notify_all()
-        _emit(
-            self.reporter,
-            "trial_launched",
-            trial_id=trial.trial_id,
-            launch_metadata=launch_metadata or {},
-        )
+        else:
+            # Persist launcher metadata and mark the trial as launched.
+            if launch_metadata:
+                self.repository.record_trial_launcher_metadata(trial.trial_id, launch_metadata)
+            with self._condition:
+                self._result.launched_trial_ids.append(trial.trial_id)
+                self._condition.notify_all()
+            _emit(
+                self.reporter,
+                "trial_launched",
+                trial_id=trial.trial_id,
+                launch_metadata=launch_metadata or {},
+            )
+        finally:
+            with self._condition:
+                self._launch_futures.pop(future, None)
+                self._condition.notify_all()
 
 
 # ---- launchers.py ----
@@ -749,24 +751,6 @@ class RunnerLauncher(Protocol):
 
     def cancel_run(self, launcher_metadata: dict[str, Any]) -> None:
         ...
-
-
-class RecordingLauncher:
-    def __init__(self) -> None:
-        self.launched: list[tuple[str, str]] = []
-
-    def launch_trial(
-        self,
-        trial_id: str,
-        dispatch_token: str,
-        launch_policy: dict[str, Any] | None = None,
-    ) -> dict[str, Any] | None:
-        del launch_policy
-        self.launched.append((trial_id, dispatch_token))
-        return None
-
-    def cancel_run(self, launcher_metadata: dict[str, Any]) -> None:
-        del launcher_metadata
 
 
 class InlineRunnerLauncher:
@@ -1166,7 +1150,7 @@ def build_system(
     )
     generator = OpenRouterGenerationBackend(api_key=openrouter_api_key)
     runner_service = RunnerService(repository=repository, dataset_manager=dataset_manager)
-    launcher = launcher or RecordingLauncher()
+    launcher = launcher or InlineRunnerLauncher(runner_service)
 
     # Return the fully wired orchestration facade.
     return EvolutionSystem(

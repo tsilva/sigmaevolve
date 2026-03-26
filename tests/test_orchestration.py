@@ -5,14 +5,13 @@ import time
 
 import pytest
 
-from sigmaevolve.generation import build_baseline_linear_classifier
 from sigmaevolve.generation import FixedGenerationBackend, OpenRouterGenerationBackend
 from sigmaevolve.core import CANDIDATE_KIND_STRATEGY_V1, GenerationResult
-from sigmaevolve.orchestration import InlineRunnerLauncher, RecordingLauncher
+from sigmaevolve.orchestration import InlineRunnerLauncher
 from sigmaevolve.execution import RunnerService
 from sigmaevolve.orchestration import EvolutionSystem
-from sigmaevolve.generation import build_candidate_train_script, build_model_block
-from tests.support import make_llm_provenance
+from sigmaevolve.generation import build_baseline_train_script, build_candidate_train_script, build_model_block
+from tests.support import RecordingLauncherDouble, make_llm_provenance
 
 
 def _prepare_repo_dataset(repository, dataset_manager, dataset_id: str = "mnist:v1") -> None:
@@ -44,7 +43,7 @@ def test_create_track_seeds_one_baseline_candidate(system):
     trials = system.repository.list_trials(track.track_id)
     assert len(trials) == 1
     assert trials[0].status == "queued"
-    assert trials[0].source == build_baseline_linear_classifier().replace("\r\n", "\n").rstrip("\n") + "\n"
+    assert trials[0].source == build_baseline_train_script().replace("\r\n", "\n").rstrip("\n") + "\n"
     assert trials[0].provenance_json["candidate_kind"] == CANDIDATE_KIND_STRATEGY_V1
 
 
@@ -83,7 +82,7 @@ def forward(self, x):
 
     _prepare_repo_dataset(repository, dataset_manager)
     generator = CapturingGenerator()
-    system, _ = _build_system(repository, dataset_manager, generator, RecordingLauncher())
+    system, _ = _build_system(repository, dataset_manager, generator, RecordingLauncherDouble())
     track = system.create_track("cold-start", "mnist:v1", {})
 
     baseline = repository.list_trials(track.track_id)[0]
@@ -172,7 +171,7 @@ def test_reconcile_generates_duplicates_without_dispatching_more_work(repository
     system, runner = _build_system(
         repository,
         dataset_manager,
-        FixedGenerationBackend(source=build_baseline_linear_classifier()),
+        FixedGenerationBackend(source=build_baseline_train_script()),
         None,
     )
     system.launcher = InlineRunnerLauncher(runner)
@@ -226,7 +225,7 @@ def test_reconcile_retries_duplicate_generation_with_incremented_retry_count(rep
             )()
 
     _prepare_repo_dataset(repository, dataset_manager)
-    generator = RetryingDuplicateGenerator(build_baseline_linear_classifier())
+    generator = RetryingDuplicateGenerator(build_baseline_train_script())
     system, runner = _build_system(repository, dataset_manager, generator, None)
     system.launcher = InlineRunnerLauncher(runner)
     system.orchestrator.launcher = system.launcher
@@ -289,7 +288,7 @@ def test_reconcile_persists_successful_retry_generation_params(repository, datas
             )()
 
     _prepare_repo_dataset(repository, dataset_manager)
-    duplicate_source = build_baseline_linear_classifier()
+    duplicate_source = build_baseline_train_script()
     unique_source = build_candidate_train_script(
         build_model_block(
             """
@@ -301,7 +300,7 @@ def forward(self, x):
         )
     )
     generator = DuplicateThenUniqueGenerator(duplicate_source=duplicate_source, unique_source=unique_source)
-    system, _ = _build_system(repository, dataset_manager, generator, RecordingLauncher())
+    system, _ = _build_system(repository, dataset_manager, generator, RecordingLauncherDouble())
     track = system.create_track(
         "dup-success", "mnist:v1", {"dispatch_ttl_sec": 1, "epochs": 2}
     )
@@ -365,7 +364,7 @@ def test_stale_active_modal_trial_requests_run_cancellation(repository, dataset_
 
     _prepare_repo_dataset(repository, dataset_manager)
     launcher = CancellationLauncher()
-    system, _ = _build_system(repository, dataset_manager, FixedGenerationBackend(source=build_baseline_linear_classifier()), launcher)
+    system, _ = _build_system(repository, dataset_manager, FixedGenerationBackend(source=build_baseline_train_script()), launcher)
     track = system.create_track("active-stale-modal", "mnist:v1", {"stale_ttl_sec": 0})
     reserved = repository.reserve_trials(track.track_id, max_parallelism=1, dispatch_ttl_sec=60, limit=1)[0]
     claimed = system.claim_trial(reserved.trial_id, reserved.dispatch_token, "runner")
@@ -413,7 +412,7 @@ def test_stale_active_modal_trial_records_missing_run_id_skip(repository, datase
 
     _prepare_repo_dataset(repository, dataset_manager)
     launcher = CancellationLauncher()
-    system, _ = _build_system(repository, dataset_manager, FixedGenerationBackend(source=build_baseline_linear_classifier()), launcher)
+    system, _ = _build_system(repository, dataset_manager, FixedGenerationBackend(source=build_baseline_train_script()), launcher)
     track = system.create_track("active-stale-missing-run", "mnist:v1", {"stale_ttl_sec": 0})
     reserved = repository.reserve_trials(track.track_id, max_parallelism=1, dispatch_ttl_sec=60, limit=1)[0]
     claimed = system.claim_trial(reserved.trial_id, reserved.dispatch_token, "runner")
@@ -450,7 +449,7 @@ def test_stale_active_modal_trial_records_cancellation_failure(repository, datas
 
     _prepare_repo_dataset(repository, dataset_manager)
     launcher = FailingCancellationLauncher()
-    system, _ = _build_system(repository, dataset_manager, FixedGenerationBackend(source=build_baseline_linear_classifier()), launcher)
+    system, _ = _build_system(repository, dataset_manager, FixedGenerationBackend(source=build_baseline_train_script()), launcher)
     track = system.create_track("active-stale-failed-cancel", "mnist:v1", {"stale_ttl_sec": 0})
     reserved = repository.reserve_trials(track.track_id, max_parallelism=1, dispatch_ttl_sec=60, limit=1)[0]
     claimed = system.claim_trial(reserved.trial_id, reserved.dispatch_token, "runner")
@@ -479,7 +478,7 @@ def test_weighted_successful_sampling_favors_higher_scores(repository, dataset_m
     system, runner = _build_system(
         repository,
         dataset_manager,
-        FixedGenerationBackend(source=build_baseline_linear_classifier()),
+        FixedGenerationBackend(source=build_baseline_train_script()),
         None,
     )
     system.launcher = InlineRunnerLauncher(runner)
@@ -597,7 +596,7 @@ def forward(self, x):
 
     _prepare_repo_dataset(repository, dataset_manager)
     generator = CapturingGenerator()
-    system, _ = _build_system(repository, dataset_manager, generator, RecordingLauncher())
+    system, _ = _build_system(repository, dataset_manager, generator, RecordingLauncherDouble())
     track = system.create_track("negatives", "mnist:v1", {})
 
     baseline = repository.list_trials(track.track_id)[0]
@@ -671,7 +670,7 @@ def test_reconcile_rejects_mutations_outside_evolve_blocks(repository, dataset_m
     dataset_manager.prepare("mnist:v1")
     repository.register_dataset("mnist:v1", str(dataset_manager.manifest_path_for("mnist:v1")))
     runner = RunnerService(repository=repository, dataset_manager=dataset_manager)
-    system = EvolutionSystem(repository, dataset_manager, InvalidGenerator(), RecordingLauncher(), runner)
+    system = EvolutionSystem(repository, dataset_manager, InvalidGenerator(), RecordingLauncherDouble(), runner)
     track = system.create_track("invalid-mutation", "mnist:v1", {})
 
     baseline = repository.list_trials(track.track_id)[0]
@@ -729,7 +728,7 @@ def test_reconcile_applies_search_replace_response_before_queueing(repository, d
     dataset_manager.prepare("mnist:v1")
     repository.register_dataset("mnist:v1", str(dataset_manager.manifest_path_for("mnist:v1")))
     runner = RunnerService(repository=repository, dataset_manager=dataset_manager)
-    system = EvolutionSystem(repository, dataset_manager, PatchGenerator(), RecordingLauncher(), runner)
+    system = EvolutionSystem(repository, dataset_manager, PatchGenerator(), RecordingLauncherDouble(), runner)
     track = system.create_track("patch-mutation", "mnist:v1", {})
 
     baseline = repository.list_trials(track.track_id)[0]
@@ -782,7 +781,7 @@ IMMUTABLE_BREAK = True
     dataset_manager.prepare("mnist:v1")
     repository.register_dataset("mnist:v1", str(dataset_manager.manifest_path_for("mnist:v1")))
     runner = RunnerService(repository=repository, dataset_manager=dataset_manager)
-    system = EvolutionSystem(repository, dataset_manager, InvalidPatchGenerator(), RecordingLauncher(), runner)
+    system = EvolutionSystem(repository, dataset_manager, InvalidPatchGenerator(), RecordingLauncherDouble(), runner)
     track = system.create_track("invalid-patch-mutation", "mnist:v1", {})
 
     baseline = repository.list_trials(track.track_id)[0]
@@ -827,7 +826,7 @@ def test_reconcile_persists_generation_failed_trial_when_backend_returns_error(r
     dataset_manager.prepare("mnist:v1")
     repository.register_dataset("mnist:v1", str(dataset_manager.manifest_path_for("mnist:v1")))
     runner = RunnerService(repository=repository, dataset_manager=dataset_manager)
-    system = EvolutionSystem(repository, dataset_manager, ProviderFailureGenerator(), RecordingLauncher(), runner)
+    system = EvolutionSystem(repository, dataset_manager, ProviderFailureGenerator(), RecordingLauncherDouble(), runner)
     track = system.create_track("provider-failure", "mnist:v1", {})
 
     baseline = repository.list_trials(track.track_id)[0]
@@ -870,7 +869,7 @@ def test_reconcile_persists_generation_failed_trial_when_response_cannot_materia
     dataset_manager.prepare("mnist:v1")
     repository.register_dataset("mnist:v1", str(dataset_manager.manifest_path_for("mnist:v1")))
     runner = RunnerService(repository=repository, dataset_manager=dataset_manager)
-    system = EvolutionSystem(repository, dataset_manager, UnmaterializableGenerator(), RecordingLauncher(), runner)
+    system = EvolutionSystem(repository, dataset_manager, UnmaterializableGenerator(), RecordingLauncherDouble(), runner)
     track = system.create_track("bad-response", "mnist:v1", {})
 
     baseline = repository.list_trials(track.track_id)[0]
@@ -919,7 +918,7 @@ def test_reconcile_tags_length_limited_invalid_candidate_as_truncation(repositor
     dataset_manager.prepare("mnist:v1")
     repository.register_dataset("mnist:v1", str(dataset_manager.manifest_path_for("mnist:v1")))
     runner = RunnerService(repository=repository, dataset_manager=dataset_manager)
-    system = EvolutionSystem(repository, dataset_manager, TruncatedGenerator(), RecordingLauncher(), runner)
+    system = EvolutionSystem(repository, dataset_manager, TruncatedGenerator(), RecordingLauncherDouble(), runner)
     track = system.create_track("truncated-response", "mnist:v1", {})
 
     baseline = repository.list_trials(track.track_id)[0]
@@ -950,7 +949,7 @@ def test_reconcile_persists_generation_failed_trial_when_api_key_missing(reposit
     repository.register_dataset("mnist:v1", str(dataset_manager.manifest_path_for("mnist:v1")))
     runner = RunnerService(repository=repository, dataset_manager=dataset_manager)
     generator = OpenRouterGenerationBackend(api_key=None)
-    system = EvolutionSystem(repository, dataset_manager, generator, RecordingLauncher(), runner)
+    system = EvolutionSystem(repository, dataset_manager, generator, RecordingLauncherDouble(), runner)
     track = system.create_track("missing-api-key", "mnist:v1", {})
 
     baseline = repository.list_trials(track.track_id)[0]
@@ -1023,7 +1022,7 @@ def forward(self, x):
     repository.register_dataset("mnist:v1", str(dataset_manager.manifest_path_for("mnist:v1")))
     generator = ParallelTrackingGenerator()
     runner = RunnerService(repository=repository, dataset_manager=dataset_manager)
-    system = EvolutionSystem(repository, dataset_manager, generator, RecordingLauncher(), runner)
+    system = EvolutionSystem(repository, dataset_manager, generator, RecordingLauncherDouble(), runner)
     track = system.create_track("parallel", "mnist:v1", {})
 
     baseline = repository.list_trials(track.track_id)[0]
@@ -1218,7 +1217,7 @@ def test_reconcile_uses_launch_executor_so_blocking_launches_do_not_block_other_
     system, _ = _build_system(
         repository,
         dataset_manager,
-        FixedGenerationBackend(source=build_baseline_linear_classifier()),
+        FixedGenerationBackend(source=build_baseline_train_script()),
         launcher,
     )
     track = system.create_track("blocking-launch", "mnist:v1", {})
@@ -1274,7 +1273,7 @@ def test_reconcile_persists_launcher_metadata_for_launched_trials(repository, da
     system = EvolutionSystem(
         repository,
         dataset_manager,
-        FixedGenerationBackend(source=build_baseline_linear_classifier()),
+        FixedGenerationBackend(source=build_baseline_train_script()),
         MetadataLauncher(),
         runner,
     )
