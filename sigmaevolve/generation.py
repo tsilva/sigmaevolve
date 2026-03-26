@@ -6,7 +6,6 @@ import random
 import re
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
-from difflib import SequenceMatcher
 from functools import lru_cache
 from importlib import resources
 from pathlib import Path
@@ -542,41 +541,18 @@ class OpenRouterGenerationBackend:
         ]
         return "\n".join(filtered_lines) + ("\n" if source.endswith("\n") else "")
 
-    def _collapse_matching_source(self, source: str, reference_source: str) -> str:
-        # Collapse unchanged regions so the prompt emphasizes the novel edits.
-        source_lines = source.splitlines()
-        reference_lines = reference_source.splitlines()
-        summarized_lines: list[str] = []
-        matcher = SequenceMatcher(a=source_lines, b=reference_lines, autojunk=False)
-        for tag, source_start, source_end, _, _ in matcher.get_opcodes():
-            if tag == "equal":
-                if source_start == source_end:
-                    continue
-                if not summarized_lines or summarized_lines[-1] != "[...]":
-                    summarized_lines.append("[...]")
-                continue
-            if tag in {"replace", "delete"}:
-                summarized_lines.extend(source_lines[source_start:source_end])
-        if not summarized_lines:
-            summarized_lines.append("[...]")
-        return "\n".join(summarized_lines) + ("\n" if source.endswith("\n") else "")
-
     def _render_trial_prompt_block(
         self,
         trial: TrialSummary,
         *,
         strip_evolve_block_tags: bool = False,
-        collapse_matching_against: str | None = None,
     ) -> list[str]:
         # Normalize the source snapshot before rendering the trial prompt block.
         source = trial.source
         if strip_evolve_block_tags:
             source = self._strip_evolve_block_tags(source)
-        if collapse_matching_against is not None:
-            source = self._collapse_matching_source(source, collapse_matching_against)
         rendered = _render_prompt_template(
             "trial.md",
-            score=self._format_scalar(trial.score),
             val_acc=self._trial_prompt_metric(trial, "val_acc", "accuracy"),
             val_loss=self._trial_prompt_metric(trial, "val_loss"),
             source=source.rstrip(),
@@ -627,13 +603,8 @@ class OpenRouterGenerationBackend:
         # Split the context into the current program and optional prior examples.
         current_program = context_trials[0] if context_trials else None
         prior_programs = context_trials[1:] if len(context_trials) > 1 else []
-        current_program_stripped_source = None
-        if current_program is not None:
-            current_program_stripped_source = self._strip_evolve_block_tags(
-                current_program.source
-            )
 
-        # Render prior programs in diff-focused form when the prompt has history.
+        # Render prior programs in full so they remain independent references.
         if prior_programs:
             prior_program_blocks = []
             for trial in prior_programs:
@@ -642,7 +613,6 @@ class OpenRouterGenerationBackend:
                         self._render_trial_prompt_block(
                             trial,
                             strip_evolve_block_tags=True,
-                            collapse_matching_against=current_program_stripped_source,
                         )
                     )
                 )

@@ -90,10 +90,15 @@ function formatJsonBlock(value: Record<string, unknown> | null): string {
   return JSON.stringify(value, null, 2);
 }
 
+type PropertyValue = {
+  href?: string;
+  text: string;
+};
+
 type PropertyEntry = {
   label: string;
   mono?: boolean;
-  values: string[];
+  values: PropertyValue[];
 };
 type PropertyGroup = {
   label: string;
@@ -104,6 +109,8 @@ type ProgressSegment = {
   count: number;
   label: string;
 };
+
+const HIDDEN_WANDB_KEYS = new Set(["project", "entity", "run_id", "run_name"]);
 
 type TrackProgressBarProps = {
   className?: string;
@@ -138,6 +145,7 @@ function appendPropertyEntries(
   label: string,
   value: unknown,
   options?: {
+    linkBuilder?: (value: string) => string | undefined;
     mono?: boolean;
   },
 ): void {
@@ -150,12 +158,25 @@ function appendPropertyEntries(
       if (item && typeof item === "object") {
         return Object.entries(item).flatMap(([key, nestedValue]) => {
           const rendered = formatPropertyScalar(nestedValue);
-          return rendered ? [`${toPropertyLabel(key)}: ${rendered}`] : [];
+          return rendered
+            ? [
+                {
+                  text: `${toPropertyLabel(key)}: ${rendered}`,
+                },
+              ]
+            : [];
         });
       }
 
       const rendered = formatPropertyScalar(item);
-      return rendered ? [rendered] : [];
+      return rendered
+        ? [
+            {
+              href: options?.linkBuilder?.(rendered),
+              text: rendered,
+            },
+          ]
+        : [];
     });
 
     if (values.length > 0) {
@@ -183,7 +204,12 @@ function appendPropertyEntries(
   entries.push({
     label,
     mono: options?.mono,
-    values: [rendered],
+    values: [
+      {
+        href: options?.linkBuilder?.(rendered),
+        text: rendered,
+      },
+    ],
   });
 }
 
@@ -196,15 +222,31 @@ function isExternalUrl(value: string): boolean {
   }
 }
 
-function renderPropertyValue(entry: PropertyEntry, value: string) {
-  if (isExternalUrl(value)) {
+function renderPropertyValue(value: PropertyValue, className?: string) {
+  if (!value.href) {
+    if (isExternalUrl(value.text)) {
+      return (
+        <a className={className ?? "external-link-chip"} href={value.text} target="_blank" rel="noreferrer">
+          {value.text}
+        </a>
+      );
+    }
+    return value.text;
+  }
+
+  if (isExternalUrl(value.href)) {
     return (
-      <a className="external-link-chip" href={value} target="_blank" rel="noreferrer">
-        {value}
+      <a className={className ?? "external-link-chip"} href={value.href} target="_blank" rel="noreferrer">
+        {value.text}
       </a>
     );
   }
-  return value;
+
+  return (
+    <Link className={className} href={value.href}>
+      {value.text}
+    </Link>
+  );
 }
 
 function extractCrashDetails(value: Record<string, unknown> | null): string | null {
@@ -311,7 +353,7 @@ function extractMixedSourceSnapshot(messages: PromptMessage[]): { snippetCount: 
   };
 }
 
-function getGenerationPropertyGroups(value: Record<string, unknown> | null): PropertyGroup[] {
+function getGenerationPropertyGroups(trackId: string, value: Record<string, unknown> | null): PropertyGroup[] {
   if (!value) {
     return [];
   }
@@ -323,23 +365,53 @@ function getGenerationPropertyGroups(value: Record<string, unknown> | null): Pro
     context_trial_ids,
     generation_config,
     launcher,
+    wandb_project: _wandbProject,
+    wandb_entity: _wandbEntity,
+    wandb_run_id: _wandbRunId,
+    wandb_run_name: _wandbRunName,
     request_messages: _requestMessages,
     generation: _generation,
     ...remaining
   } = value;
 
+  const contextTrialIds = Array.isArray(context_trial_ids)
+    ? context_trial_ids.flatMap((entry) => {
+        const rendered = formatPropertyScalar(entry);
+        return rendered ? [rendered] : [];
+      })
+    : [];
+
   const modelEntries: PropertyEntry[] = [];
   appendPropertyEntries(modelEntries, "Backend", backend);
   appendPropertyEntries(modelEntries, "Model", model);
   appendPropertyEntries(modelEntries, "Candidate Kind", candidate_kind);
-  appendPropertyEntries(modelEntries, "Context Trials", context_trial_ids, { mono: true });
+  appendPropertyEntries(modelEntries, "Current Program Trial", contextTrialIds[0], {
+    linkBuilder: (trialId) => `/tracks/${trackId}/trials/${encodeURIComponent(trialId)}`,
+    mono: true,
+  });
+  appendPropertyEntries(modelEntries, "Reference Program Trials", contextTrialIds.slice(1), {
+    linkBuilder: (trialId) => `/tracks/${trackId}/trials/${encodeURIComponent(trialId)}`,
+    mono: true,
+  });
   appendPropertyEntries(modelEntries, "Config", generation_config);
 
   const launcherEntries: PropertyEntry[] = [];
-  appendPropertyEntries(launcherEntries, "Launcher", launcher);
+  if (launcher && typeof launcher === "object") {
+    const { run_id: _runId, ...launcherWithoutRunId } = launcher as Record<string, unknown>;
+    appendPropertyEntries(launcherEntries, "Launcher", launcherWithoutRunId);
+  } else {
+    appendPropertyEntries(launcherEntries, "Launcher", launcher);
+  }
 
   const otherEntries: PropertyEntry[] = [];
   for (const [key, nestedValue] of Object.entries(remaining)) {
+    if (key === "wandb" && nestedValue && typeof nestedValue === "object") {
+      const filteredWandbEntries = Object.fromEntries(
+        Object.entries(nestedValue as Record<string, unknown>).filter(([nestedKey]) => !HIDDEN_WANDB_KEYS.has(nestedKey)),
+      );
+      appendPropertyEntries(otherEntries, "Wandb", filteredWandbEntries);
+      continue;
+    }
     appendPropertyEntries(otherEntries, toPropertyLabel(key), nestedValue);
   }
 
@@ -856,7 +928,10 @@ export function DashboardShell({
   const selectedGeneratedSource = selectedTrial?.generatedSource ?? null;
   const selectedResponseText = selectedTrial?.responseText ?? null;
   const selectedAssertionFailures = selectedTrial?.generationAssertionFailures ?? [];
-  const selectedGenerationPropertyGroups = getGenerationPropertyGroups(selectedTrial?.provenanceJson ?? null);
+  const selectedGenerationPropertyGroups = getGenerationPropertyGroups(
+    selectedTrackId,
+    selectedTrial?.provenanceJson ?? null,
+  );
   const selectedIsGenerationFailure = selectedTrial?.outcomeReason === "generation_failed";
   const selectedGeneratedProgram = selectedIsGenerationFailure
     ? selectedGeneratedSource
@@ -1561,17 +1636,22 @@ export function DashboardShell({
                                       <span>{entry.label}</span>
                                       <strong className={entry.mono ? "trial-summary-mono" : undefined}>
                                         {entry.values.length === 1 ? (
-                                          renderPropertyValue(entry, entry.values[0])
+                                          renderPropertyValue(entry.values[0], "trial-summary-link")
                                         ) : (
                                           <span className="property-chip-list">
-                                            {entry.values.map((item) => (
-                                              <span
-                                                key={`${group.label}:${entry.label}:${item}`}
-                                                className={`meta-chip ${entry.mono ? "meta-chip-mono" : ""}`.trim()}
-                                              >
-                                                {renderPropertyValue(entry, item)}
-                                              </span>
-                                            ))}
+                                            {entry.values.map((item) => {
+                                              const itemClassName = `meta-chip ${entry.mono ? "meta-chip-mono" : ""}`.trim();
+                                              const key = `${group.label}:${entry.label}:${item.text}`;
+                                              return item.href ? (
+                                                <span key={key}>
+                                                  {renderPropertyValue(item, itemClassName)}
+                                                </span>
+                                              ) : (
+                                                <span key={key} className={itemClassName}>
+                                                  {item.text}
+                                                </span>
+                                              );
+                                            })}
                                           </span>
                                         )}
                                       </strong>

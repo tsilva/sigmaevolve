@@ -472,7 +472,13 @@ describe("DashboardShell", () => {
     expect(subsectionLabels).not.toContain("Launcher");
     expect(screen.getByText("Config Temperature")).toBeTruthy();
     expect(screen.getByText("0.2")).toBeTruthy();
-    expect(screen.getByText("trial_parent_a")).toBeTruthy();
+    expect(screen.getByText("Current Program Trial")).toBeTruthy();
+    const currentProgramTrialLink = screen.getByRole("link", { name: "trial_parent_a" });
+    expect(currentProgramTrialLink.getAttribute("href")).toBe("/tracks/track_1/trials/trial_parent_a");
+    expect(screen.getByText("Reference Program Trials")).toBeTruthy();
+    const referenceProgramTrialLink = screen.getByRole("link", { name: "trial_parent_b" });
+    expect(referenceProgramTrialLink.getAttribute("href")).toBe("/tracks/track_1/trials/trial_parent_b");
+    expect(screen.queryByText("Context Trials")).toBeNull();
     expect(screen.queryByText('"generation_config"')).toBeNull();
   });
 
@@ -498,11 +504,44 @@ describe("DashboardShell", () => {
       (element) => element.textContent,
     );
     expect(subsectionLabels).toContain("Launcher");
-    expect(screen.getByText("Launcher Run Id")).toBeTruthy();
-    expect(screen.getByText("fc-123")).toBeTruthy();
+    expect(screen.queryByText("Launcher Run Id")).toBeNull();
+    expect(screen.queryByText("fc-123")).toBeNull();
     expect(screen.getByText("Launcher Run Url")).toBeTruthy();
     const launcherLink = screen.getByRole("link", { name: "https://modal.com/apps/test/runs/fc-123" });
     expect(launcherLink.getAttribute("href")).toBe("https://modal.com/apps/test/runs/fc-123");
+  });
+
+  it("hides wandb identifiers from the trial provenance panel", () => {
+    renderShell({
+      detail: createDetail([
+        createTrial({
+          trialId: "trial_wandb",
+          provenanceJson: {
+            backend: "openrouter",
+            model: "x-ai/grok-4.1-fast",
+            wandb_project: "sigmaevolve",
+            wandb_entity: "tsilva",
+            wandb_run_id: "0oosq56x",
+            wandb_run_name: "track_2bfe1dc3071342489daddd272b6dd807:trial_ae821512cb4041d0a0609b5ddca63ca7",
+            extra_context: "still visible",
+          },
+        }),
+      ]),
+      initialSelectedTrialId: "trial_wandb",
+    });
+
+    expect(screen.queryByText("Wandb Project")).toBeNull();
+    expect(screen.queryByText("sigmaevolve")).toBeNull();
+    expect(screen.queryByText("Wandb Entity")).toBeNull();
+    expect(screen.queryByText("tsilva")).toBeNull();
+    expect(screen.queryByText("Wandb Run Id")).toBeNull();
+    expect(screen.queryByText("0oosq56x")).toBeNull();
+    expect(screen.queryByText("Wandb Run Name")).toBeNull();
+    expect(
+      screen.queryByText("track_2bfe1dc3071342489daddd272b6dd807:trial_ae821512cb4041d0a0609b5ddca63ca7"),
+    ).toBeNull();
+    expect(screen.getByText("Extra Context")).toBeTruthy();
+    expect(screen.getByText("still visible")).toBeTruthy();
   });
 
   it("keeps the explorer visible when a filter changes the visible trial set", async () => {

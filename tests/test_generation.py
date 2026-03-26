@@ -263,7 +263,7 @@ def test_openrouter_generation_uses_model_pool_round_robin(monkeypatch):
         "Patch this program. SEARCH blocks must match text from CURRENT PROGRAM"
         in first_prompt
     )
-    assert "score: 0.5" in first_prompt
+    assert "score:" not in first_prompt
     assert "val_acc: 0.5" in first_prompt
     assert "val_loss: n/a" in first_prompt
     assert first_prompt.rstrip().endswith("REPLACEMENTS:")
@@ -345,7 +345,7 @@ def test_openrouter_generation_prompt_includes_expected_sections(monkeypatch):
     assert "REPLACEMENTS:" in prompt
 
 
-def test_openrouter_generation_prompt_lists_prior_programs_before_current_program():
+def test_openrouter_generation_prompt_lists_full_prior_programs_before_current_program():
     backend = OpenRouterGenerationBackend(api_key="test-key")
 
     prompt = backend._build_user_prompt_text(
@@ -359,23 +359,24 @@ def test_openrouter_generation_prompt_lists_prior_programs_before_current_progra
     prior_section, current_section = prompt.split("CURRENT PROGRAM:\n", maxsplit=1)
     assert "OBJECTIVE:" in prior_section
     assert "TASK CONTEXT:" in prior_section
-    assert "REFERENCE PROGRAMS:\n---\nscore: 0.998" in prior_section
+    assert "REFERENCE PROGRAMS:\n---\nval_acc: 0.998" in prior_section
+    assert "score:" not in prior_section
     assert "val_acc: 0.998" in prior_section
     assert "val_loss: 0.023" in prior_section
-    assert "[...]" in prior_section
+    assert "[...]" not in prior_section
+    assert "def forward(self, x):" in prior_section
     assert (
         "return torch.zeros((x.shape[0], 10), dtype=torch.float32) + 0.3"
         in prior_section
     )
-    assert (
-        "return torch.zeros((x.shape[0], 10), dtype=torch.float32) + 0.2"
-        not in prior_section
+    assert "return torch.zeros((x.shape[0], 10), dtype=torch.float32) + 0.2" not in (
+        prior_section
     )
     assert (
         "CURRENT PROGRAM:\nPatch this program. SEARCH blocks must match text from CURRENT PROGRAM"
         in prompt
     )
-    assert "score: 0.992" in current_section
+    assert "score:" not in current_section
     assert "val_acc: 0.992" in current_section
     assert "val_loss: 0.1" in current_section
     assert "# EVOLVE-BLOCK-START" not in prior_section
