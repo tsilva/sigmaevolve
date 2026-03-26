@@ -59,6 +59,8 @@ def _wandb_metric_aliases(metrics: dict[str, Any] | None) -> dict[str, Any]:
     train_acc = payload.get("train_acc")
     val_loss = payload.get("val_loss")
     val_acc = payload.get("val_acc")
+
+    # Fall back to accuracy when the canonical validation metric is absent.
     if val_acc is None:
         val_acc = payload.get("accuracy")
 
@@ -68,6 +70,7 @@ def _wandb_metric_aliases(metrics: dict[str, Any] | None) -> dict[str, Any]:
         payload["train/acc"] = train_acc
     if val_loss is not None:
         payload["val/loss"] = val_loss
+
     if val_acc is not None:
         payload["val/acc"] = val_acc
     return payload
@@ -83,10 +86,14 @@ class WandbSettings:
 
 def resolve_wandb_settings() -> WandbSettings:
     mode = _env_first("WANDB_MODE")
+
+    # Reject local-only WandB modes that would block remote syncing.
     if mode is not None and mode.lower() in _DISALLOWED_WANDB_MODES:
         raise RuntimeError("WANDB_MODE must allow remote sync; offline and disabled modes are not supported.")
 
     api_key = _env_first("WANDB_API_KEY")
+
+    # Require an API key before attempting to initialize the run logger.
     if api_key is None:
         raise RuntimeError("WANDB_API_KEY is required to log SigmaEvolve runs to Weights & Biases.")
 
@@ -121,6 +128,8 @@ class WandbRunLogger:
 
         wandb = _import_wandb()
         settings = resolve_wandb_settings()
+
+        # Forward a custom base URL when the deployment points WandB at a mirror.
         if settings.base_url:
             os.environ["WANDB_BASE_URL"] = settings.base_url
         wandb.login(key=settings.api_key, relogin=True)
@@ -196,9 +205,13 @@ class WandbRunLogger:
         self.run.summary["runner_id"] = self.runner_id
         self.run.summary["outcome_reason"] = outcome_reason
         self.run.summary["score"] = float(score)
+
+        # Copy metric fields into the summary so the final run page stays searchable.
         if metrics:
             for key, value in _wandb_metric_aliases(metrics).items():
                 self.run.summary[key] = value
+
+        # Retain structured error details only when the runner captured them.
         if error_info:
             reason = error_info.get("reason")
             detail = error_info.get("detail")
@@ -364,15 +377,21 @@ def build_final_metrics_payload(
     last_artifact = select_last_completed_eval(artifacts)
 
     last_completed_eval_sec = last_artifact.get("elapsed_time_sec")
+
+    # Prefer the progress snapshot when the artifact metadata omitted a timestamp.
     if last_completed_eval_sec is None and progress_payload:
         last_completed_eval_sec = progress_payload.get("last_completed_eval_sec")
 
     time_to_best_eval_sec = best_artifact.get("elapsed_time_sec")
     time_since_last_eval_sec = None
+
+    # Measure the gap since the last completed eval when a timestamp is available.
     if last_completed_eval_sec is not None:
         time_since_last_eval_sec = max(0.0, float(process_elapsed_sec) - float(last_completed_eval_sec))
 
     last_phase = None
+
+    # Preserve the last reported phase for downstream timeout classification.
     if progress_payload:
         last_phase = progress_payload.get("phase") or progress_payload.get("current_phase")
 
@@ -418,6 +437,8 @@ def build_active_metrics_payload(
     metrics: dict[str, Any] = {"process_elapsed_sec": float(process_elapsed_sec)}
 
     last_phase = progress.get("phase") or progress.get("current_phase")
+
+    # Surface the most recent phase when the runner reported one explicitly.
     if last_phase is not None:
         metrics["last_phase"] = last_phase
 
@@ -430,6 +451,7 @@ def build_active_metrics_payload(
     last_completed_eval_sec = coerce_optional_scalar(progress.get("last_completed_eval_sec"), float)
     last_completed_eval_index = progress_eval_index
 
+    # Use persisted artifacts when they exist because they carry the authoritative metrics.
     if artifacts:
         best_artifact = select_best_eval(artifacts)
         last_artifact = select_last_completed_eval(artifacts)
@@ -448,6 +470,8 @@ def build_active_metrics_payload(
     # Keep the last completed evaluation metadata in scalar form for the dashboard.
     if last_completed_eval_sec is not None:
         metrics["last_completed_eval_sec"] = float(last_completed_eval_sec)
+
+    # Preserve the evaluation index as an integer when progress or artifacts provide it.
     if last_completed_eval_index is not None:
         metrics["last_completed_eval_index"] = int(last_completed_eval_index)
 
@@ -469,9 +493,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from sigmaevolve.core import OUTCOME_CRASHED, OUTCOME_EVAL_FAILED, OUTCOME_SUCCEEDED, OUTCOME_TIMEOUT
-from sigmaevolve.core import DEFAULT_TRIAL_HARD_TIMEOUT_SEC
-from sigmaevolve.core import compute_score
+from sigmaevolve.core import (
+    DEFAULT_TRIAL_HARD_TIMEOUT_SEC,
+    OUTCOME_CRASHED,
+    OUTCOME_EVAL_FAILED,
+    OUTCOME_SUCCEEDED,
+    OUTCOME_TIMEOUT,
+    compute_score,
+)
 from sigmaevolve.env import load_env_file
 
 logger = logging.getLogger(__name__)
@@ -607,6 +636,8 @@ class RunnerService:
         # Dispose the repository engine when the worker suspects a broken connection.
         engine = getattr(self.repository, "engine", None)
         dispose = getattr(engine, "dispose", None)
+
+        # Only call dispose on objects that actually expose it.
         if callable(dispose):
             try:
                 dispose()
@@ -617,10 +648,14 @@ class RunnerService:
         # Return None for missing or malformed debug payloads.
         if not path.exists():
             return None
+
+        # Read the file as JSON only after confirming it still exists.
         try:
             payload = json.loads(path.read_text())
         except (OSError, json.JSONDecodeError):
             return None
+
+        # Keep only object-shaped payloads so callers can use dict access safely.
         if not isinstance(payload, dict):
             return None
         return payload
@@ -706,6 +741,8 @@ class RunnerService:
             )
         except Exception:
             logger.warning("Active metrics scan failed; continuing without eval artifacts.", exc_info=True)
+
+        # Skip reporter updates until there is at least one source of metrics.
         if not progress_payload and not debug_payload and not artifacts:
             return None
 
@@ -740,6 +777,8 @@ class RunnerService:
                 labels_path=labels_path,
                 started_at=started_at,
             )
+
+            # Avoid redundant writes when the reporter sees the same payload twice.
             if metrics is None or metrics == last_metrics:
                 return last_metrics
             self.repository.update_active_trial_metrics(trial_id=trial_id, runner_id=runner_id, metrics=metrics)
@@ -773,11 +812,14 @@ class RunnerService:
         *,
         state: str,
     ) -> None:
+
+        # Skip WandB logging when there is no logger or no payload to record.
         if wandb_run_logger is None or metrics is None:
             return
         try:
             wandb_run_logger.log_metrics(metrics, state=state)
         except Exception:
+            # Keep the trial running even if the telemetry backend is transiently unavailable.
             logger.warning(
                 "W&B metrics update failed for trial %s.",
                 wandb_run_logger.trial.trial_id,
@@ -818,11 +860,15 @@ class RunnerService:
     def run_reserved_trial(self, trial_id: str, dispatch_token: str, runner_id: str) -> None:
         logger.info("Claiming reserved trial %s with runner %s.", trial_id, runner_id)
         trial = self.repository.claim_trial(trial_id, dispatch_token, runner_id)
+
+        # Stop immediately when the reservation has already been lost to another runner.
         if trial is None:
             logger.info("Skipping trial %s because the reservation could not be claimed.", trial_id)
             return
         logger.info("Claimed trial %s on track %s.", trial.trial_id, trial.track_id)
         track = self.repository.get_track(trial.track_id)
+
+        # Fail fast when the track disappeared between reservation and execution.
         if track is None:
             raise RuntimeError(f"Track not found for trial {trial.trial_id}")
         policy = track.policy_json
@@ -935,8 +981,11 @@ class RunnerService:
                 debug_payload = self._read_debug_payload(debug_path)
                 timed_out = bool(timed_out or (debug_payload or {}).get("timed_out"))
 
+                # Classify a nonzero exit before looking at evaluation artifacts.
                 if completed.returncode != 0 and not timed_out:
                     failure_outcome = (debug_payload or {}).get("failure_outcome")
+
+                    # Preserve explicit contract failures as eval failures instead of crashes.
                     if failure_outcome == OUTCOME_EVAL_FAILED:
                         error_info = {
                             "reason": (debug_payload or {}).get("failure_reason") or "train_script_contract_violation",
@@ -991,6 +1040,7 @@ class RunnerService:
                     )
                     return
 
+                # Handle the no-artifact case separately so timeout and missing-output cases stay distinct.
                 if not artifacts:
                     outcome_reason = OUTCOME_TIMEOUT if timed_out else OUTCOME_EVAL_FAILED
                     error_info: dict[str, Any] = {
@@ -1120,6 +1170,8 @@ def write_eval_atomic(
         "eval_index": np.array(eval_index, dtype=np.int64),
         "elapsed_time_sec": np.array(elapsed_time_sec, dtype=np.float64),
     }
+
+    # Store the epoch only when the harness has already advanced past the initial state.
     if epoch is not None:
         payload["epoch"] = np.array(epoch, dtype=np.int64)
     np.savez(temp_path, **payload)
@@ -1129,6 +1181,8 @@ def write_eval_atomic(
 
 def _load_strategy_module(strategy_path: Path) -> ModuleType:
     spec = importlib.util.spec_from_file_location("sigmaevolve_candidate_strategy", strategy_path)
+
+    # Reject incomplete module specs before trying to execute the candidate.
     if spec is None or spec.loader is None:
         raise RuntimeError(f"Unable to load strategy module from {strategy_path}")
     module = importlib.util.module_from_spec(spec)
@@ -1151,6 +1205,8 @@ def load_strategy(strategy_path: Path) -> tuple[Any, Any, Any]:
         )
         if not callable(value)
     ]
+
+    # Surface the missing entry points together so strategy authors can fix them in one pass.
     if missing:
         raise StrategyContractError(f"Strategy is missing required callable exports: {', '.join(missing)}")
 
@@ -1182,6 +1238,8 @@ def _normalize_predictions(
         )
 
     if array.ndim == 1:
+
+        # Accept 1D float outputs only for binary tasks where thresholding is meaningful.
         if np.issubdtype(array.dtype, np.floating):
             if num_classes == 2:
                 finite = array[np.isfinite(array)]
@@ -1212,6 +1270,8 @@ def _seed_everything(seed: int) -> str:
         import torch
     except ImportError:
         return "cpu"
+
+    # Seed CUDA explicitly when the runtime exposes it.
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
@@ -1222,6 +1282,8 @@ def _seed_everything(seed: int) -> str:
 def _read_split(path: str) -> tuple[np.ndarray, np.ndarray] | np.ndarray:
     payload = np.load(path)
     features = payload["features"].astype(np.float32)
+
+    # Preserve label arrays only when the split actually includes them.
     if "labels" in payload:
         return features, payload["labels"].astype(np.int64)
     return features
@@ -1293,6 +1355,8 @@ def _run_harness(config: dict[str, Any]) -> int:
 
     train_features, train_labels = _read_split(config["train_split_path"])
     validation_features = _read_split(config["validation_split_path"])
+
+    # Validate the split shapes before entering the training loop.
     if not isinstance(train_features, np.ndarray) or not isinstance(train_labels, np.ndarray):
         raise RuntimeError("Training split is invalid.")
     if not isinstance(validation_features, np.ndarray):
@@ -1320,6 +1384,8 @@ def _run_harness(config: dict[str, Any]) -> int:
             start_time=start_time,
         )
         state = initialize(init_ctx)
+
+        # Reject strategies that return an unexpected state container.
         if not isinstance(state, dict):
             raise StrategyContractError("initialize must return a dict state object.")
 

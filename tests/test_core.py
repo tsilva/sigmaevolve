@@ -1,10 +1,12 @@
-# ---- test_models.py ----
-
 from __future__ import annotations
 
 import pytest
 
-from sigmaevolve.core import TrackPolicy
+from sigmaevolve.core import (
+    TrackPolicy,
+    compute_script_hash,
+    normalize_source,
+)
 
 
 def test_track_policy_does_not_persist_removed_modal_gpu_preferences():
@@ -20,19 +22,20 @@ def test_track_policy_rejects_removed_modal_gpu_preferences():
 
 def test_track_policy_defaults_sampling_settings_to_seed_only():
     policy = TrackPolicy.from_dict({})
+    policy_dict = policy.to_dict()
 
     assert policy.sampling_settings == {"seed": 0}
-    assert policy.to_dict()["sampling_settings"] == {"seed": 0}
-
-
-# ---- test_hashing.py ----
-
-from sigmaevolve.core import compute_script_hash, normalize_source
+    assert policy_dict["sampling_settings"] == {"seed": 0}
 
 
 def test_source_normalization_is_stable():
     left = "print('x')\r\n"
     right = "print('x')\n\n"
-    assert normalize_source(left) == "print('x')\n"
-    assert normalize_source(left) == normalize_source(right)
-    assert compute_script_hash(left) == compute_script_hash(right)
+    normalized_left = normalize_source(left)
+    normalized_right = normalize_source(right)
+    left_hash = compute_script_hash(left)
+    right_hash = compute_script_hash(right)
+
+    assert normalized_left == "print('x')\n"
+    assert normalized_left == normalized_right
+    assert left_hash == right_hash

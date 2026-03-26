@@ -26,20 +26,20 @@ def make_llm_provenance(
     *,
     request_messages: list[dict[str, str]] | None = None,
     context_trial_ids: list[str] | None = None,
-    **extra,
-):
-    payload = {
-        "backend": "openrouter",
+    **extra: object,
+) -> dict[str, object]:
+    # Build the fixed provenance fields first so the payload shape stays obvious.
+    generation_config = {
         "model": model,
-        "candidate_kind": CANDIDATE_KIND_STRATEGY_V1,
-        "generation_config": {
-            "model": model,
-            "temperature": 0.1,
-            "max_tokens": 1500,
-        },
-        "request_messages": request_messages
-        if request_messages is not None
-        else [
+        "temperature": 0.1,
+        "max_tokens": 1500,
+    }
+
+    # Prefer caller-provided messages when present.
+    if request_messages is not None:
+        effective_request_messages = request_messages
+    else:
+        effective_request_messages = [
             {
                 "role": "system",
                 "content": "You are mutating an existing train.py candidate.",
@@ -48,8 +48,21 @@ def make_llm_provenance(
                 "role": "user",
                 "content": "Use this parent trial as the base candidate:\n```python\nprint('parent')\n```",
             },
-        ],
-        "context_trial_ids": context_trial_ids if context_trial_ids is not None else ["trial_parent"],
+        ]
+
+    # Prefer caller-provided trial context when present.
+    if context_trial_ids is not None:
+        effective_context_trial_ids = context_trial_ids
+    else:
+        effective_context_trial_ids = ["trial_parent"]
+
+    payload = {
+        "backend": "openrouter",
+        "model": model,
+        "candidate_kind": CANDIDATE_KIND_STRATEGY_V1,
+        "generation_config": generation_config,
+        "request_messages": effective_request_messages,
+        "context_trial_ids": effective_context_trial_ids,
     }
     payload.update(extra)
     return payload

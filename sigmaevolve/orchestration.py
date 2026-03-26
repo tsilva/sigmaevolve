@@ -14,6 +14,7 @@ from sigmaevolve.core import ACTIVE_STATUSES, ReconcileResult, now_utc
 
 def _emit(reporter: Callable[[str, dict[str, Any]], None] | None, event: str, **payload: Any) -> None:
     # Funnel controller events through the optional reporter callback.
+    # Skip emission entirely when no reporter was supplied.
     if reporter is not None:
         reporter(event, payload)
 
@@ -114,6 +115,7 @@ class TrackController:
 
         # Sweep stale work once before any new generation or dispatch cycle starts.
         self._run_sweep(emit_always=True)
+        # Prime one-shot mode with the number of new generations still needed.
         if not self.continuous:
             queue_count = self.repository.count_trials(self.track.track_id, statuses={"queued"})
             self._one_shot_requested_generations = max(0, self.ready_queue_threshold - queue_count)
@@ -255,9 +257,11 @@ class TrackController:
             # Start a fresh fill cycle whenever the ready queue falls below target.
             if self._fill_cycle is None:
                 queue_count = self.repository.count_trials(self.track.track_id, statuses={"queued"})
+                # Expand to the remaining queue deficit in continuous mode.
                 if self.continuous:
                     target_queue_count = self._desired_queue_threshold()
                     deficit = max(0, target_queue_count - queue_count)
+                # Fall back to the fixed one-shot threshold when not running continuously.
                 else:
                     target_queue_count = self.ready_queue_threshold
                     deficit = (
@@ -265,6 +269,7 @@ class TrackController:
                         if not self._one_shot_generation_finished
                         else 0
                     )
+                # Create a fill cycle only when there is real work to schedule.
                 if deficit > 0:
                     self._fill_cycle = _FillCycle(
                         requested_generations=deficit,
@@ -282,8 +287,10 @@ class TrackController:
             else:
                 attempts_to_schedule = self._next_retry_batch_locked()
 
+        # Return early when no generation work is available.
         if not attempts_to_schedule:
             return False
+        # Announce the new fill cycle only after the controller has real work.
         if started_payload is not None:
             _emit(self.reporter, "queue_fill_started", **started_payload)
 
@@ -301,6 +308,7 @@ class TrackController:
                 generation_index=generation_index,
                 duplicate_retry_count=duplicate_retry_count,
             )
+            # Skip attempts that the generation backend declined to schedule.
             if scheduled is None:
                 continue
 
@@ -319,6 +327,7 @@ class TrackController:
             )
 
         # Close the cycle immediately when no context produced a runnable attempt.
+        # Keep the fill cycle open when at least one attempt was scheduled.
         if scheduled_any:
             return True
 
@@ -345,6 +354,7 @@ class TrackController:
         queue_count = self.repository.count_trials(self.track.track_id, statuses={"queued"})
         has_dispatch_capacity = active_count < self.max_parallelism
         has_queued_trials = queue_count > 0
+        # Wait until the controller has both launch capacity and queued work.
         if not has_dispatch_capacity or not has_queued_trials:
             return False
 
@@ -360,6 +370,7 @@ class TrackController:
                 dispatch_ttl_sec=dispatch_ttl_sec,
                 limit=self.max_parallelism,
             )
+            # Stop early when another worker consumed the queue first.
             if not reserved:
                 return False
 
@@ -404,16 +415,19 @@ class TrackController:
             track_id=self.track.track_id,
             stale_ttl_sec=int(self.track.policy_json["stale_ttl_sec"]),
         )
+        # Cancel remote runs for stale Modal-backed trials.
         if stale_active:
             self._cancel_stale_modal_runs(stale_active)
 
         # Persist the sweep results in memory before emitting a summary event.
         stale_trial_ids = stale_dispatch + stale_active
+        # Record sweep results only when the sweep actually changed state.
         if requeued or stale_trial_ids:
             with self._condition:
                 self._result.requeued_trial_ids.extend(requeued)
                 self._result.stale_trial_ids.extend(stale_trial_ids)
                 self._condition.notify_all()
+        # Emit the sweep summary whenever the caller requested it or state changed.
         if emit_always or requeued or stale_trial_ids:
             _emit(
                 self.reporter,
@@ -427,17 +441,20 @@ class TrackController:
         cancel_run = getattr(self.launcher, "cancel_run", None)
         for trial_id in stale_trial_ids:
             trial = self.repository.get_trial(trial_id)
+            # Skip stale ids that no longer resolve to a stored trial.
             if trial is None:
                 continue
             provenance_json = trial.provenance_json or {}
             launcher_json = provenance_json.get("launcher") or {}
             launcher_metadata = dict(launcher_json)
+            # Ignore stale trials that were not launched through Modal.
             if launcher_metadata.get("kind") != "modal":
                 continue
 
             # Record cancellation metadata even when the launcher cannot cancel remotely.
             cancel_metadata = {"cancel_attempted_at": now_utc().isoformat()}
             run_id = launcher_metadata.get("run_id")
+            # Persist the skip outcome when the remote run id is unavailable.
             if not isinstance(run_id, str) or not run_id:
                 cancel_metadata["cancel_outcome"] = "skipped_no_run_id"
                 self.repository.record_trial_launcher_metadata(trial_id, cancel_metadata)
@@ -445,6 +462,7 @@ class TrackController:
 
             # Request cancellation and persist the outcome for later inspection.
             try:
+                # Reject launchers that cannot cancel remote runs.
                 if not callable(cancel_run):
                     raise RuntimeError("Active launcher does not support remote cancellation.")
                 cancel_run(launcher_metadata)
@@ -465,6 +483,7 @@ class TrackController:
             attempt = self._pending_generations.pop(future, None)
             cycle = self._fill_cycle
             self._condition.notify_all()
+        # Ignore completions that no longer belong to an active fill cycle.
         if attempt is None or cycle is None:
             return
 
@@ -519,6 +538,7 @@ class TrackController:
         else:
             # Normalize provider output before deciding how to record the attempt.
             generated = self.generation.normalize_generation_result(raw_generated)
+            # Treat unsuccessful provider responses as generation failures.
             if not generated.succeeded:
                 error_info = dict(generated.error_info or {})
                 # Record provider-level failures directly from the returned error payload.
@@ -646,6 +666,7 @@ class TrackController:
                 has_cycle
                 and cycle.failures + len(self._pending_generations) < cycle.max_failures
             )
+            # Retry only while the fill cycle still has failure budget available.
             should_retry = (
                 has_cycle
                 and retry_needed
@@ -655,6 +676,7 @@ class TrackController:
             if should_retry:
                 retry_count = attempt.duplicate_retry_count + 1
                 next_retry = (attempt.slot_index, attempt.generation_index, retry_count)
+            # Close the cycle once the current attempt no longer needs a retry.
             if next_retry is None:
                 stopped_payload = self._finish_fill_cycle_if_ready()
             else:
@@ -670,6 +692,7 @@ class TrackController:
         cycle = self._fill_cycle
         if cycle is None:
             return None
+        # Wait for in-flight generation work unless the caller forces completion.
         if self._pending_generations and not force:
             return None
 
@@ -677,6 +700,7 @@ class TrackController:
         completed_slots = len(cycle.completed_slots)
         missing_completions = completed_slots < cycle.requested_generations
         has_failure_budget = cycle.failures < cycle.max_failures
+        # Keep the cycle open while completions are still possible.
         if not force and missing_completions and has_failure_budget:
             return None
 
@@ -700,6 +724,7 @@ class TrackController:
         # Keep the completed future registered until launch bookkeeping is finished.
         with self._condition:
             trial = self._launch_futures.get(future)
+        # Ignore launch completions that were already removed from tracking.
         if trial is None:
             return
 
@@ -718,6 +743,7 @@ class TrackController:
             )
         else:
             # Persist launcher metadata and mark the trial as launched.
+            # Only write launcher metadata when the launcher returned some.
             if launch_metadata:
                 self.repository.record_trial_launcher_metadata(trial.trial_id, launch_metadata)
             with self._condition:
@@ -826,6 +852,7 @@ def emit_report_event(
     event: str,
     **payload: Any,
 ) -> None:
+    # Forward report events only when the caller provided a sink.
     if reporter is not None:
         reporter(event, payload)
 
@@ -874,8 +901,10 @@ class Orchestrator:
     ) -> TrackController:
         # Resolve the track record before wiring up the long-running controller.
         track = self.repository.get_track(track_id)
+        # Reject unknown tracks before building a controller around them.
         if track is None:
             raise KeyError(f"Track not found: {track_id}")
+        # Reject negative parallelism before constructing the controller.
         if max_parallelism < 0:
             raise ValueError("max_parallelism must be >= 0")
         # Build the controller with continuous mode enabled for background orchestration.
@@ -905,12 +934,15 @@ class Orchestrator:
     ):
         # Resolve and validate the track before running the one-shot controller.
         track = self.repository.get_track(track_id)
+        # Reject unknown tracks before starting reconcile work.
         if track is None:
             raise KeyError(f"Track not found: {track_id}")
         ready_queue_threshold = int(ready_queue_threshold)
         max_parallelism = int(max_parallelism)
+        # Reject negative queue targets before the controller starts.
         if ready_queue_threshold < 0:
             raise ValueError("ready_queue_threshold must be >= 0")
+        # Reject negative parallelism before the controller starts.
         if max_parallelism < 0:
             raise ValueError("max_parallelism must be >= 0")
         # Emit the reconcile start event before any queue-filling work begins.

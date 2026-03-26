@@ -28,27 +28,41 @@ stdout_logger = logging.getLogger(f"{__name__}.stdout")
 def load_track_definition(track_file: str) -> tuple[str | None, str, dict[str, Any]]:
     # Load and validate the top-level track definition envelope.
     parsed = json.loads(Path(track_file).read_text())
+
+    # Reject non-object track definitions before reading any fields.
     if not isinstance(parsed, dict):
         raise argparse.ArgumentTypeError("Track file must contain a JSON object.")
 
     # Extract the required dataset identifier and optional track name.
     dataset_id = parsed.get("dataset_id")
+
+    # Reject missing or empty dataset identifiers early.
     if not isinstance(dataset_id, str) or not dataset_id:
         raise argparse.ArgumentTypeError("Track file must include a non-empty string dataset_id.")
 
     raw_name = parsed.get("name")
+
+    # Validate the optional track name only when the field is present.
     if raw_name is not None and not isinstance(raw_name, str):
         raise argparse.ArgumentTypeError("Track file name must be a string when provided.")
     name = raw_name if isinstance(raw_name, str) else None
 
     # Support either an explicit policy object or legacy top-level policy fields.
     policy = parsed.get("policy")
+
+    # Fall back to the legacy policy_json field when no nested policy exists.
     if policy is None:
         policy = parsed.get("policy_json")
+
+    # Validate object-shaped policy payloads before copying them.
     if policy is not None:
+
+        # Reject malformed explicit policy objects before normalizing them.
         if not isinstance(policy, dict):
             raise argparse.ArgumentTypeError("Track file policy must be a JSON object.")
         policy_json = dict(policy)
+
+    # Preserve legacy top-level fields when no explicit policy object is present.
     else:
         excluded_fields = {"dataset_id", "name"}
         policy_json = {
@@ -63,6 +77,8 @@ def load_track_definition(track_file: str) -> tuple[str | None, str, dict[str, A
 def positive_int(value: str) -> int:
     # Enforce strictly positive integer CLI values at parse time.
     parsed = int(value)
+
+    # Reject non-positive integers before handing them to command handlers.
     if parsed <= 0:
         raise argparse.ArgumentTypeError("Value must be > 0.")
     return parsed
@@ -71,6 +87,8 @@ def positive_int(value: str) -> int:
 def positive_float(value: str) -> float:
     # Enforce strictly positive floating-point CLI values at parse time.
     parsed = float(value)
+
+    # Reject non-positive floats before handing them to command handlers.
     if parsed <= 0:
         raise argparse.ArgumentTypeError("Value must be > 0.")
     return parsed
@@ -125,6 +143,7 @@ def _configure_list_trials_parser(parser: argparse.ArgumentParser) -> None:
         choices=["queued", "dispatching", "active", "finished", "error"],
         help="Filter by one or more statuses.",
     )
+
 
 def _configure_modal_sync_dataset_parser(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("dataset_id")
@@ -349,9 +368,13 @@ class CliReconcileReporter:
         pair_fields = dict(pair_fields or {})
         for key, label in fields:
             partner_key = pair_fields.get(key)
+
+            # Combine paired fields into a single progress-style value.
             if partner_key is not None:
                 rendered_fields.append(f"{label}={payload[key]}/{payload[partner_key]}")
                 continue
+
+            # Skip the partner entry after the combined field has been rendered.
             if key in pair_fields.values():
                 continue
             rendered_fields.append(f"{label}={payload[key]}")
@@ -407,7 +430,8 @@ class CliReconcileReporter:
 
     def _handle_generation_failed(self, payload: dict[str, Any]) -> None:
         # Inline any provider detail so generation failures stay actionable.
-        detail = f": {payload['detail']}" if payload.get("detail") else ""
+        has_detail = payload.get("detail")
+        detail = f": {payload['detail']}" if has_detail else ""
         self._handle_generation_progress(
             payload,
             "Generation failed for slot "
@@ -419,12 +443,15 @@ class CliReconcileReporter:
         # Surface the Modal run URL when the launcher returned one.
         launch_metadata = payload.get("launch_metadata") or {}
         run_url = launch_metadata.get("run_url")
-        suffix = f" ({run_url})" if isinstance(run_url, str) and run_url else ""
+        has_run_url = isinstance(run_url, str) and run_url
+        suffix = f" ({run_url})" if has_run_url else ""
         self._log(f"Launched trial {payload['trial_id']}{suffix}.")
 
     def __call__(self, event: str, payload: dict[str, Any]) -> None:
         # Dispatch only the events that this CLI reporter knows how to print.
         handler = self._handlers.get(event)
+
+        # Ignore events that are not part of the console-facing reporter contract.
         if handler is not None:
             handler(payload)
 
@@ -458,13 +485,19 @@ def _apply_runtime_config(args: argparse.Namespace) -> argparse.Namespace:
 def _resolve_launcher(system, args) -> Any:
     # Keep launcher selection explicit so each runtime path is easy to audit.
     uses_inline_launcher = args.launcher == "inline"
+
+    # Build the in-process launcher when the caller requested local execution.
     if uses_inline_launcher:
         runner = RunnerService(system.repository, system.dataset_manager)
         return InlineRunnerLauncher(runner)
 
     uses_modal_launcher = args.launcher == "modal"
+
+    # Build the Modal launcher when the caller requested remote execution.
     if uses_modal_launcher:
         requires_remote_database = args.command == "launch" and args.database_url.startswith("sqlite")
+
+        # Reject Modal launches backed by sqlite because the remote runner needs network access.
         if requires_remote_database:
             raise RuntimeError(
                 "Modal launcher requires a network-accessible database URL; sqlite is not supported."
@@ -482,6 +515,7 @@ def _resolve_launcher(system, args) -> Any:
 
 
 def _make_system(args) -> Any:
+    # Reject missing database URLs before constructing any system state.
     if not args.database_url:
         raise RuntimeError(
             "A Postgres database URL is required. Set SIGMAEVOLVE_DATABASE_URL or DATABASE_URL."
@@ -509,6 +543,8 @@ def _ensure_dataset_prepared(system, dataset_id: str) -> tuple[Any, bool]:
     has_manifest_path = has_dataset_record and dataset.manifest_path is not None
     manifest_exists = has_manifest_path and Path(dataset.manifest_path).exists()
     manifest_missing = not has_dataset_record or not has_manifest_path or not manifest_exists
+
+    # Prepare the dataset when the repository record or manifest is incomplete.
     if manifest_missing:
         return system.prepare_dataset(dataset_id), True
     return dataset, False
@@ -517,6 +553,8 @@ def _ensure_dataset_prepared(system, dataset_id: str) -> tuple[Any, bool]:
 def _launch_pass_settings(system, track_id: str, *, target_count: int, daemon: bool) -> tuple[int, int]:
     queue_count = system.repository.count_trials(track_id, statuses={"queued"})
     active_count = system.repository.count_trials(track_id, statuses=ACTIVE_STATUSES)
+
+    # Preserve the historical one-shot launch target unless daemon mode needs a running threshold.
     if not daemon:
         return max(queue_count, target_count), active_count + target_count
 
@@ -555,10 +593,13 @@ def _trial_diagnostics(metrics_json: dict[str, Any] | None) -> dict[str, Any]:
 
 def _suggest_launch_command(args, track_id: str, *, count: int = 1) -> str:
     command = [sys.executable, "-m", "sigmaevolve.cli"]
+
+    # Include the launcher flag only when the caller picked a non-default runtime.
     if args.launcher != "modal":
         command.extend(["--launcher", args.launcher])
     command.extend(["launch", track_id, str(count)])
     return shlex.join(command)
+
 
 def cmd_create_track(args) -> int:
     system = _make_system(args)
@@ -566,6 +607,8 @@ def cmd_create_track(args) -> int:
     name, dataset_id, policy = load_track_definition(args.track_file)
     logger.info("Ensuring dataset %s is prepared.", dataset_id)
     dataset, prepared_now = _ensure_dataset_prepared(system, dataset_id)
+
+    # Report whether this command had to prepare the dataset itself.
     if prepared_now:
         logger.info("Prepared dataset %s at %s.", dataset_id, dataset.manifest_path)
     else:
@@ -590,6 +633,8 @@ def cmd_create_track(args) -> int:
 def cmd_launch(args) -> int:
     system = _make_system(args)
     reporter = CliReconcileReporter()
+
+    # Run a single launch pass when the caller did not request daemon mode.
     if not args.daemon:
         result = _run_launch_pass(system, args.track_id, reporter, target_count=args.count, daemon=False)
         payload = result_payload(result)
@@ -607,6 +652,8 @@ def cmd_launch(args) -> int:
     try:
         while True:
             summary.cycles_completed += 1
+
+            # Stop after the requested number of daemon cycles when a limit is configured.
             if args.max_cycles is not None and summary.cycles_completed >= args.max_cycles:
                 summary.stopped_reason = "max_cycles_reached"
                 break
@@ -632,7 +679,8 @@ def cmd_launch(args) -> int:
 
 def cmd_list_trials(args) -> int:
     system = _make_system(args)
-    statuses = set(args.status) if args.status else None
+    has_status_filter = bool(args.status)
+    statuses = set(args.status) if has_status_filter else None
     trials = system.repository.list_trials(args.track_id, statuses=statuses)
     _print_json(
         [
@@ -656,6 +704,7 @@ def cmd_list_trials(args) -> int:
         ]
     )
     return 0
+
 
 def cmd_modal_deploy(args) -> int:
     payload = deploy_modal_app(
@@ -706,5 +755,6 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
 
+# Preserve the module entry point for `python -m sigmaevolve.cli`.
 if __name__ == "__main__":
     raise SystemExit(main())

@@ -45,8 +45,12 @@ def _apply_runtime_options(
     # Collect the optional WandB settings before mutating the handle.
     options: dict[str, Any] = {}
     has_wandb_secret = bool(wandb_env)
+
+    # Add the WandB secret only when the caller supplied one.
     if has_wandb_secret:
         options["secrets"] = [modal.Secret.from_dict(dict(wandb_env))]
+
+    # Leave the handle untouched when there are no runtime overrides.
     if not options:
         return handle
 
@@ -174,8 +178,12 @@ def sync_dataset_to_modal(
     manifest_path = manager.manifest_path_for(dataset_id)
     local_dir = manifest_path.parent
     manifest_exists = manifest_path.exists()
+
+    # Reject sync requests for datasets that have not been prepared locally.
     if not manifest_exists:
-        raise FileNotFoundError(f"Dataset manifest not found locally for {dataset_id!r}: {manifest_path}")
+        raise FileNotFoundError(
+            f"Dataset manifest not found locally for {dataset_id!r}: {manifest_path}"
+        )
 
     # Open the target volume and upload the dataset directory in one batch.
     volume = modal.Volume.from_name(
@@ -257,6 +265,8 @@ class TrialRunner:
         # Reconstruct the repository and dataset manager from the remote runtime inputs.
         apply_wandb_env(wandb_env)
         has_database_url = isinstance(database_url, str) and bool(database_url)
+
+        # Set DATABASE_URL only when the caller passed a usable value.
         if has_database_url:
             os.environ.setdefault("DATABASE_URL", database_url)
         repository = SQLAlchemyRepository(database_url)
@@ -265,4 +275,8 @@ class TrialRunner:
 
         # Run the reserved trial with a unique Modal-scoped runner identity.
         runner_id = f"modal_{uuid4().hex}"
-        runner.run_reserved_trial(trial_id=trial_id, dispatch_token=dispatch_token, runner_id=runner_id)
+        runner.run_reserved_trial(
+            trial_id=trial_id,
+            dispatch_token=dispatch_token,
+            runner_id=runner_id,
+        )

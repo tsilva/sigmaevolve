@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import os
-import contextlib
 from io import StringIO
 from types import SimpleNamespace
 
@@ -82,6 +82,7 @@ def _set_runtime_env(
         "SIGMAEVOLVE_MODAL_ENVIRONMENT_NAME": modal_environment_name,
     }
     for key, value in values.items():
+        # Set only the config values that the test explicitly opted into.
         if value is not None:
             monkeypatch.setenv(key, value)
 
@@ -311,7 +312,11 @@ def test_cli_launch_count_reports_progress_to_stderr(tmp_path, patched_cli_syste
     db_url = f"sqlite:///{tmp_path / 'cli-launch-progress.sqlite'}"
     dataset_root = tmp_path / "datasets"
     _set_runtime_env(monkeypatch, database_url=db_url, dataset_root=dataset_root)
-    track_file = _write_track_file(tmp_path, {"dataset_id": "mnist:v1"}, "launch-track.json")
+    track_file = _write_track_file(
+        tmp_path,
+        {"dataset_id": "mnist:v1"},
+        "launch-track.json",
+    )
 
     track_id = json.loads(_run_cli(["create-track", track_file])[1])["track_id"]
     code, stdout, stderr = _run_cli(["launch", track_id, "1"])
@@ -472,5 +477,9 @@ def test_cli_help_documents_env_runtime_config(capsys):
 
 
 def test_normalize_database_url_accepts_neon_postgres_scheme():
-    assert normalize_database_url("postgresql://example/db").startswith("postgresql+psycopg://")
-    assert normalize_database_url("postgres://example/db").startswith("postgresql+psycopg://")
+    assert normalize_database_url("postgresql://example/db").startswith(
+        "postgresql+psycopg://"
+    )
+    assert normalize_database_url("postgres://example/db").startswith(
+        "postgresql+psycopg://"
+    )

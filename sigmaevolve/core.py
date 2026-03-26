@@ -99,7 +99,12 @@ OUTCOME_GENERATION_FAILED = "generation_failed"
 SUCCESS_OUTCOMES = {OUTCOME_SUCCEEDED, OUTCOME_TIMEOUT}
 ACTIVE_STATUSES = {TRIAL_STATUS_DISPATCHING, TRIAL_STATUS_ACTIVE}
 TERMINAL_STATUSES = {TRIAL_STATUS_FINISHED, TRIAL_STATUS_ERROR}
-ERROR_OUTCOMES = {OUTCOME_CRASHED, OUTCOME_EVAL_FAILED, OUTCOME_STALE, OUTCOME_GENERATION_FAILED}
+ERROR_OUTCOMES = {
+    OUTCOME_CRASHED,
+    OUTCOME_EVAL_FAILED,
+    OUTCOME_STALE,
+    OUTCOME_GENERATION_FAILED,
+}
 TERMINAL_OUTCOMES = {
     OUTCOME_SUCCEEDED,
     OUTCOME_DUPLICATE,
@@ -176,6 +181,7 @@ def _reject_removed_policy_fields(raw: dict[str, Any]) -> None:
     # Fail fast when callers still send policy knobs that are no longer supported.
     if "modal_gpu_preferences" in raw:
         raise ValueError("Track policy modal_gpu_preferences is no longer supported.")
+
 
 @dataclass(frozen=True)
 class DatasetRecord:

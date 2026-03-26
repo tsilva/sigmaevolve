@@ -1,10 +1,39 @@
 from __future__ import annotations
 
-
-# ---- storage_schema.py ----
+from contextlib import contextmanager
+from datetime import timedelta
+import json
+from typing import Any, Iterable
 
 import sqlalchemy as sa
+from sqlalchemy.engine import Connection, Engine
 
+from sigmaevolve.core import normalize_source
+from sigmaevolve.core import (
+    ERROR_OUTCOMES,
+    ACTIVE_STATUSES,
+    OUTCOME_DUPLICATE,
+    OUTCOME_GENERATION_FAILED,
+    OUTCOME_STALE,
+    SUCCESS_OUTCOMES,
+    TERMINAL_STATUSES,
+    TERMINAL_OUTCOMES,
+    TRIAL_STATUS_ACTIVE,
+    TRIAL_STATUS_DISPATCHING,
+    TRIAL_STATUS_ERROR,
+    TRIAL_STATUS_FINISHED,
+    TRIAL_STATUS_QUEUED,
+    DatasetRecord,
+    TrackRecord,
+    TrialRecord,
+    TrialSummary,
+    compute_script_hash,
+    compute_score,
+    make_id,
+    now_utc,
+)
+
+ALLOWED_GENERATION_BACKENDS = frozenset({"openrouter"})
 
 metadata = sa.MetaData()
 
@@ -73,24 +102,8 @@ sa.Index(
 )
 
 
-# ---- storage_validation.py ----
-
-from typing import Any
-
-from sigmaevolve.core import normalize_source
-from sigmaevolve.core import (
-    ERROR_OUTCOMES,
-    OUTCOME_GENERATION_FAILED,
-    OUTCOME_STALE,
-    TRIAL_STATUS_ERROR,
-    TRIAL_STATUS_FINISHED,
-)
-
-
-ALLOWED_GENERATION_BACKENDS = frozenset({"openrouter"})
-
-
 def _is_prompt_message(entry: object) -> bool:
+    # Reject non-mapping prompt entries before checking the message fields.
     if not isinstance(entry, dict):
         return False
 
@@ -98,7 +111,6 @@ def _is_prompt_message(entry: object) -> bool:
     content = entry.get("content")
     has_role = isinstance(role, str) and bool(role.strip())
     has_content = isinstance(content, str) and bool(content.strip())
-
     return has_role and has_content
 
 
@@ -154,14 +166,21 @@ def has_error_signal(payload: dict[str, Any] | None) -> bool:
 
     # Recognize explicit textual error fields before falling back to a return code.
     reason = payload.get("reason")
-    if isinstance(reason, str) and reason.strip():
+    has_reason = isinstance(reason, str) and reason.strip()
+    if has_reason:
         return True
+
     detail = payload.get("detail")
-    if isinstance(detail, str) and detail.strip():
+    has_detail = isinstance(detail, str) and detail.strip()
+    if has_detail:
         return True
+
     stderr = payload.get("stderr")
-    if isinstance(stderr, str) and stderr.strip():
+    has_stderr = isinstance(stderr, str) and stderr.strip()
+    if has_stderr:
         return True
+
+    # Use the return code as a fallback signal when no text fields are populated.
     return payload.get("returncode") is not None
 
 
@@ -179,6 +198,7 @@ def build_generation_attempt_source(trial_id: str, outcome_reason: str) -> str:
 
 
 def status_for_outcome_reason(outcome_reason: str) -> str:
+    # Map stored outcome reasons onto the terminal trial status bucket.
     if outcome_reason in ERROR_OUTCOMES:
         return TRIAL_STATUS_ERROR
     return TRIAL_STATUS_FINISHED
@@ -249,40 +269,6 @@ def prepare_error_payload(outcome_reason: str, error_json: dict[str, Any] | None
     if error_type:
         payload["error_type"] = error_type
     return payload or None
-
-
-# ---- storage.py ----
-
-from contextlib import contextmanager
-from datetime import timedelta
-import json
-from typing import Any, Iterable
-
-import sqlalchemy as sa
-from sqlalchemy.engine import Connection, Engine
-
-from sigmaevolve.core import compute_script_hash, normalize_source
-from sigmaevolve.core import (
-    ACTIVE_STATUSES,
-    OUTCOME_DUPLICATE,
-    OUTCOME_GENERATION_FAILED,
-    OUTCOME_STALE,
-    SUCCESS_OUTCOMES,
-    TERMINAL_STATUSES,
-    TERMINAL_OUTCOMES,
-    TRIAL_STATUS_ACTIVE,
-    TRIAL_STATUS_DISPATCHING,
-    TRIAL_STATUS_ERROR,
-    TRIAL_STATUS_FINISHED,
-    TRIAL_STATUS_QUEUED,
-    DatasetRecord,
-    TrackRecord,
-    TrialRecord,
-    TrialSummary,
-    make_id,
-    now_utc,
-)
-from sigmaevolve.core import compute_score
 
 
 def _row_to_dataset(row: sa.Row[Any]) -> DatasetRecord:

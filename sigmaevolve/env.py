@@ -22,18 +22,27 @@ class RuntimeConfig:
 
 
 def load_env_file(path: str | Path | None = None, *, override: bool = False) -> None:
+
     # Resolve the default user-scoped env file and exit quietly when it is absent.
     env_path = Path(path) if path is not None else DEFAULT_ENV_PATH
+
+    # Skip missing env files instead of treating them as a configuration error.
     if not env_path.exists():
         return
 
     # Parse simple shell-style KEY=VALUE lines while ignoring blanks and comments.
     for raw_line in env_path.read_text().splitlines():
         line = raw_line.strip()
+
+        # Ignore blank lines and comment lines in the env file.
         if not line or line.startswith("#"):
             continue
+
+        # Support `export KEY=VALUE` lines from shell-style env files.
         if line.startswith("export "):
             line = line[len("export ") :].strip()
+
+        # Skip malformed lines that do not contain an assignment.
         if "=" not in line:
             continue
 
@@ -41,17 +50,22 @@ def load_env_file(path: str | Path | None = None, *, override: bool = False) -> 
         key, value = line.split("=", 1)
         key = key.strip()
         value = value.strip()
+
+        # Ignore entries with empty keys after trimming whitespace.
         if not key:
             continue
+
+        # Remove matching quotes around the value when the assignment uses them.
         if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
             value = value[1:-1]
 
-        # Respect the caller's override policy when mutating the process environment.
+        # Preserve existing environment values unless override mode is active.
         if override or key not in os.environ:
             os.environ[key] = value
 
 
 def resolve_runtime_config() -> RuntimeConfig:
+
     # Resolve Modal defaults lazily so env loading does not participate in import cycles.
     from sigmaevolve.modal import (
         DEFAULT_MODAL_APP_NAME,
@@ -62,12 +76,18 @@ def resolve_runtime_config() -> RuntimeConfig:
 
     # Resolve each runtime setting from SigmaEvolve-scoped env vars first.
     database_url = _resolve_optional_env("SIGMAEVOLVE_DATABASE_URL", "DATABASE_URL")
-    dataset_root = _resolve_required_default(DEFAULT_DATASET_ROOT, "SIGMAEVOLVE_DATASET_ROOT")
+    dataset_root = _resolve_required_default(
+        DEFAULT_DATASET_ROOT,
+        "SIGMAEVOLVE_DATASET_ROOT",
+    )
     openrouter_api_key = _resolve_optional_env(
         "SIGMAEVOLVE_OPENROUTER_API_KEY",
         "OPENROUTER_API_KEY",
     )
-    modal_app_name = _resolve_required_default(DEFAULT_MODAL_APP_NAME, "SIGMAEVOLVE_MODAL_APP_NAME")
+    modal_app_name = _resolve_required_default(
+        DEFAULT_MODAL_APP_NAME,
+        "SIGMAEVOLVE_MODAL_APP_NAME",
+    )
     modal_function_name = _resolve_required_default(
         DEFAULT_MODAL_FUNCTION_NAME,
         "SIGMAEVOLVE_MODAL_FUNCTION_NAME",
@@ -96,11 +116,14 @@ def resolve_runtime_config() -> RuntimeConfig:
 
 
 def _resolve_optional_env(*names: str) -> str | None:
+
     # Treat unset and blank env vars as absent so defaults remain predictable.
     for name in names:
         value = os.getenv(name)
-        has_value = isinstance(value, str) and value.strip()
-        if has_value:
+        has_non_blank_value = isinstance(value, str) and value.strip()
+
+        # Return the first configured environment value that still contains content.
+        if has_non_blank_value:
             return value
 
     return None
@@ -109,6 +132,8 @@ def _resolve_optional_env(*names: str) -> str | None:
 def _resolve_required_default(default: str, *names: str) -> str:
     value = _resolve_optional_env(*names)
     has_override = value is not None
+
+    # Use the explicit override when one is present, otherwise fall back to the default.
     if has_override:
         return value
 
