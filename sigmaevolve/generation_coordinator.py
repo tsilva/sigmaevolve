@@ -36,6 +36,7 @@ class GenerationCoordinator:
         sampling_settings: dict[str, Any],
         generation_index: int,
     ) -> list[TrialSummary]:
+        # Prefer finished strategy variants that already have scored metrics.
         candidates = self.repository.sample_trial_context(
             track_id,
             limit=self.repository.count_trials(track_id),
@@ -52,6 +53,7 @@ class GenerationCoordinator:
         remaining_weights = [max(float(trial.score), 0.0) for trial in remaining]
         sampled: list[TrialSummary] = []
 
+        # Sample up to two trials without replacement, falling back to uniform draws.
         for _ in range(min(2, len(remaining))):
             total_weight = sum(remaining_weights)
             if total_weight <= 0.0:
@@ -61,6 +63,7 @@ class GenerationCoordinator:
             sampled.append(remaining.pop(selected_index))
             remaining_weights.pop(selected_index)
 
+        # Return the sampled trials in a stable best-first order.
         candidate_ranks = {trial.trial_id: index for index, trial in enumerate(candidates)}
         sampled.sort(key=lambda trial: (-float(trial.score), candidate_ranks[trial.trial_id]))
         return sampled
@@ -71,13 +74,16 @@ class GenerationCoordinator:
         sampling_settings: dict[str, Any],
         generation_index: int,
     ) -> list[TrialSummary]:
+        # Use successful strategy trials first whenever any exist.
         successful_context = self.sample_successful_context_trials(track_id, sampling_settings, generation_index)
         if successful_context:
             return successful_context
 
+        # Avoid mixing in unfinished or failed context once scored trials exist.
         if self.repository.sample_trial_context(track_id, limit=self.repository.count_trials(track_id)):
             return []
 
+        # Fall back to the seeded baseline when the track has no scored history yet.
         for trial in self.repository.list_trials(track_id):
             provenance = dict(trial.provenance_json or {})
             if provenance.get("backend") != "baseline":
@@ -104,10 +110,12 @@ class GenerationCoordinator:
         assertion_failures: list[str],
         candidate_hash: str | None,
     ) -> dict[str, Any]:
+        # Start from the recorded provenance so retries preserve prior metadata.
         payload = dict(provenance_json or {})
         generation_payload = dict(payload.get("generation") or {})
         request_messages = payload.get("request_messages")
 
+        # Backfill prompt text when older payloads only stored request messages.
         if isinstance(request_messages, list):
             if "system_prompt" not in generation_payload and request_messages:
                 first = request_messages[0]
@@ -119,6 +127,7 @@ class GenerationCoordinator:
                 if isinstance(second, dict) and isinstance(second.get("content"), str):
                     generation_payload["user_prompt"] = second["content"]
 
+        # Record the generated candidate trace in one normalized generation block.
         generation_payload.setdefault("response_text", None)
         generation_payload["generated_source"] = generated_source
         generation_payload["assertions_passed"] = assertions_passed
@@ -145,6 +154,7 @@ class GenerationCoordinator:
         generation_index: int,
         duplicate_retry_count: int,
     ) -> dict[str, Any]:
+        # Recover the configured model name when the provider failed before logging prompts.
         generation_backend = dict(track.policy_json.get("generation_backend", {}))
         model = generation_backend.get("model")
         if not isinstance(model, str) or not model:
@@ -158,6 +168,7 @@ class GenerationCoordinator:
         system_prompt = "Generation backend failed before prompts could be fully recorded."
         user_prompt = "No user prompt was captured because generation aborted before the provider call completed."
 
+        # Emit a synthetic but schema-valid generation payload for failure records.
         generation_payload = {
             "system_prompt": system_prompt,
             "user_prompt": user_prompt,
@@ -196,6 +207,7 @@ class GenerationCoordinator:
         extra_error_json: dict[str, Any] | None = None,
         result_error: str | None = None,
     ) -> ReconcileResult:
+        # Turn the failure into a persisted generation-attempt trial with trace data.
         assertion_failures = [detail] if detail else [reason]
         final_provenance = self.with_generation_trace(
             provenance_json,
@@ -220,6 +232,7 @@ class GenerationCoordinator:
         if extra_error_json:
             error_payload.update(extra_error_json)
 
+        # Record the failure in both storage and the in-memory reconcile result.
         trial = self.repository.create_generation_attempt_trial(
             track_id=track_id,
             provenance_json=final_provenance,
@@ -241,6 +254,7 @@ class GenerationCoordinator:
         generation_index: int,
         duplicate_retry_count: int,
     ) -> tuple[Future[Any], GenerationAttempt] | None:
+        # Skip scheduling when there is no valid context to generate from.
         context_trials = self.sample_generation_context_trials(
             track.track_id,
             sampling_settings,
@@ -249,6 +263,7 @@ class GenerationCoordinator:
         if not context_trials:
             return None
 
+        # Submit the provider request together with the bookkeeping metadata.
         attempt = GenerationAttempt(
             slot_index=slot_index,
             generation_index=generation_index,

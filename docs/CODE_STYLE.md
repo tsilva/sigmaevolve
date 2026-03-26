@@ -9,24 +9,25 @@ This guide is optimized for agent compliance first and human review second. Pref
 - Introduce named intermediate variables for non-trivial expressions, boolean conditions, and transformed values before combining them.
 - Split signatures, calls, and returned dicts across multiple lines once the one-line form becomes visually dense.
 - Extract a helper when one block mixes iteration, filtering, transformation, and ordering.
+- Add a short intent comment before each contiguous logical block inside non-trivial functions.
 
 ## Soft Preferences
 
-- Add short comments for meaningful logical blocks when structure and naming alone are not enough.
 - Prefer positive predicates over negated compound boolean expressions.
 - Prefer staged construction for nested payloads when the payload shape carries meaning.
 - Keep long formatted strings visually segmented by field instead of compressing them into one hard-to-edit line.
 
 ## Comments
 
-- Comments are encouraged for logical blocks in non-trivial functions.
+- Comments are required for contiguous logical blocks in non-trivial functions.
 - Comments should explain intent or purpose, not restate the line below them.
-- Do not require comments in trivial helpers or obviously named code.
+- Keep comments short and use domain language where possible.
+- Trivial one- or two-line helpers are the only exception.
 
 ## Do Not Over-Apply
 
 - Do not force multiline formatting for tiny helpers that are already easy to read.
-- Do not add comments where naming and structure already make the code obvious.
+- Do not use filler comments such as "Set variable" or "Return result".
 - Do not extract helpers unless the original block is carrying multiple responsibilities.
 
 ## Canonical Examples
@@ -40,14 +41,17 @@ def compute_classification_metrics(
     predictions: list[int],
     labels: list[int],
 ) -> dict[str, int | float]:
+    # Validate the scoring inputs before computing aggregates.
     if not labels:
         raise ValueError("Cannot score an empty validation split.")
     if len(predictions) != len(labels):
         raise ValueError("Predictions and labels must have the same length.")
 
+    # Derive the core metrics from the aligned predictions and labels.
     correct = sum(int(pred == label) for pred, label in zip(predictions, labels))
     accuracy = correct / len(labels)
 
+    # Return the metrics payload in a reviewable shape.
     return {
         "accuracy": accuracy,
         "correct": correct,
@@ -59,11 +63,13 @@ def compute_classification_metrics(
 
 ```python
 def should_retry_dispatch(trial: TrialRecord, now: datetime) -> bool:
+    # Name each policy requirement before composing the final decision.
     is_dispatching = trial.status == "dispatching"
     has_deadline = trial.dispatch_deadline_at is not None
     deadline_expired = has_deadline and trial.dispatch_deadline_at < now
     has_retry_budget = trial.dispatch_attempts < 3
 
+    # Express the retry policy as one readable predicate.
     return is_dispatching and deadline_expired and has_retry_budget
 ```
 

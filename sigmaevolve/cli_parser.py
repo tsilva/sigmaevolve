@@ -15,8 +15,11 @@ from sigmaevolve.modal_support import (
 
 
 def json_arg(value: str | None) -> dict[str, Any]:
+    # Treat missing JSON flags as an empty object for downstream callers.
     if not value:
         return {}
+
+    # Reject non-object JSON payloads at parse time.
     parsed = json.loads(value)
     if not isinstance(parsed, dict):
         raise argparse.ArgumentTypeError("JSON value must be an object.")
@@ -24,10 +27,12 @@ def json_arg(value: str | None) -> dict[str, Any]:
 
 
 def load_track_definition(track_file: str) -> tuple[str | None, str, dict[str, Any]]:
+    # Load and validate the top-level track definition envelope.
     parsed = json.loads(Path(track_file).read_text())
     if not isinstance(parsed, dict):
         raise argparse.ArgumentTypeError("Track file must contain a JSON object.")
 
+    # Extract the required dataset identifier and optional track name.
     dataset_id = parsed.get("dataset_id")
     if not isinstance(dataset_id, str) or not dataset_id:
         raise argparse.ArgumentTypeError("Track file must include a non-empty string dataset_id.")
@@ -37,6 +42,7 @@ def load_track_definition(track_file: str) -> tuple[str | None, str, dict[str, A
         raise argparse.ArgumentTypeError("Track file name must be a string when provided.")
     name = raw_name if isinstance(raw_name, str) else None
 
+    # Support either an explicit policy object or legacy top-level policy fields.
     policy = parsed.get("policy")
     if policy is None:
         policy = parsed.get("policy_json")
@@ -56,6 +62,7 @@ def load_track_definition(track_file: str) -> tuple[str | None, str, dict[str, A
 
 
 def positive_int(value: str) -> int:
+    # Enforce strictly positive integer CLI values at parse time.
     parsed = int(value)
     if parsed <= 0:
         raise argparse.ArgumentTypeError("Value must be > 0.")
@@ -63,6 +70,7 @@ def positive_int(value: str) -> int:
 
 
 def positive_float(value: str) -> float:
+    # Enforce strictly positive floating-point CLI values at parse time.
     parsed = float(value)
     if parsed <= 0:
         raise argparse.ArgumentTypeError("Value must be > 0.")
@@ -70,6 +78,7 @@ def positive_float(value: str) -> float:
 
 
 def build_cli_parser(*, handlers: dict[str, Callable[..., int]]) -> argparse.ArgumentParser:
+    # Register the global connection and launcher options first.
     parser = argparse.ArgumentParser(prog="sigmaevolve")
     parser.add_argument(
         "--database-url",
@@ -118,6 +127,7 @@ def build_cli_parser(*, handlers: dict[str, Callable[..., int]]) -> argparse.Arg
         help="Optional Modal environment name.",
     )
 
+    # Register subcommands after the shared options are in place.
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     prepare_dataset = subparsers.add_parser("prepare-dataset", help=argparse.SUPPRESS)

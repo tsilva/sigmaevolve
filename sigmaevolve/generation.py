@@ -43,6 +43,7 @@ class FixedGenerationBackend:
         generation_index: int = 0,
         duplicate_retry_count: int = 0,
     ) -> GenerationResult:
+        # Emit a deterministic provenance payload for fixed test generations.
         system_prompt = "Test-only fixed generator stub for a recorded LLM prompt."
         user_prompt = "Use this parent trial as the base candidate:\n```python\n# fixed backend stub\n```"
         return GenerationResult(
@@ -88,6 +89,7 @@ def _load_prompt_template(name: str) -> str:
 
 
 def _render_prompt_template(name: str, **variables: str) -> str:
+    # Load the template once and replace every declared variable placeholder.
     template = _load_prompt_template(name)
 
     def replace_variable(match: re.Match[str]) -> str:
@@ -111,6 +113,7 @@ class OpenRouterGenerationBackend:
         self.app_name = app_name
 
     def _normalize_generation_config(self, generation_policy: dict[str, object]) -> dict[str, object]:
+        # Resolve model-pool selection strategies before building the request payload.
         model_pool = generation_policy.get("model_pool")
         if isinstance(model_pool, list) and model_pool:
             selection = generation_policy.get("selection", "round_robin")
@@ -143,6 +146,8 @@ class OpenRouterGenerationBackend:
                 )
                 return selected
             return dict(model_pool[index % len(model_pool)])
+
+        # Fall back to the single-model configuration shape.
         return {
             "model": generation_policy["model"],
             "temperature": generation_policy.get("temperature", 0.2),
@@ -160,6 +165,7 @@ class OpenRouterGenerationBackend:
         return str(value)
 
     def _format_mapping(self, payload: dict[str, object], indent: int = 0) -> list[str]:
+        # Render nested payloads as an indented bullet list for prompt text.
         lines: list[str] = []
         prefix = " " * indent
         for key, value in payload.items():
@@ -190,6 +196,7 @@ class OpenRouterGenerationBackend:
         return lines
 
     def _summarize_error(self, error_json: dict[str, object] | None) -> list[str]:
+        # Extract the most actionable error fields for prompt-side diagnostics.
         if not error_json:
             return []
         lines: list[str] = []
@@ -209,6 +216,7 @@ class OpenRouterGenerationBackend:
         return lines
 
     def _trial_prompt_metric(self, trial: TrialSummary, *names: str) -> str:
+        # Return the first populated metric value from the preferred aliases.
         metrics = trial.metrics_json or {}
         for name in names:
             if name in metrics and metrics[name] is not None:
@@ -221,6 +229,7 @@ class OpenRouterGenerationBackend:
         return "\n".join(filtered_lines) + ("\n" if source.endswith("\n") else "")
 
     def _collapse_matching_source(self, source: str, reference_source: str) -> str:
+        # Collapse unchanged regions so the prompt emphasizes the novel edits.
         source_lines = source.splitlines()
         reference_lines = reference_source.splitlines()
         summarized_lines: list[str] = []
@@ -245,6 +254,7 @@ class OpenRouterGenerationBackend:
         strip_evolve_block_tags: bool = False,
         collapse_matching_against: str | None = None,
     ) -> list[str]:
+        # Normalize the source snapshot before rendering the trial prompt block.
         source = trial.source
         if strip_evolve_block_tags:
             source = self._strip_evolve_block_tags(source)
@@ -275,11 +285,15 @@ class OpenRouterGenerationBackend:
         selected_config: dict[str, object],
     ) -> str:
         del track, dataset_manifest, negative_trials, selected_config
+
+        # Split the context into the current program and optional prior examples.
         current_program = context_trials[0] if context_trials else None
         prior_programs = context_trials[1:] if len(context_trials) > 1 else []
         current_program_stripped_source = None
         if current_program is not None:
             current_program_stripped_source = self._strip_evolve_block_tags(current_program.source)
+
+        # Render prior programs in diff-focused form when the prompt has history.
         if prior_programs:
             prior_programs_text = "\n".join(
                 "\n".join(
@@ -293,6 +307,8 @@ class OpenRouterGenerationBackend:
             )
         else:
             prior_programs_text = "None."
+
+        # Render the primary current program in full so the model has a base candidate.
         if current_program is not None:
             current_program_text = "\n".join(self._render_trial_prompt_block(current_program))
         else:
@@ -311,6 +327,7 @@ class OpenRouterGenerationBackend:
         negative_trials: list[TrialSummary],
         selected_config: dict[str, object],
     ) -> list[dict[str, str]]:
+        # Build the final two-message chat payload from the system and user prompts.
         system_prompt = self._build_system_prompt_text()
         user_prompt = self._build_user_prompt_text(
             track,
@@ -336,6 +353,7 @@ class OpenRouterGenerationBackend:
         response_text: str | None = None,
         response_metadata: dict[str, object] | None = None,
     ) -> dict[str, object]:
+        # Preserve the prompt text and response metadata in a single provenance shape.
         system_prompt = request_messages[0]["content"] if request_messages else ""
         user_prompt = request_messages[1]["content"] if len(request_messages) > 1 else ""
         generation_payload: dict[str, object] = {
@@ -349,6 +367,8 @@ class OpenRouterGenerationBackend:
         }
         if response_metadata:
             generation_payload.update(response_metadata)
+
+        # Add the generation bookkeeping fields shared by success and failure cases.
         provenance_json: dict[str, object] = {
             "backend": "openrouter",
             "model": str(selected_config["model"]),
@@ -369,6 +389,7 @@ class OpenRouterGenerationBackend:
         body: dict[str, object],
         choice: dict[str, object],
     ) -> dict[str, object]:
+        # Extract stable provider metadata fields from the provider response body.
         metadata: dict[str, object] = {}
         finish_reason = choice.get("finish_reason")
         if isinstance(finish_reason, str) and finish_reason:
@@ -391,6 +412,7 @@ class OpenRouterGenerationBackend:
         return raw_text.strip() + "\n"
 
     def _extract_message_content(self, message: object) -> str | None:
+        # Support both string and structured content payloads from the provider.
         if not isinstance(message, dict):
             return None
         content = message.get("content")
@@ -419,6 +441,7 @@ class OpenRouterGenerationBackend:
         choice: dict[str, object],
         message: dict[str, object] | None,
     ) -> dict[str, object]:
+        # Start from the missing-content reason and attach provider response context.
         error_info: dict[str, object] = {
             "reason": "provider_response_missing_content",
             "response_body": raw_body,
@@ -447,6 +470,7 @@ class OpenRouterGenerationBackend:
                 if reasoning_tokens is not None:
                     error_info["reasoning_tokens"] = reasoning_tokens
 
+        # Detect whether the provider consumed its budget on hidden reasoning.
         reasoning_present = False
         if isinstance(message, dict):
             reasoning = message.get("reasoning")
@@ -490,6 +514,7 @@ class OpenRouterGenerationBackend:
         response_text: str | None = None,
         response_metadata: dict[str, object] | None = None,
     ) -> GenerationResult:
+        # Wrap provider failures in the same provenance shape as successful results.
         return GenerationResult(
             source=None,
             provenance_json=self._base_provenance(
@@ -514,11 +539,14 @@ class OpenRouterGenerationBackend:
         generation_index: int = 0,
         duplicate_retry_count: int = 0,
     ) -> GenerationResult:
+        # Resolve the concrete generation config for this attempt and retry number.
         generation_policy = dict(track.policy_json["generation_backend"])
         generation_policy["_generation_index"] = generation_index + duplicate_retry_count
         selected_config = self._normalize_generation_config(generation_policy)
         selected_temperature = float(selected_config.get("temperature", 0.2))
         selected_config["temperature"] = selected_temperature + (0.1 * duplicate_retry_count)
+
+        # Build the request messages before checking provider credentials.
         request_messages = self._build_prompt(
             track,
             dataset_manifest,
@@ -539,6 +567,8 @@ class OpenRouterGenerationBackend:
                 duplicate_retry_count=duplicate_retry_count,
                 error_info=missing_api_key_error,
             )
+
+        # Build the OpenRouter request payload and HTTP request object.
         payload = {
             "model": selected_config["model"],
             "messages": request_messages,
@@ -558,6 +588,7 @@ class OpenRouterGenerationBackend:
         )
         raw_body: str | None = None
         try:
+            # Execute the provider request and capture the raw response text.
             with request.urlopen(req, timeout=120) as response:
                 raw_body = response.read().decode("utf-8")
         except HTTPError as exc:
@@ -593,6 +624,8 @@ class OpenRouterGenerationBackend:
                 duplicate_retry_count=duplicate_retry_count,
                 error_info={"reason": "provider_request_failed", "detail": str(exc)},
             )
+
+        # Parse the provider body before validating the choice and content fields.
         try:
             body = json.loads(raw_body)
         except json.JSONDecodeError as exc:
@@ -615,6 +648,8 @@ class OpenRouterGenerationBackend:
                 provider_response_id=body.get("id"),
                 error_info={"reason": "provider_response_missing_choices", "response_body": raw_body},
             )
+
+        # Extract the first assistant message and reject empty content payloads.
         message = choices[0].get("message") if isinstance(choices[0], dict) else None
         choice = choices[0] if isinstance(choices[0], dict) else {}
         response_metadata = self._extract_response_metadata(body, choice)
@@ -636,6 +671,8 @@ class OpenRouterGenerationBackend:
                     message if isinstance(message, dict) else None,
                 ),
             )
+
+        # Return the normalized source with a complete provenance record.
         return GenerationResult(
             source=self._extract_source(content),
             provenance_json=self._base_provenance(

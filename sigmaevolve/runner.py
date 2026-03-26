@@ -32,6 +32,7 @@ ACTIVE_METRICS_INTERVAL_SEC = 1.0
 
 
 def _coerce_text(value: Any) -> str | None:
+    # Normalize subprocess output chunks into UTF-8 text.
     if value is None:
         return None
     if isinstance(value, bytes):
@@ -48,6 +49,7 @@ class _StreamedProcessResult:
 
 
 def _stream_pipe(pipe, sink, chunks: list[str]) -> None:
+    # Forward streamed output to the parent process while capturing a copy.
     try:
         for chunk in iter(pipe.readline, ""):
             if not chunk:
@@ -60,6 +62,7 @@ def _stream_pipe(pipe, sink, chunks: list[str]) -> None:
 
 
 def _run_streamed_subprocess(command: list[str], timeout: float) -> _StreamedProcessResult:
+    # Launch the child process with unbuffered Python output for live streaming.
     child_env = os.environ.copy()
     child_env["PYTHONUNBUFFERED"] = "1"
     process = subprocess.Popen(
@@ -73,6 +76,7 @@ def _run_streamed_subprocess(command: list[str], timeout: float) -> _StreamedPro
     assert process.stdout is not None
     assert process.stderr is not None
 
+    # Stream stdout and stderr concurrently while the process is running.
     stdout_chunks: list[str] = []
     stderr_chunks: list[str] = []
     stdout_thread = threading.Thread(
@@ -88,6 +92,7 @@ def _run_streamed_subprocess(command: list[str], timeout: float) -> _StreamedPro
     stdout_thread.start()
     stderr_thread.start()
 
+    # Kill the process on timeout and preserve the final exit status.
     timed_out = False
     try:
         returncode = process.wait(timeout=timeout)
@@ -96,6 +101,7 @@ def _run_streamed_subprocess(command: list[str], timeout: float) -> _StreamedPro
         process.kill()
         returncode = process.wait()
 
+    # Join the stream threads and collapse the captured output into strings.
     stdout_thread.join()
     stderr_thread.join()
     stdout = "".join(stdout_chunks) or None
@@ -116,6 +122,7 @@ class RunnerService:
         python_executable: str | None = None,
         hard_timeout_sec: float = DEFAULT_TRIAL_HARD_TIMEOUT_SEC,
     ) -> None:
+        # Persist the dependencies and default interpreter used by runner workers.
         self.repository = repository
         self.dataset_manager = dataset_manager
         self.python_executable = python_executable or sys.executable
@@ -130,6 +137,7 @@ class RunnerService:
         stop_event = threading.Event()
 
         def loop() -> None:
+            # Keep the active trial heartbeat alive until the stop event is set.
             while not stop_event.wait(interval_sec):
                 try:
                     self.repository.heartbeat_trial(trial_id, runner_id, {"status": "alive"})
@@ -149,6 +157,7 @@ class RunnerService:
         return stop_event, thread
 
     def _dispose_repository_engine(self) -> None:
+        # Dispose the repository engine when the worker suspects a broken connection.
         engine = getattr(self.repository, "engine", None)
         dispose = getattr(engine, "dispose", None)
         if callable(dispose):
@@ -158,6 +167,7 @@ class RunnerService:
                 logger.warning("Disposing repository engine after failure also failed.", exc_info=True)
 
     def _read_progress(self, progress_path: Path) -> dict[str, Any] | None:
+        # Return None for missing or malformed progress payloads.
         if not progress_path.exists():
             return None
         try:
@@ -169,6 +179,7 @@ class RunnerService:
         return payload
 
     def _read_debug_payload(self, debug_path: Path) -> dict[str, Any] | None:
+        # Return None for missing or malformed debug payloads.
         if not debug_path.exists():
             return None
         try:
@@ -243,6 +254,7 @@ class RunnerService:
         labels_path: str,
         started_at: float,
     ) -> dict[str, Any] | None:
+        # Load the latest progress, debug, and eval artifacts before building metrics.
         progress_payload = self._read_progress(progress_path)
         debug_payload = self._read_debug_payload(debug_path)
         artifacts: list[dict[str, Any]] = []
@@ -255,6 +267,8 @@ class RunnerService:
             logger.warning("Active metrics scan failed; continuing without eval artifacts.", exc_info=True)
         if not progress_payload and not debug_payload and not artifacts:
             return None
+
+        # Delegate the actual payload shaping to the shared runner-metrics helper.
         return self._build_active_metrics_payload(
             artifacts=artifacts,
             progress_payload=progress_payload,

@@ -85,6 +85,7 @@ def make_id(prefix: str) -> str:
 
 
 def _deep_merge_dict(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    # Merge nested dictionaries recursively while replacing non-dict values.
     merged = dict(base)
     for key, value in override.items():
         if isinstance(value, dict) and isinstance(merged.get(key), dict):
@@ -95,6 +96,7 @@ def _deep_merge_dict(base: dict[str, Any], override: dict[str, Any]) -> dict[str
 
 
 def _normalize_modal_gpu_preferences(value: Any) -> list[str] | None:
+    # Validate the optional GPU preference list before storing it in policy JSON.
     if value is None:
         return None
     if not isinstance(value, list):
@@ -102,6 +104,8 @@ def _normalize_modal_gpu_preferences(value: Any) -> list[str] | None:
     if not value:
         raise ValueError("Track policy modal_gpu_preferences must be null or a non-empty list.")
     normalized: list[str] = []
+
+    # Normalize each GPU label by trimming whitespace and rejecting empty entries.
     for entry in value:
         if not isinstance(entry, str):
             raise ValueError("Track policy modal_gpu_preferences entries must be non-empty strings.")
@@ -134,6 +138,7 @@ class DatasetManifest:
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        # Return a plain dict so manifests can be serialized directly.
         return {
             "dataset_id": self.dataset_id,
             "root_dir": self.root_dir,
@@ -150,6 +155,7 @@ class DatasetManifest:
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "DatasetManifest":
+        # Rebuild the strongly typed manifest from a persisted dict payload.
         return cls(
             dataset_id=raw["dataset_id"],
             root_dir=raw["root_dir"],
@@ -187,6 +193,7 @@ class TrackPolicy:
     )
 
     def to_dict(self) -> dict[str, Any]:
+        # Copy mutable policy containers before returning the serialized shape.
         modal_gpu_preferences = None
         if self.modal_gpu_preferences is not None:
             modal_gpu_preferences = list(self.modal_gpu_preferences)
@@ -205,6 +212,7 @@ class TrackPolicy:
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "TrackPolicy":
+        # Merge overrides onto the default policy before coercing field types.
         base = cls()
         merged = base.to_dict()
         merged = _deep_merge_dict(merged, raw or {})
@@ -253,6 +261,7 @@ class TrialRecord:
 
     @property
     def succeeded(self) -> bool:
+        # Require terminal finished state, a success outcome, and metrics payload.
         is_finished = self.status == TRIAL_STATUS_FINISHED
         has_success_outcome = self.outcome_reason in SUCCESS_OUTCOMES
         has_metrics = self.metrics_json is not None

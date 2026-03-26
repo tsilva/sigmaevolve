@@ -9,6 +9,7 @@ from sigmaevolve.models import ACTIVE_STATUSES, ReconcileResult, now_utc
 
 
 def _emit(reporter: Callable[[str, dict[str, Any]], None] | None, event: str, **payload: Any) -> None:
+    # Funnel controller events through the optional reporter callback.
     if reporter is not None:
         reporter(event, payload)
 
@@ -41,6 +42,7 @@ class TrackController:
         sweep_interval_sec: float = DEFAULT_SWEEP_INTERVAL_SEC,
         wait_interval_sec: float = DEFAULT_WAIT_INTERVAL_SEC,
     ) -> None:
+        # Capture the immutable runtime dependencies and queue targets.
         self.repository = repository
         self.dataset_manager = dataset_manager
         self.generation = generation
@@ -54,11 +56,13 @@ class TrackController:
         self.sweep_interval_sec = float(sweep_interval_sec)
         self.wait_interval_sec = float(wait_interval_sec)
 
+        # Size the generation and launch pools independently.
         generation_workers = max(1, self.max_parallelism, self.ready_queue_threshold, 1)
         launch_workers = max(1, self.max_parallelism)
         self._generation_executor = ThreadPoolExecutor(max_workers=generation_workers)
         self._launch_executor = ThreadPoolExecutor(max_workers=launch_workers)
 
+        # Initialize the shared controller state guarded by the condition variable.
         self._lock = threading.Lock()
         self._condition = threading.Condition(self._lock)
         self._stop_event = threading.Event()
@@ -76,6 +80,7 @@ class TrackController:
         self._one_shot_requested_generations = 0
         self._one_shot_generation_finished = self.continuous
 
+        # Create the long-lived worker threads up front so start() can stay simple.
         self._generation_thread = threading.Thread(
             target=self._generation_loop,
             name="sigmaevolve-generation",
@@ -99,10 +104,13 @@ class TrackController:
             return self._copy_result_locked()
 
     def start(self) -> None:
+        # Allow start() to be called idempotently from the orchestrator.
         with self._lock:
             if self._started:
                 return
             self._started = True
+
+        # Emit startup state for continuous controllers before background work begins.
         if self.continuous:
             _emit(
                 self.reporter,
@@ -111,17 +119,22 @@ class TrackController:
                 launcher=self.launcher.__class__.__name__,
                 max_parallelism=self.max_parallelism,
             )
+
+        # Sweep stale work once before any new generation or dispatch cycle starts.
         self._run_sweep(emit_always=True)
         if not self.continuous:
             queue_count = self.repository.count_trials(self.track.track_id, statuses={"queued"})
             self._one_shot_requested_generations = max(0, self.ready_queue_threshold - queue_count)
             self._one_shot_generation_finished = self._one_shot_requested_generations == 0
+
+        # Start the background loops after the initial state is fully prepared.
         self._generation_thread.start()
         self._generation_completion_thread.start()
         self._dispatch_thread.start()
         self._sweep_thread.start()
 
     def stop(self) -> None:
+        # Wake every worker loop before joining the background threads.
         with self._condition:
             self._stop_event.set()
             self._condition.notify_all()
@@ -133,6 +146,8 @@ class TrackController:
         ):
             if thread.is_alive():
                 thread.join()
+
+        # Shut down the executors only after their worker threads have drained.
         self._generation_executor.shutdown(wait=True, cancel_futures=False)
         self._launch_executor.shutdown(wait=True, cancel_futures=False)
         if self.continuous:
@@ -167,6 +182,7 @@ class TrackController:
         )
 
     def _is_one_shot_complete_locked(self) -> bool:
+        # Reject completion while any background work can still change the outcome.
         if self.continuous:
             return False
         if not self._one_shot_generation_finished:
@@ -184,17 +200,20 @@ class TrackController:
         if self.max_parallelism <= 0:
             return True
 
+        # One-shot mode is complete once there is nothing left to queue or dispatch.
         active_count = self.repository.count_trials(self.track.track_id, statuses=ACTIVE_STATUSES)
         queue_count = self.repository.count_trials(self.track.track_id, statuses={"queued"})
         return active_count >= self.max_parallelism or queue_count == 0
 
     def _desired_queue_threshold(self) -> int:
+        # Continuous mode maintains only enough queued work to fill open slots.
         if not self.continuous:
             return self.ready_queue_threshold
         active_count = self.repository.count_trials(self.track.track_id, statuses=ACTIVE_STATUSES)
         return max(0, self.max_parallelism - active_count)
 
     def _ensure_dataset_manifest(self):
+        # Verify the dataset once and reuse the manifest for every generation attempt.
         if self._dataset_manifest is None:
             self._dataset_manifest = self.dataset_manager.verify(self.track.dataset_id)
         return self._dataset_manifest
@@ -204,6 +223,7 @@ class TrackController:
             attempts_to_schedule: list[tuple[int, int, int]] = []
             started_payload: dict[str, Any] | None = None
             with self._condition:
+                # Start a fresh fill cycle whenever the ready queue falls below target.
                 if self._fill_cycle is None:
                     queue_count = self.repository.count_trials(self.track.track_id, statuses={"queued"})
                     if self.continuous:
@@ -231,6 +251,7 @@ class TrackController:
                             attempts_to_schedule.append((slot_index, self._generation_index, 0))
                             self._generation_index += 1
                 elif self._deferred_retries:
+                    # Release deferred retries only after earlier attempts have cleared.
                     next_retry_count = min(retry[2] for retry in self._deferred_retries)
                     if not any(
                         pending_attempt.duplicate_retry_count < next_retry_count
@@ -247,12 +268,15 @@ class TrackController:
                             if retry[2] != next_retry_count
                         ]
                 if not attempts_to_schedule:
+                    # Sleep until queue state changes or a retry becomes eligible.
                     self._condition.wait(timeout=self.wait_interval_sec)
                     continue
 
+            # Announce the fill cycle before any provider requests are submitted.
             if started_payload is not None:
                 _emit(self.reporter, "queue_fill_started", **started_payload)
 
+            # Schedule each generation attempt against the verified dataset manifest.
             dataset_manifest = self._ensure_dataset_manifest()
             sampling_settings = self.track.policy_json.get("sampling_settings", {})
             scheduled_any = False
@@ -282,6 +306,7 @@ class TrackController:
                     in_flight=self._pending_generation_count(),
                 )
 
+            # Close the cycle immediately when no context produced a runnable attempt.
             if not scheduled_any:
                 stopped_payload = self._finish_fill_cycle_if_ready(force=True)
                 if stopped_payload is not None:
@@ -290,10 +315,13 @@ class TrackController:
     def _generation_completion_loop(self) -> None:
         while not self._stop_event.is_set():
             with self._condition:
+                # Wait until at least one generation future is outstanding.
                 if not self._pending_generations:
                     self._condition.wait(timeout=self.wait_interval_sec)
                     continue
                 pending_futures = tuple(self._pending_generations)
+
+            # Process completed futures as they finish without blocking the whole loop.
             done, _ = wait(
                 pending_futures,
                 timeout=self.wait_interval_sec,
@@ -306,6 +334,8 @@ class TrackController:
         while not self._stop_event.is_set():
             should_wait = False
             reserved = []
+
+            # Stop dispatching entirely when the controller has no launch capacity.
             if self.max_parallelism <= 0:
                 should_wait = True
             else:
@@ -316,6 +346,7 @@ class TrackController:
                 if not has_dispatch_capacity or not has_queued_trials:
                     should_wait = True
                 else:
+                    # Mark dispatch as active while reserving trials for launch.
                     with self._condition:
                         self._dispatch_in_progress = True
                         self._condition.notify_all()
@@ -326,12 +357,14 @@ class TrackController:
                         limit=self.max_parallelism,
                     )
             if should_wait or not reserved:
+                # Sleep until queue state changes when there is nothing to launch.
                 with self._condition:
                     self._dispatch_in_progress = False
                     self._condition.wait(timeout=self.wait_interval_sec)
                     self._condition.notify_all()
                 continue
 
+            # Launch every reserved trial on the launch executor.
             _emit(
                 self.reporter,
                 "launch_batch_started",
@@ -350,6 +383,8 @@ class TrackController:
                     self._launch_futures[future] = trial
                     self._condition.notify_all()
                 future.add_done_callback(self._on_launch_complete)
+
+            # Clear the dispatch-in-progress flag once the whole batch is submitted.
             with self._condition:
                 self._dispatch_in_progress = False
                 self._condition.notify_all()
@@ -359,6 +394,7 @@ class TrackController:
             self._run_sweep(emit_always=False)
 
     def _run_sweep(self, *, emit_always: bool) -> None:
+        # Requeue expired dispatches before checking for stale active trials.
         requeued, stale_dispatch = self.repository.sweep_expired_dispatches(
             track_id=self.track.track_id,
             max_dispatch_retries=int(self.track.policy_json["max_dispatch_retries"]),
@@ -369,6 +405,8 @@ class TrackController:
         )
         if stale_active:
             self._cancel_stale_modal_runs(stale_active)
+
+        # Persist the sweep results in memory before emitting a summary event.
         stale_trial_ids = stale_dispatch + stale_active
         if requeued or stale_trial_ids:
             with self._condition:
@@ -384,6 +422,7 @@ class TrackController:
             )
 
     def _cancel_stale_modal_runs(self, stale_trial_ids: list[str]) -> None:
+        # Attempt remote cancellation only for stale trials launched through Modal.
         cancel_run = getattr(self.launcher, "cancel_run", None)
         for trial_id in stale_trial_ids:
             trial = self.repository.get_trial(trial_id)
@@ -393,6 +432,7 @@ class TrackController:
             if launcher_metadata.get("kind") != "modal":
                 continue
 
+            # Record cancellation metadata even when the launcher cannot cancel remotely.
             cancel_metadata = {"cancel_attempted_at": now_utc().isoformat()}
             run_id = launcher_metadata.get("run_id")
             if not isinstance(run_id, str) or not run_id:
@@ -400,6 +440,7 @@ class TrackController:
                 self.repository.record_trial_launcher_metadata(trial_id, cancel_metadata)
                 continue
 
+            # Request cancellation and persist the outcome for later inspection.
             try:
                 if not callable(cancel_run):
                     raise RuntimeError("Active launcher does not support remote cancellation.")
@@ -416,6 +457,7 @@ class TrackController:
             return len(self._pending_generations)
 
     def _on_generation_complete(self, future: Future[Any]) -> None:
+        # Resolve the completed future under the controller lock first.
         with self._condition:
             attempt = self._pending_generations.pop(future, None)
             cycle = self._fill_cycle
@@ -423,6 +465,7 @@ class TrackController:
         if attempt is None or cycle is None:
             return
 
+        # Track whether this slot should be retried or should stop the fill cycle.
         retry_needed = False
         stopped_payload: dict[str, Any] | None = None
         next_retry: tuple[int, int, int] | None = None
@@ -430,6 +473,7 @@ class TrackController:
         try:
             raw_generated = future.result()
         except Exception as exc:
+            # Persist generator exceptions as failed generation-attempt trials.
             with self._condition:
                 cycle.failures += 1
                 self._result = self.generation.record_generation_attempt_failure(
@@ -467,9 +511,11 @@ class TrackController:
                 in_flight=in_flight,
             )
         else:
+            # Normalize provider output before deciding how to record the attempt.
             generated = self.generation.normalize_generation_result(raw_generated)
             if not generated.succeeded:
                 error_info = dict(generated.error_info or {})
+                # Record provider-level failures directly from the returned error payload.
                 with self._condition:
                     cycle.failures += 1
                     self._result = self.generation.record_generation_attempt_failure(
@@ -503,11 +549,13 @@ class TrackController:
             else:
                 assert generated.source is not None
                 try:
+                    # Materialize the final candidate source against the parent program.
                     candidate_source = self.generation.materialize_candidate_source(
                         attempt.context_trials[0].source,
                         generated.source,
                     )
                 except Exception as exc:
+                    # Convert invalid mutations into failed generation attempts.
                     with self._condition:
                         cycle.failures += 1
                         self._result = self.generation.record_generation_attempt_failure(
@@ -539,6 +587,7 @@ class TrackController:
                         in_flight=in_flight,
                     )
                 else:
+                    # Let the generation backend decide whether the candidate was accepted.
                     generation_outcome = self.generation.accept_generated_candidate(
                         track_id=self.track.track_id,
                         result=self._result,
@@ -547,6 +596,7 @@ class TrackController:
                         candidate_source=candidate_source,
                     )
                     with self._condition:
+                        # Count accepted slots separately from duplicate or failed attempts.
                         if generation_outcome["event"] == "generation_accepted":
                             cycle.completed_slots.add(attempt.slot_index)
                             self._condition.notify_all()
@@ -573,6 +623,7 @@ class TrackController:
                     _emit(self.reporter, generation_outcome["event"], **payload)
                     retry_needed = generation_outcome["event"] != "generation_accepted"
 
+        # Either queue the retry or finish the fill cycle once this attempt is settled.
         with self._condition:
             cycle = self._fill_cycle
             has_cycle = cycle is not None
@@ -594,16 +645,19 @@ class TrackController:
                 self._deferred_retries.append(next_retry)
             self._condition.notify_all()
 
+        # Emit the final fill-cycle event outside the controller lock.
         if stopped_payload is not None:
             _emit(self.reporter, stopped_payload["event"], **stopped_payload["payload"])
 
     def _finish_fill_cycle_if_ready(self, *, force: bool = False) -> dict[str, Any] | None:
+        # Ignore finish requests when there is no active fill cycle.
         cycle = self._fill_cycle
         if cycle is None:
             return None
         if self._pending_generations and not force:
             return None
 
+        # Wait until all slots are accepted or the failure budget is exhausted.
         completed_slots = len(cycle.completed_slots)
         missing_completions = completed_slots < cycle.requested_generations
         has_failure_budget = cycle.failures < cycle.max_failures
@@ -618,6 +672,8 @@ class TrackController:
             "failures": cycle.failures,
             "max_failures": cycle.max_failures,
         }
+
+        # Clear the active cycle before reporting the terminal fill-cycle state.
         self._fill_cycle = None
         if not self.continuous:
             self._one_shot_generation_finished = True
@@ -625,6 +681,7 @@ class TrackController:
         return {"event": event, "payload": payload}
 
     def _on_launch_complete(self, future: Future[Any]) -> None:
+        # Remove the completed launch future before handling its result.
         with self._condition:
             trial = self._launch_futures.pop(future, None)
             if trial is not None:
@@ -637,6 +694,7 @@ class TrackController:
             try:
                 launch_metadata = future.result()
             except Exception as exc:
+                # Record launcher failures without interrupting the controller loop.
                 with self._condition:
                     self._result.errors.append(f"launch_failed:{trial.trial_id}:{exc}")
                     self._condition.notify_all()
@@ -648,6 +706,7 @@ class TrackController:
                 )
                 return
 
+            # Persist launcher metadata and mark the trial as launched.
             if launch_metadata:
                 self.repository.record_trial_launcher_metadata(trial.trial_id, launch_metadata)
             with self._condition:
@@ -660,6 +719,7 @@ class TrackController:
                 launch_metadata=launch_metadata or {},
             )
         finally:
+            # Always release the launch-callback slot even on errors.
             with self._condition:
                 self._launch_callbacks_in_progress -= 1
                 self._condition.notify_all()
