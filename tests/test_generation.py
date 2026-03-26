@@ -229,6 +229,8 @@ def test_openrouter_generation_uses_model_pool_round_robin(monkeypatch):
     first_prompt = payloads[0]["messages"][1]["content"]
     assert "# EVOLVE-BLOCK-START" in system_prompt
     assert "# EVOLVE-BLOCK-END" in system_prompt
+    assert "# EVOLVE-SECTION-START:" in system_prompt
+    assert "# EVOLVE-SECTION-END:" in system_prompt
     assert (
         "Never wrap the response in triple backticks or fenced code blocks"
         in system_prompt
@@ -247,6 +249,7 @@ def test_openrouter_generation_uses_model_pool_round_robin(monkeypatch):
     assert (
         "SEARCH must match exactly one location in the CURRENT PROGRAM" in system_prompt
     )
+    assert "Never modify the EVOLVE-SECTION marker lines themselves" in system_prompt
     assert not first_prompt.lstrip().startswith("{")
     assert "OBJECTIVE:" in first_prompt
     assert "TASK CONTEXT:" in first_prompt
@@ -338,6 +341,8 @@ def test_openrouter_generation_prompt_includes_expected_sections(monkeypatch):
     prompt = payloads[0]["messages"][1]["content"]
     assert "# EVOLVE-BLOCK-START" in system_prompt
     assert "# EVOLVE-BLOCK-END" in system_prompt
+    assert "# EVOLVE-SECTION-START:" in system_prompt
+    assert "# EVOLVE-SECTION-END:" in system_prompt
     assert "OBJECTIVE:" in prompt
     assert "TASK CONTEXT:" in prompt
     assert "REFERENCE PROGRAMS:" in prompt
@@ -616,6 +621,15 @@ def forward(self, x):
     assert_only_evolve_blocks_changed(source, updated)
 
 
+def test_baseline_template_uses_one_outer_evolve_block_with_tagged_sections():
+    source = build_baseline_train_script()
+
+    assert source.count("# EVOLVE-BLOCK-START") == 1
+    assert source.count("# EVOLVE-BLOCK-END") == 1
+    assert source.count("# EVOLVE-SECTION-START:") == 5
+    assert source.count("# EVOLVE-SECTION-END:") == 5
+
+
 def test_build_candidate_train_script_replaces_only_data_block():
     source = build_baseline_train_script()
     source_payloads = extract_evolve_block_payloads(source)
@@ -699,6 +713,18 @@ def test_assert_only_evolve_blocks_changed_rejects_immutable_changes():
 
     # Reject any change that touches immutable text outside evolve blocks.
     with pytest.raises(EvolveBlockError, match="immutable text"):
+        assert_only_evolve_blocks_changed(source, invalid)
+
+
+def test_assert_only_evolve_blocks_changed_rejects_section_layout_changes():
+    source = build_baseline_train_script()
+    invalid = source.replace(
+        "# EVOLVE-SECTION-START: MODEL",
+        "# EVOLVE-SECTION-START: BROKEN",
+        1,
+    )
+
+    with pytest.raises(EvolveBlockError, match="tagged evolve section layout"):
         assert_only_evolve_blocks_changed(source, invalid)
 
 

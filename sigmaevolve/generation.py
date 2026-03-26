@@ -37,9 +37,21 @@ def build_baseline_train_script() -> str:
 
 EVOLVE_BLOCK_START = "# EVOLVE-BLOCK-START"
 EVOLVE_BLOCK_END = "# EVOLVE-BLOCK-END"
+EVOLVE_SECTION_START = "# EVOLVE-SECTION-START: "
+EVOLVE_SECTION_END = "# EVOLVE-SECTION-END: "
+EVOLVE_SECTION_NAMES = (
+    "CONFIG",
+    "MODEL",
+    "DATA",
+    "OPTIMIZATION",
+    "TRAINING_POLICY",
+)
 
 _EVOLVE_BLOCK_PATTERN = re.compile(
     rf"(?ms)^{re.escape(EVOLVE_BLOCK_START)}\n(.*?)^{re.escape(EVOLVE_BLOCK_END)}\n?"
+)
+_EVOLVE_SECTION_PATTERN = re.compile(
+    rf"(?ms)^{re.escape(EVOLVE_SECTION_START)}([A-Z_]+)\n(.*?)^{re.escape(EVOLVE_SECTION_END)}\1\n?"
 )
 
 
@@ -55,7 +67,12 @@ class SearchReplaceBlock:
 
 def _contains_evolve_block_marker_line(text: str) -> bool:
     for line in text.splitlines():
-        if line.strip() in {EVOLVE_BLOCK_START, EVOLVE_BLOCK_END}:
+        stripped_line = line.strip()
+        if stripped_line in {EVOLVE_BLOCK_START, EVOLVE_BLOCK_END}:
+            return True
+        if stripped_line.startswith(EVOLVE_SECTION_START) or stripped_line.startswith(
+            EVOLVE_SECTION_END
+        ):
             return True
     return False
 
@@ -131,27 +148,77 @@ def split_evolve_blocks(source: str) -> tuple[list[str], list[str]]:
     return immutable_parts, block_payloads
 
 
+def _require_expected_evolve_sections(section_names: list[str]) -> None:
+    if tuple(section_names) != EVOLVE_SECTION_NAMES:
+        raise EvolveBlockError(
+            "source must contain the expected tagged evolve sections"
+        )
+
+
+def _split_tagged_evolve_sections(
+    block_payload: str,
+) -> tuple[list[str], list[str], list[str]]:
+    normalized = normalize_source(block_payload)
+    matches = list(_EVOLVE_SECTION_PATTERN.finditer(normalized))
+    if not matches:
+        raise EvolveBlockError("source must contain tagged evolve sections")
+
+    immutable_parts: list[str] = []
+    section_names: list[str] = []
+    section_payloads: list[str] = []
+    cursor = 0
+    for match in matches:
+        payload_start, payload_end = match.span(2)
+        immutable_parts.append(normalized[cursor:payload_start])
+        section_names.append(match.group(1))
+        section_payloads.append(match.group(2))
+        cursor = payload_end
+    immutable_parts.append(normalized[cursor:])
+    return immutable_parts, section_names, section_payloads
+
+
+def _merge_payloads(immutable_parts: list[str], payloads: list[str]) -> str:
+    merged: list[str] = []
+    for immutable_part, payload in zip(immutable_parts, payloads):
+        merged.append(immutable_part)
+        merged.append(payload)
+    merged.append(immutable_parts[-1])
+    return "".join(merged)
+
+
+def _extract_outer_evolve_payload(source: str) -> tuple[list[str], str]:
+    immutable_parts, block_payloads = split_evolve_blocks(source)
+    if len(block_payloads) != 1:
+        raise EvolveBlockError("source must contain exactly one outer evolve block")
+    return immutable_parts, block_payloads[0]
+
+
 def extract_evolve_block_payloads(source: str) -> list[str]:
-    _, block_payloads = split_evolve_blocks(source)
-    return block_payloads
+    _, outer_payload = _extract_outer_evolve_payload(source)
+    _, section_names, section_payloads = _split_tagged_evolve_sections(outer_payload)
+    _require_expected_evolve_sections(section_names)
+    return section_payloads
 
 
 def replace_evolve_block_payloads(
     template_source: str, block_payloads: list[str]
 ) -> str:
-    immutable_parts, current_payloads = split_evolve_blocks(template_source)
+    outer_immutable_parts, outer_payload = _extract_outer_evolve_payload(
+        template_source
+    )
+    section_immutable_parts, section_names, current_payloads = (
+        _split_tagged_evolve_sections(outer_payload)
+    )
+    _require_expected_evolve_sections(section_names)
     if len(block_payloads) != len(current_payloads):
         raise EvolveBlockError(
             f"expected {len(current_payloads)} evolve block payloads, "
             f"received {len(block_payloads)}"
         )
-
-    merged: list[str] = []
-    for immutable_part, block_payload in zip(immutable_parts, block_payloads):
-        merged.append(immutable_part)
-        merged.append(block_payload)
-    merged.append(immutable_parts[-1])
-    return normalize_source("".join(merged))
+    updated_outer_payload = _merge_payloads(section_immutable_parts, block_payloads)
+    return normalize_source(
+        _merge_payloads(outer_immutable_parts, [updated_outer_payload])
+    )
 
 
 def parse_search_replace_blocks(response_text: str) -> list[SearchReplaceBlock]:
@@ -277,6 +344,24 @@ def assert_only_evolve_blocks_changed(
         )
     if len(parent_payloads) != len(candidate_payloads):
         raise EvolveBlockError("candidate changed the number of evolve blocks")
+    try:
+        parent_section_parts, parent_section_names, parent_section_payloads = (
+            _split_tagged_evolve_sections(parent_payloads[0])
+        )
+        candidate_section_parts, candidate_section_names, candidate_section_payloads = (
+            _split_tagged_evolve_sections(candidate_payloads[0])
+        )
+    except EvolveBlockError as exc:
+        raise EvolveBlockError(
+            "candidate changed the tagged evolve section layout"
+        ) from exc
+
+    if (
+        len(parent_section_payloads) != len(candidate_section_payloads)
+        or tuple(parent_section_names) != tuple(candidate_section_names)
+        or parent_section_parts != candidate_section_parts
+    ):
+        raise EvolveBlockError("candidate changed the tagged evolve section layout")
 
 
 class GenerationBackend(Protocol):
