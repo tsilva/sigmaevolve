@@ -4,7 +4,6 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-
 DEFAULT_ENV_PATH = Path.home() / ".config" / "sigmaevolve" / ".env"
 DEFAULT_DATASET_ROOT = "./artifacts/datasets"
 
@@ -67,7 +66,7 @@ def load_env_file(path: str | Path | None = None, *, override: bool = False) -> 
 def resolve_runtime_config() -> RuntimeConfig:
 
     # Resolve Modal defaults lazily so env loading does not participate in import cycles.
-    from sigmaevolve.modal import (
+    from sigmaevolve.modal import (  # noqa: PLC0415
         DEFAULT_MODAL_APP_NAME,
         DEFAULT_MODAL_DATASET_MOUNT,
         DEFAULT_MODAL_DATASET_VOLUME,

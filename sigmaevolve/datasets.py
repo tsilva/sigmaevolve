@@ -12,8 +12,7 @@ from sigmaevolve.core import DatasetManifest, DatasetRecord
 
 
 class DatasetProvider(Protocol):
-    def materialize(self, dataset_id: str, output_dir: Path) -> DatasetManifest:
-        ...
+    def materialize(self, dataset_id: str, output_dir: Path) -> DatasetManifest: ...
 
 
 def _sha256_file(path: Path) -> str:
@@ -31,7 +30,9 @@ def _sha256_file(path: Path) -> str:
 def _fingerprint(dataset_id: str, checksums: dict[str, str]) -> str:
 
     # Fingerprint the dataset id together with the artifact checksum map.
-    payload = json.dumps({"dataset_id": dataset_id, "checksums": checksums}, sort_keys=True)
+    payload = json.dumps(
+        {"dataset_id": dataset_id, "checksums": checksums}, sort_keys=True
+    )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
@@ -131,7 +132,7 @@ class TorchvisionClassificationProvider:
 
         # Import torchvision lazily so non-torchvision workflows still work.
         try:
-            from torchvision import datasets
+            from torchvision import datasets  # noqa: PLC0415
         except ImportError as exc:
             raise RuntimeError(
                 "torchvision is required to materialize torchvision datasets."
@@ -139,7 +140,9 @@ class TorchvisionClassificationProvider:
 
         # Download the raw dataset and resolve the torchvision class to use.
         output_dir.mkdir(parents=True, exist_ok=True)
-        dataset_cls = {"mnist": datasets.MNIST, "fashion_mnist": datasets.FashionMNIST}[self.dataset_name]
+        dataset_cls = {"mnist": datasets.MNIST, "fashion_mnist": datasets.FashionMNIST}[
+            self.dataset_name
+        ]
 
         train_ds = dataset_cls(root=output_dir / "downloads", train=True, download=True)
         test_ds = dataset_cls(root=output_dir / "downloads", train=False, download=True)
@@ -173,7 +176,9 @@ class TorchvisionClassificationProvider:
 
 
 class DatasetManager:
-    def __init__(self, dataset_root: Path, providers: dict[str, DatasetProvider]) -> None:
+    def __init__(
+        self, dataset_root: Path, providers: dict[str, DatasetProvider]
+    ) -> None:
         self.dataset_root = dataset_root
         self.providers = providers
 
@@ -207,7 +212,9 @@ class DatasetManager:
 
         # Fail fast when the manifest has not been prepared yet.
         if not manifest_path.exists():
-            raise FileNotFoundError(f"Dataset manifest not found for {dataset_id!r}: {manifest_path}")
+            raise FileNotFoundError(
+                f"Dataset manifest not found for {dataset_id!r}: {manifest_path}"
+            )
         raw = json.loads(manifest_path.read_text())
         manifest = DatasetManifest.from_dict(raw)
         base_dir = manifest_path.parent
@@ -217,8 +224,12 @@ class DatasetManager:
             dataset_id=manifest.dataset_id,
             root_dir=str(base_dir),
             train_split_path=str(base_dir / Path(manifest.train_split_path).name),
-            validation_split_path=str(base_dir / Path(manifest.validation_split_path).name),
-            validation_labels_path=str(base_dir / Path(manifest.validation_labels_path).name),
+            validation_split_path=str(
+                base_dir / Path(manifest.validation_split_path).name
+            ),
+            validation_labels_path=str(
+                base_dir / Path(manifest.validation_labels_path).name
+            ),
             test_split_path=str(base_dir / Path(manifest.test_split_path).name),
             test_labels_path=str(base_dir / Path(manifest.test_labels_path).name),
             split_sizes=manifest.split_sizes,
@@ -240,16 +251,19 @@ class DatasetManager:
             "test_labels": Path(manifest.test_labels_path),
         }
         for key, path in paths.items():
-
             # Stop immediately if an expected artifact is missing from disk.
             if not path.exists():
-                raise FileNotFoundError(f"Dataset artifact missing for {dataset_id!r}: {path}")
+                raise FileNotFoundError(
+                    f"Dataset artifact missing for {dataset_id!r}: {path}"
+                )
             checksum = _sha256_file(path)
             expected = manifest.checksums[key]
 
             # Flag checksum drift before returning the manifest to callers.
             if checksum != expected:
-                raise ValueError(f"Checksum mismatch for {key} in {dataset_id!r}: {checksum} != {expected}")
+                raise ValueError(
+                    f"Checksum mismatch for {key} in {dataset_id!r}: {checksum} != {expected}"
+                )
 
         # Recompute the manifest fingerprint after the artifact checks succeed.
         fingerprint = _fingerprint(dataset_id, manifest.checksums)

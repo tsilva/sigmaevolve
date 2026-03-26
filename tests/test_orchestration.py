@@ -25,7 +25,9 @@ def _prepare_repo_dataset(
     dataset_manager.prepare(dataset_id)
 
 
-def _create_track(system, policy_json: dict | None = None, dataset_id: str = "mnist:v1"):
+def _create_track(
+    system, policy_json: dict | None = None, dataset_id: str = "mnist:v1"
+):
     return system.create_track(dataset_id, policy_json or {})
 
 
@@ -810,7 +812,11 @@ def test_reconcile_rejects_mutations_outside_evolve_blocks(repository, dataset_m
         for trial in failed_trials
         if trial is not None
     )
-    assert all(trial.error_json["reason"] == "candidate_materialization_failed" for trial in failed_trials if trial is not None)
+    assert all(
+        trial.error_json["reason"] == "candidate_materialization_failed"
+        for trial in failed_trials
+        if trial is not None
+    )
 
 
 def test_reconcile_applies_search_replace_response_before_queueing(
@@ -935,7 +941,11 @@ IMMUTABLE_BREAK = True
         for trial in failed_trials
         if trial is not None
     )
-    assert all(trial.error_json["reason"] == "candidate_materialization_failed" for trial in failed_trials if trial is not None)
+    assert all(
+        trial.error_json["reason"] == "candidate_materialization_failed"
+        for trial in failed_trials
+        if trial is not None
+    )
 
 
 def test_reconcile_persists_generation_failed_trial_when_backend_returns_error(

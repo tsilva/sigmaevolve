@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import hashlib
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from typing import Any
+from uuid import uuid4
 
 
 def normalize_source(source: str) -> str:
@@ -18,9 +22,6 @@ def normalize_source(source: str) -> str:
 def compute_script_hash(source: str) -> str:
     normalized = normalize_source(source)
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
-
-
-from typing import Any
 
 
 def compute_classification_metrics(
@@ -65,12 +66,6 @@ def compute_score(
 
 
 DEFAULT_TRIAL_HARD_TIMEOUT_SEC = 60 * 60
-
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from typing import Any
-from uuid import uuid4
-
 
 TRIAL_STATUS_QUEUED = "queued"
 TRIAL_STATUS_DISPATCHING = "dispatching"
@@ -179,7 +174,9 @@ def _reject_removed_policy_fields(raw: dict[str, Any]) -> None:
     generation_backend = raw.get("generation_backend")
     has_generation_backend = isinstance(generation_backend, dict)
     if has_generation_backend and "backend" in generation_backend:
-        raise ValueError("Track policy generation_backend.backend is no longer supported.")
+        raise ValueError(
+            "Track policy generation_backend.backend is no longer supported."
+        )
 
 
 @dataclass(frozen=True)

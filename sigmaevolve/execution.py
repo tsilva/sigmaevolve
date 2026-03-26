@@ -30,7 +30,6 @@ from sigmaevolve.core import (
 )
 from sigmaevolve.env import load_env_file
 
-
 WANDB_ENV_KEYS = (
     "WANDB_API_KEY",
     "WANDB_PROJECT",
@@ -63,7 +62,9 @@ def _import_wandb():
     try:
         return importlib.import_module("wandb")
     except ImportError as exc:
-        raise RuntimeError("Weights & Biases support requires the 'wandb' package.") from exc
+        raise RuntimeError(
+            "Weights & Biases support requires the 'wandb' package."
+        ) from exc
 
 
 def _env_first(*keys: str, default: str | None = None) -> str | None:
@@ -111,13 +112,17 @@ def resolve_wandb_settings() -> WandbSettings:
 
     # Reject local-only WandB modes that would block remote syncing.
     if mode is not None and mode.lower() in _DISALLOWED_WANDB_MODES:
-        raise RuntimeError("WANDB_MODE must allow remote sync; offline and disabled modes are not supported.")
+        raise RuntimeError(
+            "WANDB_MODE must allow remote sync; offline and disabled modes are not supported."
+        )
 
     api_key = _env_first("WANDB_API_KEY")
 
     # Require an API key before attempting to initialize the run logger.
     if api_key is None:
-        raise RuntimeError("WANDB_API_KEY is required to log SigmaEvolve runs to Weights & Biases.")
+        raise RuntimeError(
+            "WANDB_API_KEY is required to log SigmaEvolve runs to Weights & Biases."
+        )
 
     project = _env_first("WANDB_PROJECT", default="sigmaevolve") or "sigmaevolve"
     entity = _env_first("WANDB_ENTITY")
@@ -366,7 +371,9 @@ def select_last_completed_eval(artifacts: list[dict[str, Any]]) -> dict[str, Any
     return max(artifacts, key=_last_completed_eval_sort_key)
 
 
-def apply_debug_metrics(metrics: dict[str, Any], debug_payload: dict[str, Any] | None) -> None:
+def apply_debug_metrics(
+    metrics: dict[str, Any], debug_payload: dict[str, Any] | None
+) -> None:
     # Copy through the debug-only metrics that the runner reported explicitly.
     if not debug_payload:
         return
@@ -398,19 +405,27 @@ def build_final_metrics_payload(
 
     # Measure the gap since the last completed eval when a timestamp is available.
     if last_completed_eval_sec is not None:
-        time_since_last_eval_sec = max(0.0, float(process_elapsed_sec) - float(last_completed_eval_sec))
+        time_since_last_eval_sec = max(
+            0.0, float(process_elapsed_sec) - float(last_completed_eval_sec)
+        )
 
     last_phase = None
 
     # Preserve the last reported phase for downstream timeout classification.
     if progress_payload:
-        last_phase = progress_payload.get("phase") or progress_payload.get("current_phase")
+        last_phase = progress_payload.get("phase") or progress_payload.get(
+            "current_phase"
+        )
 
     # Flag timeouts that ended with a measurable amount of unevaluated work.
     is_timed_out = timed_out
-    has_last_eval_gap = time_since_last_eval_sec is not None and time_since_last_eval_sec > 0.05
+    has_last_eval_gap = (
+        time_since_last_eval_sec is not None and time_since_last_eval_sec > 0.05
+    )
     is_training_phase = last_phase in {None, "train"}
-    had_unscored_work_at_timeout = bool(is_timed_out and has_last_eval_gap and is_training_phase)
+    had_unscored_work_at_timeout = bool(
+        is_timed_out and has_last_eval_gap and is_training_phase
+    )
 
     # Merge the best evaluation metrics with run-level diagnostic fields.
     best_metrics = dict(best_artifact["metrics"])
@@ -454,26 +469,38 @@ def build_active_metrics_payload(
         metrics["last_phase"] = last_phase
 
     progress_eval_index = coerce_optional_scalar(progress.get("eval_index"), int)
-    debug_eval_count = coerce_optional_scalar((debug_payload or {}).get("eval_count"), int)
+    debug_eval_count = coerce_optional_scalar(
+        (debug_payload or {}).get("eval_count"), int
+    )
     eval_count = max(len(artifacts), progress_eval_index or 0, debug_eval_count or 0)
     metrics["eval_count"] = eval_count
 
     # Reconcile runner progress with the most recent persisted evaluation artifact.
-    last_completed_eval_sec = coerce_optional_scalar(progress.get("last_completed_eval_sec"), float)
+    last_completed_eval_sec = coerce_optional_scalar(
+        progress.get("last_completed_eval_sec"), float
+    )
     last_completed_eval_index = progress_eval_index
 
     # Use persisted artifacts when they exist because they carry the authoritative metrics.
     if artifacts:
         best_artifact = select_best_eval(artifacts)
         last_artifact = select_last_completed_eval(artifacts)
-        last_completed_eval_sec = coerce_optional_scalar(last_artifact.get("elapsed_time_sec"), float)
-        last_completed_eval_index = coerce_optional_scalar(last_artifact.get("eval_index"), int)
+        last_completed_eval_sec = coerce_optional_scalar(
+            last_artifact.get("elapsed_time_sec"), float
+        )
+        last_completed_eval_index = coerce_optional_scalar(
+            last_artifact.get("eval_index"), int
+        )
         best_metrics = dict(best_artifact["metrics"])
         metrics.update(best_metrics)
         best_metrics_payload = {
             "best_accuracy": best_metrics["accuracy"],
-            "time_to_best_eval_sec": coerce_optional_scalar(best_artifact.get("elapsed_time_sec"), float),
-            "best_eval_index": coerce_optional_scalar(best_artifact.get("eval_index"), int),
+            "time_to_best_eval_sec": coerce_optional_scalar(
+                best_artifact.get("elapsed_time_sec"), float
+            ),
+            "best_eval_index": coerce_optional_scalar(
+                best_artifact.get("eval_index"), int
+            ),
             "best_eval_epoch": coerce_optional_scalar(best_artifact.get("epoch"), int),
         }
         metrics.update(best_metrics_payload)
@@ -524,7 +551,9 @@ def _stream_pipe(pipe, sink, chunks: list[str]) -> None:
         pipe.close()
 
 
-def _run_streamed_subprocess(command: list[str], timeout: float) -> _StreamedProcessResult:
+def _run_streamed_subprocess(
+    command: list[str], timeout: float
+) -> _StreamedProcessResult:
     # Launch the child process with unbuffered Python output for live streaming.
     child_env = os.environ.copy()
     child_env["PYTHONUNBUFFERED"] = "1"
@@ -603,7 +632,9 @@ class RunnerService:
             # Keep the active trial heartbeat alive until the stop event is set.
             while not stop_event.wait(interval_sec):
                 try:
-                    self.repository.heartbeat_trial(trial_id, runner_id, {"status": "alive"})
+                    self.repository.heartbeat_trial(
+                        trial_id, runner_id, {"status": "alive"}
+                    )
                 except Exception:
                     # Transient database disconnects should not permanently kill the
                     # heartbeat loop for a still-running worker.
@@ -629,7 +660,10 @@ class RunnerService:
             try:
                 dispose()
             except Exception:
-                logger.warning("Disposing repository engine after failure also failed.", exc_info=True)
+                logger.warning(
+                    "Disposing repository engine after failure also failed.",
+                    exc_info=True,
+                )
 
     def _read_json_object(self, path: Path) -> dict[str, Any] | None:
         # Return None for missing or malformed debug payloads.
@@ -666,7 +700,9 @@ class RunnerService:
     def _select_best_eval(self, artifacts: list[dict[str, Any]]) -> dict[str, Any]:
         return select_best_eval(artifacts)
 
-    def _select_last_completed_eval(self, artifacts: list[dict[str, Any]]) -> dict[str, Any]:
+    def _select_last_completed_eval(
+        self, artifacts: list[dict[str, Any]]
+    ) -> dict[str, Any]:
         return select_last_completed_eval(artifacts)
 
     def _build_metrics_payload(
@@ -690,8 +726,6 @@ class RunnerService:
         metrics: dict[str, Any],
         debug_payload: dict[str, Any] | None,
     ) -> None:
-        from sigmaevolve.execution_metrics import apply_debug_metrics
-
         apply_debug_metrics(metrics, debug_payload)
 
     def _build_active_metrics_payload(
@@ -727,7 +761,10 @@ class RunnerService:
                 labels_path=labels_path,
             )
         except Exception:
-            logger.warning("Active metrics scan failed; continuing without eval artifacts.", exc_info=True)
+            logger.warning(
+                "Active metrics scan failed; continuing without eval artifacts.",
+                exc_info=True,
+            )
 
         # Skip reporter updates until there is at least one source of metrics.
         if not progress_payload and not debug_payload and not artifacts:
@@ -768,7 +805,9 @@ class RunnerService:
             # Avoid redundant writes when the reporter sees the same payload twice.
             if metrics is None or metrics == last_metrics:
                 return last_metrics
-            self.repository.update_active_trial_metrics(trial_id=trial_id, runner_id=runner_id, metrics=metrics)
+            self.repository.update_active_trial_metrics(
+                trial_id=trial_id, runner_id=runner_id, metrics=metrics
+            )
             self._log_wandb_metrics(wandb_run_logger, metrics, state="active")
             return metrics
 
@@ -839,15 +878,22 @@ class RunnerService:
                 error_info=error_info,
             )
         except Exception:
-            logger.warning("W&B run finalization failed for trial %s.", trial_id, exc_info=True)
+            logger.warning(
+                "W&B run finalization failed for trial %s.", trial_id, exc_info=True
+            )
 
-    def run_reserved_trial(self, trial_id: str, dispatch_token: str, runner_id: str) -> None:
+    def run_reserved_trial(
+        self, trial_id: str, dispatch_token: str, runner_id: str
+    ) -> None:
         logger.info("Claiming reserved trial %s with runner %s.", trial_id, runner_id)
         trial = self.repository.claim_trial(trial_id, dispatch_token, runner_id)
 
         # Stop immediately when the reservation has already been lost to another runner.
         if trial is None:
-            logger.info("Skipping trial %s because the reservation could not be claimed.", trial_id)
+            logger.info(
+                "Skipping trial %s because the reservation could not be claimed.",
+                trial_id,
+            )
             return
         logger.info("Claimed trial %s on track %s.", trial.trial_id, trial.track_id)
         track = self.repository.get_track(trial.track_id)
@@ -858,9 +904,13 @@ class RunnerService:
         policy = track.policy_json
         manifest = self.dataset_manager.verify(track.dataset_id)
         load_env_file()
-        logger.info("Verified dataset %s for trial %s.", track.dataset_id, trial.trial_id)
+        logger.info(
+            "Verified dataset %s for trial %s.", track.dataset_id, trial.trial_id
+        )
         try:
-            with tempfile.TemporaryDirectory(prefix=f"sigmaevolve_{trial.trial_id}_") as temp_dir:
+            with tempfile.TemporaryDirectory(
+                prefix=f"sigmaevolve_{trial.trial_id}_"
+            ) as temp_dir:
                 temp_path = Path(temp_dir)
                 train_script_path = temp_path / "train.py"
                 config_path = temp_path / "run_config.json"
@@ -882,6 +932,7 @@ class RunnerService:
                     "dataset_metadata": manifest.metadata,
                 }
                 config_path.write_text(json.dumps(run_config_payload, sort_keys=True))
+
                 def finalize_outcome(
                     outcome_reason: str,
                     *,
@@ -896,7 +947,11 @@ class RunnerService:
                         error_info=error_info,
                         wandb_run_logger=wandb_run_logger,
                     )
-                    logger.info("Finalized trial %s with outcome=%s.", trial.trial_id, outcome_reason)
+                    logger.info(
+                        "Finalized trial %s with outcome=%s.",
+                        trial.trial_id,
+                        outcome_reason,
+                    )
 
                 try:
                     wandb_run_logger = WandbRunLogger(
@@ -918,7 +973,11 @@ class RunnerService:
                         },
                         wandb_run_logger=None,
                     )
-                    logger.info("Finalized trial %s with outcome=%s.", trial.trial_id, OUTCOME_CRASHED)
+                    logger.info(
+                        "Finalized trial %s with outcome=%s.",
+                        trial.trial_id,
+                        OUTCOME_CRASHED,
+                    )
                     return
                 heartbeat_stop, heartbeat_thread = self._start_heartbeat(
                     trial_id=trial.trial_id,
@@ -927,12 +986,22 @@ class RunnerService:
                 )
                 metrics_stop = threading.Event()
                 metrics_thread: threading.Thread | None = None
-                command = [self.python_executable, "-u", str(train_script_path), "--config", str(config_path)]
+                command = [
+                    self.python_executable,
+                    "-u",
+                    str(train_script_path),
+                    "--config",
+                    str(config_path),
+                ]
                 timed_out = False
                 stdout: str | None = None
                 stderr: str | None = None
                 started_at = time.monotonic()
-                logger.info("Starting child process for trial %s: %s", trial.trial_id, " ".join(command))
+                logger.info(
+                    "Starting child process for trial %s: %s",
+                    trial.trial_id,
+                    " ".join(command),
+                )
                 metrics_stop, metrics_thread = self._start_active_metrics_reporter(
                     trial_id=trial.trial_id,
                     runner_id=runner_id,
@@ -943,7 +1012,9 @@ class RunnerService:
                     started_at=started_at,
                     wandb_run_logger=wandb_run_logger,
                 )
-                completed = _run_streamed_subprocess(command, timeout=self.hard_timeout_sec)
+                completed = _run_streamed_subprocess(
+                    command, timeout=self.hard_timeout_sec
+                )
                 metrics_stop.set()
                 if metrics_thread is not None:
                     metrics_thread.join(timeout=1.0)
@@ -969,7 +1040,8 @@ class RunnerService:
                     # Preserve explicit contract failures as eval failures instead of crashes.
                     if failure_outcome == OUTCOME_EVAL_FAILED:
                         error_info = {
-                            "reason": (debug_payload or {}).get("failure_reason") or "train_script_contract_violation",
+                            "reason": (debug_payload or {}).get("failure_reason")
+                            or "train_script_contract_violation",
                             "detail": (debug_payload or {}).get("detail"),
                             "stdout": stdout,
                             "stderr": stderr,
@@ -1020,9 +1092,13 @@ class RunnerService:
 
                 # Handle the no-artifact case separately so timeout and missing-output cases stay distinct.
                 if not artifacts:
-                    outcome_reason = OUTCOME_TIMEOUT if timed_out else OUTCOME_EVAL_FAILED
+                    outcome_reason = (
+                        OUTCOME_TIMEOUT if timed_out else OUTCOME_EVAL_FAILED
+                    )
                     error_info: dict[str, Any] = {
-                        "reason": "completed_evals_missing" if timed_out else "predictions_missing",
+                        "reason": "completed_evals_missing"
+                        if timed_out
+                        else "predictions_missing",
                         "timed_out": timed_out,
                         "stdout": stdout,
                         "stderr": stderr,
@@ -1138,7 +1214,9 @@ def write_eval_atomic(
 
 
 def _load_strategy_module(strategy_path: Path) -> ModuleType:
-    spec = importlib.util.spec_from_file_location("sigmaevolve_candidate_strategy", strategy_path)
+    spec = importlib.util.spec_from_file_location(
+        "sigmaevolve_candidate_strategy", strategy_path
+    )
 
     # Reject incomplete module specs before trying to execute the candidate.
     if spec is None or spec.loader is None:
@@ -1166,7 +1244,9 @@ def load_strategy(strategy_path: Path) -> tuple[Any, Any, Any]:
 
     # Surface the missing entry points together so strategy authors can fix them in one pass.
     if missing:
-        raise StrategyContractError(f"Strategy is missing required callable exports: {', '.join(missing)}")
+        raise StrategyContractError(
+            f"Strategy is missing required callable exports: {', '.join(missing)}"
+        )
 
     return initialize, train_window, predict_validation
 
@@ -1178,8 +1258,10 @@ def _normalize_predictions(
     num_classes: int | None,
 ) -> np.ndarray:
     try:
-        import torch
-    except ImportError:  # pragma: no cover - torch is expected but keep loader tolerant.
+        import torch  # noqa: PLC0415
+    except (
+        ImportError
+    ):  # pragma: no cover - torch is expected but keep loader tolerant.
         torch = None  # type: ignore[assignment]
 
     if torch is not None and isinstance(raw_predictions, torch.Tensor):
@@ -1188,7 +1270,9 @@ def _normalize_predictions(
         array = np.asarray(raw_predictions)
 
     if array.ndim == 0:
-        raise StrategyContractError("predict_validation must return one prediction per validation example.")
+        raise StrategyContractError(
+            "predict_validation must return one prediction per validation example."
+        )
 
     if array.shape[0] != num_examples:
         raise StrategyContractError(
@@ -1196,7 +1280,6 @@ def _normalize_predictions(
         )
 
     if array.ndim == 1:
-
         # Accept 1D float outputs only for binary tasks where thresholding is meaningful.
         if np.issubdtype(array.dtype, np.floating):
             if num_classes == 2:
@@ -1225,7 +1308,7 @@ def _seed_everything(seed: int) -> str:
     random.seed(seed)
     np.random.seed(seed)
     try:
-        import torch
+        import torch  # noqa: PLC0415
     except ImportError:
         return "cpu"
 
@@ -1315,7 +1398,9 @@ def _run_harness(config: dict[str, Any]) -> int:
     validation_features = _read_split(config["validation_split_path"])
 
     # Validate the split shapes before entering the training loop.
-    if not isinstance(train_features, np.ndarray) or not isinstance(train_labels, np.ndarray):
+    if not isinstance(train_features, np.ndarray) or not isinstance(
+        train_labels, np.ndarray
+    ):
         raise RuntimeError("Training split is invalid.")
     if not isinstance(validation_features, np.ndarray):
         raise RuntimeError("Validation split is invalid.")
@@ -1382,7 +1467,6 @@ def _run_harness(config: dict[str, Any]) -> int:
             )
 
             train_window(train_ctx, state)
-            elapsed_after_train = time.monotonic() - start_time
 
             predict_ctx = _build_context(
                 train_features=train_features,
@@ -1408,7 +1492,9 @@ def _run_harness(config: dict[str, Any]) -> int:
             predictions = _normalize_predictions(
                 raw_predictions,
                 num_examples=int(validation_features.shape[0]),
-                num_classes=int(dataset_metadata["num_classes"]) if "num_classes" in dataset_metadata else None,
+                num_classes=int(dataset_metadata["num_classes"])
+                if "num_classes" in dataset_metadata
+                else None,
             )
             eval_index += 1
             elapsed_after_eval = time.monotonic() - start_time

@@ -13,16 +13,16 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from sigmaevolve.datasets import ArrayDatasetProvider, DatasetManager
-from sigmaevolve.execution import RunnerService
-from sigmaevolve.orchestration import EvolutionSystem
-from sigmaevolve.generation import (
+from sigmaevolve.datasets import ArrayDatasetProvider, DatasetManager  # noqa: E402
+from sigmaevolve.execution import RunnerService  # noqa: E402
+from sigmaevolve.generation import (  # noqa: E402
     FixedGenerationBackend,
     build_candidate_train_script,
     build_model_block,
 )
-from sigmaevolve.storage import SQLAlchemyRepository
-from tests.support import RecordingLauncherDouble
+from sigmaevolve.orchestration import EvolutionSystem  # noqa: E402
+from sigmaevolve.storage import SQLAlchemyRepository  # noqa: E402
+from tests.support import RecordingLauncherDouble  # noqa: E402
 
 
 @pytest.fixture
@@ -166,7 +166,9 @@ def forward(self, x):
     )
 
     # Assemble the service layer used by end-to-end tests.
-    runner_service = RunnerService(repository=repository, dataset_manager=dataset_manager)
+    runner_service = RunnerService(
+        repository=repository, dataset_manager=dataset_manager
+    )
     return EvolutionSystem(
         repository,
         dataset_manager,

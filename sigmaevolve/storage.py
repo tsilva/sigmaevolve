@@ -1,24 +1,22 @@
 from __future__ import annotations
 
-from contextlib import contextmanager
-from datetime import datetime
-from datetime import timedelta
 import json
+from contextlib import contextmanager
+from datetime import datetime, timedelta
 from typing import Any, Iterable
 
 import sqlalchemy as sa
 from sqlalchemy.engine import Connection, Engine
 
-from sigmaevolve.core import normalize_source
 from sigmaevolve.core import (
-    ERROR_OUTCOMES,
     ACTIVE_STATUSES,
+    ERROR_OUTCOMES,
     OUTCOME_DUPLICATE,
     OUTCOME_GENERATION_FAILED,
     OUTCOME_STALE,
     SUCCESS_OUTCOMES,
-    TERMINAL_STATUSES,
     TERMINAL_OUTCOMES,
+    TERMINAL_STATUSES,
     TRIAL_STATUS_ACTIVE,
     TRIAL_STATUS_DISPATCHING,
     TRIAL_STATUS_ERROR,
@@ -30,6 +28,7 @@ from sigmaevolve.core import (
     TrialSummary,
     compute_script_hash,
     make_id,
+    normalize_source,
     now_utc,
 )
 
@@ -46,7 +45,9 @@ ALLOWED_METRIC_KEYS = frozenset(
         "last_phase",
     }
 )
-ALLOWED_ERROR_KEYS = frozenset({"reason", "detail", "stderr", "returncode", "finish_reason"})
+ALLOWED_ERROR_KEYS = frozenset(
+    {"reason", "detail", "stderr", "returncode", "finish_reason"}
+)
 ALLOWED_LAUNCHER_KEYS = frozenset({"run_id", "run_url"})
 ALLOWED_WANDB_KEYS = frozenset({"project", "entity", "run_id", "run_name", "run_url"})
 
@@ -62,7 +63,9 @@ def normalize_database_url(database_url: str) -> str:
 
     # Default PostgreSQL connections to the psycopg driver when no driver is specified.
     if normalized_url.startswith("postgresql://") and "+psycopg" not in normalized_url:
-        normalized_url = "postgresql+psycopg://" + normalized_url[len("postgresql://") :]
+        normalized_url = (
+            "postgresql+psycopg://" + normalized_url[len("postgresql://") :]
+        )
     return normalized_url
 
 
@@ -79,7 +82,9 @@ trials_table = sa.Table(
     "trials",
     metadata,
     sa.Column("trial_id", sa.String(255), primary_key=True),
-    sa.Column("track_id", sa.String(255), sa.ForeignKey("tracks.track_id"), nullable=False),
+    sa.Column(
+        "track_id", sa.String(255), sa.ForeignKey("tracks.track_id"), nullable=False
+    ),
     sa.Column("source", sa.Text(), nullable=False),
     sa.Column("script_hash", sa.String(64), nullable=False),
     sa.Column("provenance_json", sa.JSON(), nullable=False),
@@ -98,7 +103,11 @@ trials_table = sa.Table(
     sa.UniqueConstraint("track_id", "script_hash", name="uq_trials_track_script_hash"),
 )
 
-sa.Index("ix_trials_track_created_at_desc", trials_table.c.track_id, trials_table.c.created_at.desc())
+sa.Index(
+    "ix_trials_track_created_at_desc",
+    trials_table.c.track_id,
+    trials_table.c.created_at.desc(),
+)
 sa.Index(
     "ix_trials_track_status_created_at_desc",
     trials_table.c.track_id,
@@ -143,12 +152,16 @@ def validate_trial_provenance(provenance_json: dict[str, Any]) -> dict[str, Any]
         raise ValueError("LLM-generated trials require provenance_json.model.")
     generation_config = payload.get("generation_config")
     if not isinstance(generation_config, dict):
-        raise ValueError("LLM-generated trials require provenance_json.generation_config.")
+        raise ValueError(
+            "LLM-generated trials require provenance_json.generation_config."
+        )
 
     # Require the prompt message history used to produce the generated candidate.
     request_messages = payload.get("request_messages")
     if not isinstance(request_messages, list) or not request_messages:
-        raise ValueError("LLM-generated trials require non-empty provenance_json.request_messages.")
+        raise ValueError(
+            "LLM-generated trials require non-empty provenance_json.request_messages."
+        )
     if not all(_is_prompt_message(entry) for entry in request_messages):
         raise ValueError(
             "LLM-generated trials require provenance_json.request_messages entries with string role and content."
@@ -157,7 +170,9 @@ def validate_trial_provenance(provenance_json: dict[str, Any]) -> dict[str, Any]
     # Require the track-context metadata that shaped the generation request.
     context_trial_ids = payload.get("context_trial_ids")
     if not isinstance(context_trial_ids, list):
-        raise ValueError("LLM-generated trials require provenance_json.context_trial_ids.")
+        raise ValueError(
+            "LLM-generated trials require provenance_json.context_trial_ids."
+        )
     candidate_kind = payload.get("candidate_kind")
     if not isinstance(candidate_kind, str) or not candidate_kind.strip():
         raise ValueError("LLM-generated trials require provenance_json.candidate_kind.")
@@ -209,7 +224,9 @@ def status_for_outcome_reason(outcome_reason: str) -> str:
     return TRIAL_STATUS_FINISHED
 
 
-def classify_error_type(outcome_reason: str, error_json: dict[str, Any] | None) -> str | None:
+def classify_error_type(
+    outcome_reason: str, error_json: dict[str, Any] | None
+) -> str | None:
     payload = dict(error_json or {})
     reason = payload.get("reason")
     if not isinstance(reason, str):
@@ -220,12 +237,25 @@ def classify_error_type(outcome_reason: str, error_json: dict[str, Any] | None) 
 
     # Classify generation failures by whether the issue came from output shape or provider behavior.
     if outcome_reason == OUTCOME_GENERATION_FAILED:
-        detail_mentions_reasoning = isinstance(detail, str) and "reasoning" in detail.lower()
-        if reason == "provider_response_missing_content" and reached_length_limit and detail_mentions_reasoning:
+        detail_mentions_reasoning = (
+            isinstance(detail, str) and "reasoning" in detail.lower()
+        )
+        if (
+            reason == "provider_response_missing_content"
+            and reached_length_limit
+            and detail_mentions_reasoning
+        ):
             return "generation_reasoning_tokens_exhausted"
-        if reason in {"candidate_materialization_failed", "generation_assertion_failed"} and reached_length_limit:
+        if (
+            reason
+            in {"candidate_materialization_failed", "generation_assertion_failed"}
+            and reached_length_limit
+        ):
             return "generation_output_truncated"
-        if reason in {"candidate_materialization_failed", "generation_assertion_failed"}:
+        if reason in {
+            "candidate_materialization_failed",
+            "generation_assertion_failed",
+        }:
             return "generation_invalid_candidate"
         if reason == "generator_exception":
             return "generation_backend_exception"
@@ -285,7 +315,9 @@ def slim_error_payload(error_json: dict[str, Any] | None) -> dict[str, Any] | No
     return slimmed
 
 
-def slim_provenance_payload(provenance_json: dict[str, Any], *, outcome_reason: str | None = None) -> dict[str, Any]:
+def slim_provenance_payload(
+    provenance_json: dict[str, Any], *, outcome_reason: str | None = None
+) -> dict[str, Any]:
     # Rebuild the persisted provenance shape so only audit-relevant fields remain.
     payload = dict(provenance_json or {})
     slimmed: dict[str, Any] = {}
@@ -367,7 +399,9 @@ def coerce_timestamp(value: Any) -> Any:
     return value
 
 
-def prepare_error_payload(outcome_reason: str, error_json: dict[str, Any] | None) -> dict[str, Any] | None:
+def prepare_error_payload(
+    outcome_reason: str, error_json: dict[str, Any] | None
+) -> dict[str, Any] | None:
     payload = slim_error_payload(error_json)
     return payload or None
 
@@ -439,7 +473,9 @@ class SQLAlchemyRepository:
     def __init__(self, database_url: str) -> None:
         # Normalize the database URL before configuring the SQLAlchemy engine.
         database_url = normalize_database_url(database_url)
-        connect_args = {"check_same_thread": False} if database_url.startswith("sqlite") else {}
+        connect_args = (
+            {"check_same_thread": False} if database_url.startswith("sqlite") else {}
+        )
         engine_kwargs: dict[str, Any] = {"future": True, "connect_args": connect_args}
         if not database_url.startswith("sqlite"):
             engine_kwargs["pool_pre_ping"] = True
@@ -473,7 +509,10 @@ class SQLAlchemyRepository:
         payload = {"trackId": track_id, "reason": reason}
         conn.execute(
             sa.text("SELECT pg_notify(:channel, :payload)"),
-            {"channel": "sigmaevolve_dashboard", "payload": json.dumps(payload, sort_keys=True)},
+            {
+                "channel": "sigmaevolve_dashboard",
+                "payload": json.dumps(payload, sort_keys=True),
+            },
         )
 
     def _update_trial_state(
@@ -489,12 +528,16 @@ class SQLAlchemyRepository:
         conditions = [trials_table.c.trial_id == trial_id]
         if where:
             conditions.extend(where)
-        result = conn.execute(sa.update(trials_table).where(sa.and_(*conditions)).values(**values))
+        result = conn.execute(
+            sa.update(trials_table).where(sa.and_(*conditions)).values(**values)
+        )
 
         # Notify the dashboard only when the trial row was actually changed.
         if notify and result.rowcount:
             track_id = conn.execute(
-                sa.select(trials_table.c.track_id).where(trials_table.c.trial_id == trial_id)
+                sa.select(trials_table.c.track_id).where(
+                    trials_table.c.trial_id == trial_id
+                )
             ).scalar_one_or_none()
             if track_id is not None:
                 self._notify_dashboard(conn, track_id=track_id, reason="trial_changed")
@@ -561,7 +604,9 @@ class SQLAlchemyRepository:
             .values(**values)
         )
 
-    def _reflect_table_rows(self, conn: Connection, table_name: str) -> list[dict[str, Any]]:
+    def _reflect_table_rows(
+        self, conn: Connection, table_name: str
+    ) -> list[dict[str, Any]]:
         # Materialize reflected rows into plain dicts before destructive migration steps.
         reflected_metadata = sa.MetaData()
         reflected_metadata.reflect(bind=conn, only=[table_name])
@@ -585,7 +630,9 @@ class SQLAlchemyRepository:
                 {
                     "track_id": str(row["track_id"]),
                     "dataset_id": str(row["dataset_id"]),
-                    "policy_json": normalize_legacy_track_policy(dict(row.get("policy_json") or {})),
+                    "policy_json": normalize_legacy_track_policy(
+                        dict(row.get("policy_json") or {})
+                    ),
                     "created_at": coerce_timestamp(row["created_at"]),
                 }
                 for row in track_rows
@@ -607,12 +654,16 @@ class SQLAlchemyRepository:
                         "status": str(row["status"]),
                         "outcome_reason": outcome_reason,
                         "dispatch_token": row.get("dispatch_token"),
-                        "dispatch_deadline_at": coerce_timestamp(row.get("dispatch_deadline_at")),
+                        "dispatch_deadline_at": coerce_timestamp(
+                            row.get("dispatch_deadline_at")
+                        ),
                         "runner_id": row.get("runner_id"),
                         "heartbeat_at": coerce_timestamp(row.get("heartbeat_at")),
                         "started_at": coerce_timestamp(row.get("started_at")),
                         "finished_at": coerce_timestamp(row.get("finished_at")),
-                        "metrics_json": slim_metrics_payload(dict(row.get("metrics_json") or {})),
+                        "metrics_json": slim_metrics_payload(
+                            dict(row.get("metrics_json") or {})
+                        ),
                         "error_json": prepare_error_payload(
                             str(outcome_reason) if outcome_reason is not None else "",
                             dict(row.get("error_json") or {}),
@@ -648,7 +699,9 @@ class SQLAlchemyRepository:
                     created_at=created_at,
                 )
             )
-            row = conn.execute(sa.select(tracks_table).where(tracks_table.c.track_id == track_id)).one()
+            row = conn.execute(
+                sa.select(tracks_table).where(tracks_table.c.track_id == track_id)
+            ).one()
             self._notify_dashboard(conn, track_id=track_id, reason="track_changed")
         return _row_to_track(row)
 
@@ -666,7 +719,9 @@ class SQLAlchemyRepository:
         provenance_json: dict[str, Any],
     ) -> tuple[TrialRecord | None, bool]:
         # Normalize provenance and source before checking for duplicate scripts.
-        validated_provenance = slim_provenance_payload(validate_trial_provenance(provenance_json))
+        validated_provenance = slim_provenance_payload(
+            validate_trial_provenance(provenance_json)
+        )
         normalized_source = normalize_source(source)
         script_hash = compute_script_hash(normalized_source)
         created_at = now_utc()
@@ -706,7 +761,9 @@ class SQLAlchemyRepository:
                     created_at=created_at,
                 )
             )
-            row = conn.execute(sa.select(trials_table).where(trials_table.c.trial_id == trial_id)).one()
+            row = conn.execute(
+                sa.select(trials_table).where(trials_table.c.trial_id == trial_id)
+            ).one()
             self._notify_dashboard(conn, track_id=track_id, reason="trial_changed")
         return _row_to_trial(row), True
 
@@ -720,7 +777,9 @@ class SQLAlchemyRepository:
     ) -> TrialRecord:
         # Restrict generation-attempt rows to duplicate and generation-failure outcomes.
         if outcome_reason not in {OUTCOME_DUPLICATE, OUTCOME_GENERATION_FAILED}:
-            raise ValueError(f"Unsupported generation attempt outcome_reason: {outcome_reason}")
+            raise ValueError(
+                f"Unsupported generation attempt outcome_reason: {outcome_reason}"
+            )
 
         # Materialize the diagnostic source and terminal row payload once up front.
         validated_provenance = slim_provenance_payload(
@@ -754,22 +813,32 @@ class SQLAlchemyRepository:
                     created_at=created_at,
                 )
             )
-            row = conn.execute(sa.select(trials_table).where(trials_table.c.trial_id == trial_id)).one()
+            row = conn.execute(
+                sa.select(trials_table).where(trials_table.c.trial_id == trial_id)
+            ).one()
             self._notify_dashboard(conn, track_id=track_id, reason="trial_changed")
         return _row_to_trial(row)
 
     def get_trial(self, trial_id: str) -> TrialRecord | None:
         with self.engine.connect() as conn:
-            row = conn.execute(sa.select(trials_table).where(trials_table.c.trial_id == trial_id)).fetchone()
+            row = conn.execute(
+                sa.select(trials_table).where(trials_table.c.trial_id == trial_id)
+            ).fetchone()
         return _row_to_trial(row) if row else None
 
-    def record_trial_launcher_metadata(self, trial_id: str, launcher_metadata: dict[str, Any]) -> None:
+    def record_trial_launcher_metadata(
+        self, trial_id: str, launcher_metadata: dict[str, Any]
+    ) -> None:
         self._record_trial_provenance_section(trial_id, "launcher", launcher_metadata)
 
-    def record_trial_wandb_metadata(self, trial_id: str, wandb_metadata: dict[str, Any]) -> None:
+    def record_trial_wandb_metadata(
+        self, trial_id: str, wandb_metadata: dict[str, Any]
+    ) -> None:
         self._record_trial_provenance_section(trial_id, "wandb", wandb_metadata)
 
-    def _record_trial_provenance_section(self, trial_id: str, section: str, payload: dict[str, Any]) -> None:
+    def _record_trial_provenance_section(
+        self, trial_id: str, section: str, payload: dict[str, Any]
+    ) -> None:
         # Merge the section payload into the stored provenance document.
         payload = dict(payload)
         if section == "launcher":
@@ -789,9 +858,9 @@ class SQLAlchemyRepository:
 
         with self.transaction() as conn:
             row = conn.execute(
-                sa.select(trials_table.c.track_id, trials_table.c.provenance_json).where(
-                    trials_table.c.trial_id == trial_id
-                )
+                sa.select(
+                    trials_table.c.track_id, trials_table.c.provenance_json
+                ).where(trials_table.c.trial_id == trial_id)
             ).fetchone()
             if row is None:
                 raise KeyError(f"Trial not found: {trial_id}")
@@ -818,7 +887,9 @@ class SQLAlchemyRepository:
             )
             self._notify_dashboard(conn, track_id=row.track_id, reason="trial_changed")
 
-    def list_trials(self, track_id: str, statuses: set[str] | None = None) -> list[TrialRecord]:
+    def list_trials(
+        self, track_id: str, statuses: set[str] | None = None
+    ) -> list[TrialRecord]:
         # Apply the optional status filter before loading trials in creation order.
         stmt = (
             sa.select(trials_table)
@@ -831,7 +902,9 @@ class SQLAlchemyRepository:
             rows = conn.execute(stmt).fetchall()
         return [_row_to_trial(row) for row in rows]
 
-    def sample_trial_context(self, track_id: str, limit: int, candidate_kind: str | None = None) -> list[TrialSummary]:
+    def sample_trial_context(
+        self, track_id: str, limit: int, candidate_kind: str | None = None
+    ) -> list[TrialSummary]:
         # Start from recent finished successful trials that include metrics payloads.
         stmt = (
             sa.select(trials_table)
@@ -843,7 +916,9 @@ class SQLAlchemyRepository:
                     trials_table.c.metrics_json.is_not(None),
                 )
             )
-            .order_by(trials_table.c.finished_at.desc(), trials_table.c.created_at.desc())
+            .order_by(
+                trials_table.c.finished_at.desc(), trials_table.c.created_at.desc()
+            )
         )
         with self.engine.connect() as conn:
             rows = conn.execute(stmt).fetchall()
@@ -851,7 +926,9 @@ class SQLAlchemyRepository:
         # Apply candidate-kind filtering in Python after the rows are materialized.
         summaries: list[TrialSummary] = []
         for row in rows:
-            row_candidate_kind = _copy_json_dict(row.provenance_json).get("candidate_kind")
+            row_candidate_kind = _copy_json_dict(row.provenance_json).get(
+                "candidate_kind"
+            )
             if candidate_kind is not None and row_candidate_kind != candidate_kind:
                 continue
             summaries.append(_row_to_trial_summary(row))
@@ -874,12 +951,16 @@ class SQLAlchemyRepository:
             )
         )
         if outcome_reasons:
-            stmt = stmt.where(trials_table.c.outcome_reason.in_(sorted(outcome_reasons)))
+            stmt = stmt.where(
+                trials_table.c.outcome_reason.in_(sorted(outcome_reasons))
+            )
         if require_metrics is True:
             stmt = stmt.where(trials_table.c.metrics_json.is_not(None))
         elif require_metrics is False:
             stmt = stmt.where(trials_table.c.metrics_json.is_(None))
-        stmt = stmt.order_by(trials_table.c.finished_at.desc(), trials_table.c.created_at.desc()).limit(limit)
+        stmt = stmt.order_by(
+            trials_table.c.finished_at.desc(), trials_table.c.created_at.desc()
+        ).limit(limit)
 
         # Return lightweight summaries for the filtered result set.
         with self.engine.connect() as conn:
@@ -960,7 +1041,9 @@ class SQLAlchemyRepository:
                     )
                 )
                 updated = conn.execute(
-                    sa.select(trials_table).where(trials_table.c.trial_id == row.trial_id)
+                    sa.select(trials_table).where(
+                        trials_table.c.trial_id == row.trial_id
+                    )
                 ).one()
                 reserved.append(_row_to_trial(updated))
 
@@ -969,7 +1052,9 @@ class SQLAlchemyRepository:
                 self._notify_dashboard(conn, track_id=track_id, reason="trial_changed")
         return reserved
 
-    def claim_trial(self, trial_id: str, dispatch_token: str, runner_id: str) -> TrialRecord | None:
+    def claim_trial(
+        self, trial_id: str, dispatch_token: str, runner_id: str
+    ) -> TrialRecord | None:
         # Claim only trials that are still dispatching with the expected token.
         with self.transaction() as conn:
             now = now_utc()
@@ -991,7 +1076,9 @@ class SQLAlchemyRepository:
                 return None
         return _row_to_trial(row)
 
-    def heartbeat_trial(self, trial_id: str, runner_id: str, meta: dict[str, Any] | None = None) -> None:
+    def heartbeat_trial(
+        self, trial_id: str, runner_id: str, meta: dict[str, Any] | None = None
+    ) -> None:
         # Refresh the heartbeat and persist only error-bearing metadata payloads.
         payload = slim_error_payload(meta)
         with self.transaction() as conn:
@@ -1007,7 +1094,9 @@ class SQLAlchemyRepository:
                 .values(heartbeat_at=now_utc(), error_json=payload)
             )
 
-    def update_active_trial_metrics(self, trial_id: str, runner_id: str, metrics: dict[str, Any]) -> None:
+    def update_active_trial_metrics(
+        self, trial_id: str, runner_id: str, metrics: dict[str, Any]
+    ) -> None:
         # Skip writes when the active trial already has the same metrics payload.
         payload = slim_metrics_payload(metrics)
         with self.transaction() as conn:
@@ -1039,7 +1128,9 @@ class SQLAlchemyRepository:
                 .values(metrics_json=payload)
             )
             if result.rowcount:
-                self._notify_dashboard(conn, track_id=row.track_id, reason="trial_changed")
+                self._notify_dashboard(
+                    conn, track_id=row.track_id, reason="trial_changed"
+                )
 
     def finalize_trial(
         self,
@@ -1055,7 +1146,9 @@ class SQLAlchemyRepository:
 
         # Drop empty error payloads for successful trials so dashboards stay clean.
         persisted_error_info = dict(error_info) if error_info else None
-        if outcome_reason in SUCCESS_OUTCOMES and not has_error_signal(persisted_error_info):
+        if outcome_reason in SUCCESS_OUTCOMES and not has_error_signal(
+            persisted_error_info
+        ):
             persisted_error_info = None
 
         with self.transaction() as conn:
@@ -1080,13 +1173,17 @@ class SQLAlchemyRepository:
                     "status": status_for_outcome_reason(outcome_reason),
                     "outcome_reason": outcome_reason,
                     "metrics_json": slim_metrics_payload(metrics),
-                    "error_json": prepare_error_payload(outcome_reason, persisted_error_info),
+                    "error_json": prepare_error_payload(
+                        outcome_reason, persisted_error_info
+                    ),
                 },
             )
             if row is None:
                 return
 
-    def sweep_expired_dispatches(self, track_id: str, max_dispatch_retries: int) -> tuple[list[str], list[str]]:
+    def sweep_expired_dispatches(
+        self, track_id: str, max_dispatch_retries: int
+    ) -> tuple[list[str], list[str]]:
         # Requeue expired dispatches until the retry budget is exhausted.
         requeued: list[str] = []
         stale: list[str] = []

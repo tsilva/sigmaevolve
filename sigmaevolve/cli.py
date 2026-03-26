@@ -21,7 +21,6 @@ from sigmaevolve.modal import (
 from sigmaevolve.orchestration import InlineRunnerLauncher, build_system
 from sigmaevolve.storage import classify_error_type
 
-
 logger = logging.getLogger(f"{__name__}.stderr")
 stdout_logger = logging.getLogger(f"{__name__}.stdout")
 
@@ -39,7 +38,9 @@ def load_track_definition(track_file: str) -> tuple[str, dict[str, Any]]:
 
     # Reject missing or empty dataset identifiers early.
     if not isinstance(dataset_id, str) or not dataset_id:
-        raise argparse.ArgumentTypeError("Track file must include a non-empty string dataset_id.")
+        raise argparse.ArgumentTypeError(
+            "Track file must include a non-empty string dataset_id."
+        )
 
     # Reject the removed track label field so new configs only use the reduced contract.
     if "name" in parsed:
@@ -54,7 +55,6 @@ def load_track_definition(track_file: str) -> tuple[str, dict[str, Any]]:
 
     # Validate object-shaped policy payloads before copying them.
     if policy is not None:
-
         # Reject malformed explicit policy objects before normalizing them.
         if not isinstance(policy, dict):
             raise argparse.ArgumentTypeError("Track file policy must be a JSON object.")
@@ -64,9 +64,7 @@ def load_track_definition(track_file: str) -> tuple[str, dict[str, Any]]:
     else:
         excluded_fields = {"dataset_id"}
         policy_json = {
-            key: value
-            for key, value in parsed.items()
-            if key not in excluded_fields
+            key: value for key, value in parsed.items() if key not in excluded_fields
         }
 
     return dataset_id, policy_json
@@ -187,7 +185,9 @@ COMMAND_SPECS = (
 )
 
 
-def build_cli_parser(*, handlers: dict[str, Callable[..., int]]) -> argparse.ArgumentParser:
+def build_cli_parser(
+    *, handlers: dict[str, Callable[..., int]]
+) -> argparse.ArgumentParser:
     # Document the env-only runtime config contract at the top-level help surface.
     parser = argparse.ArgumentParser(
         prog="sigmaevolve",
@@ -312,7 +312,9 @@ class CliReconcileReporter:
                     ("max_parallelism", "max_parallelism"),
                 ),
             ),
-            "trial_launch_started": lambda payload: self._log(f"Launching trial {payload['trial_id']}..."),
+            "trial_launch_started": lambda payload: self._log(
+                f"Launching trial {payload['trial_id']}..."
+            ),
             "trial_launched": self._handle_trial_launched,
             "trial_launch_failed": lambda payload: self._log(
                 f"Launch failed for {payload['trial_id']}: {payload['detail']}"
@@ -403,7 +405,9 @@ class CliReconcileReporter:
         )
 
     def _handle_reconcile_started(self, payload: dict[str, Any]) -> None:
-        self._log(f"Running launch pass for {payload['track_id']} with launcher={payload['launcher']}.")
+        self._log(
+            f"Running launch pass for {payload['track_id']} with launcher={payload['launcher']}."
+        )
 
     def _handle_queue_fill_started(self, payload: dict[str, Any]) -> None:
         # Cache the fill-cycle budget before logging the initial progress line.
@@ -428,7 +432,9 @@ class CliReconcileReporter:
             f"(attempt {payload['duplicate_retry_count']}, generation_index={payload['generation_index']})."
         )
 
-    def _handle_generation_progress(self, payload: dict[str, Any], message: str) -> None:
+    def _handle_generation_progress(
+        self, payload: dict[str, Any], message: str
+    ) -> None:
         self._log(message)
         self._log_progress(payload)
 
@@ -499,7 +505,9 @@ def _resolve_launcher(system, args) -> Any:
 
     # Build the Modal launcher when the caller requested remote execution.
     if uses_modal_launcher:
-        requires_remote_database = args.command == "launch" and args.database_url.startswith("sqlite")
+        requires_remote_database = (
+            args.command == "launch" and args.database_url.startswith("sqlite")
+        )
 
         # Reject Modal launches backed by sqlite because the remote runner needs network access.
         if requires_remote_database:
@@ -552,7 +560,9 @@ def _ensure_dataset_prepared(system, dataset_id: str) -> tuple[Any, bool]:
     return dataset, False
 
 
-def _launch_pass_settings(system, track_id: str, *, target_count: int, daemon: bool) -> tuple[int, int]:
+def _launch_pass_settings(
+    system, track_id: str, *, target_count: int, daemon: bool
+) -> tuple[int, int]:
     queue_count = system.repository.count_trials(track_id, statuses={"queued"})
     active_count = system.repository.count_trials(track_id, statuses=ACTIVE_STATUSES)
 
@@ -564,7 +574,14 @@ def _launch_pass_settings(system, track_id: str, *, target_count: int, daemon: b
     return max(queue_count, needed_slots), target_count
 
 
-def _run_launch_pass(system, track_id: str, reporter: CliReconcileReporter, *, target_count: int, daemon: bool):
+def _run_launch_pass(
+    system,
+    track_id: str,
+    reporter: CliReconcileReporter,
+    *,
+    target_count: int,
+    daemon: bool,
+):
     ready_queue_threshold, max_parallelism = _launch_pass_settings(
         system,
         track_id,
@@ -586,7 +603,9 @@ def _trial_diagnostics(metrics_json: dict[str, Any] | None) -> dict[str, Any]:
         "time_to_best_eval_sec": metrics.get("time_to_best_eval_sec"),
         "timed_out": metrics.get("timed_out", False),
         "time_since_last_eval_sec": metrics.get("time_since_last_eval_sec"),
-        "had_unscored_work_at_timeout": metrics.get("had_unscored_work_at_timeout", False),
+        "had_unscored_work_at_timeout": metrics.get(
+            "had_unscored_work_at_timeout", False
+        ),
         "last_phase": metrics.get("last_phase"),
     }
 
@@ -612,9 +631,13 @@ def cmd_create_track(args) -> int:
     if prepared_now:
         logger.info("Prepared dataset %s at %s.", dataset_id, dataset.manifest_path)
     else:
-        logger.info("Reusing prepared dataset %s at %s.", dataset_id, dataset.manifest_path)
+        logger.info(
+            "Reusing prepared dataset %s at %s.", dataset_id, dataset.manifest_path
+        )
 
-    logger.info("Creating track for dataset %s and seeding the baseline trial.", dataset_id)
+    logger.info(
+        "Creating track for dataset %s and seeding the baseline trial.", dataset_id
+    )
     track = system.create_track(dataset_id, policy)
     logger.info("Created track %s.", track.track_id)
     logger.info("Run it with:\n%s", _suggest_launch_command(args, track.track_id))
@@ -635,7 +658,9 @@ def cmd_launch(args) -> int:
 
     # Run a single launch pass when the caller did not request daemon mode.
     if not args.daemon:
-        result = _run_launch_pass(system, args.track_id, reporter, target_count=args.count, daemon=False)
+        result = _run_launch_pass(
+            system, args.track_id, reporter, target_count=args.count, daemon=False
+        )
         payload = result_payload(result)
         payload["mode"] = "count"
         payload["requested_launch_count"] = args.count
@@ -653,7 +678,10 @@ def cmd_launch(args) -> int:
             summary.cycles_completed += 1
 
             # Stop after the requested number of daemon cycles when a limit is configured.
-            if args.max_cycles is not None and summary.cycles_completed >= args.max_cycles:
+            if (
+                args.max_cycles is not None
+                and summary.cycles_completed >= args.max_cycles
+            ):
                 summary.stopped_reason = "max_cycles_reached"
                 break
             time.sleep(args.poll_interval_sec)
@@ -688,7 +716,9 @@ def cmd_list_trials(args) -> int:
                 "status": trial.status,
                 "outcome_reason": trial.outcome_reason,
                 "score": trial.score,
-                "error_type": classify_error_type(trial.outcome_reason or "", trial.error_json),
+                "error_type": classify_error_type(
+                    trial.outcome_reason or "", trial.error_json
+                ),
                 **_trial_diagnostics(trial.metrics_json),
                 "dispatch_attempts": trial.dispatch_attempts,
                 "runner_id": trial.runner_id,
