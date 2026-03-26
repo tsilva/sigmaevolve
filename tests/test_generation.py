@@ -95,6 +95,7 @@ def _manifest():
         metadata={"num_classes": 10},
     )
 
+
 def _context():
     return [
         TrialSummary(
@@ -620,8 +621,7 @@ def test_baseline_template_uses_one_outer_evolve_block():
 
     assert source.count("# EVOLVE-BLOCK-START") == 1
     assert source.count("# EVOLVE-BLOCK-END") == 1
-    assert "# EVOLVE-SECTION-START:" not in source
-    assert "# EVOLVE-SECTION-END:" not in source
+    assert len(extract_evolve_block_payloads(source)) == 5
 
 
 def test_build_candidate_train_script_replaces_only_data_block():

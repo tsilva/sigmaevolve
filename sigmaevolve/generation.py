@@ -41,12 +41,12 @@ EVOLVE_BLOCK_END = "# EVOLVE-BLOCK-END"
 _EVOLVE_BLOCK_PATTERN = re.compile(
     rf"(?ms)^{re.escape(EVOLVE_BLOCK_START)}\n(.*?)^{re.escape(EVOLVE_BLOCK_END)}\n?"
 )
-_EVOLVE_PAYLOAD_START_MARKERS = (
-    "CONFIG = {\n",
-    "class EvolvedModel(torch.nn.Module):\n",
-    "def configure_data(*, train_x, train_y, validation_x, random_seed):\n",
-    "def configure_optimization(*, model, train_loader, num_epochs, num_classes):\n",
-    "def configure_training_policy(*, num_epochs):\n",
+_EVOLVE_PAYLOAD_START_PATTERNS = (
+    r"^CONFIG = \{\n",
+    r"^(?:import [^\n]+\n)+(?:\n)?class EvolvedModel\(torch\.nn\.Module\):\n|^class EvolvedModel\(torch\.nn\.Module\):\n",
+    r"^(?:import [^\n]+\n)+(?:\n)?def configure_data\(\*, train_x, train_y, validation_x, random_seed\):\n|^def configure_data\(\*, train_x, train_y, validation_x, random_seed\):\n",
+    r"^(?:import [^\n]+\n)+(?:\n)?def configure_optimization\(\*, model, train_loader, num_epochs, num_classes\):\n|^def configure_optimization\(\*, model, train_loader, num_epochs, num_classes\):\n",
+    r"^def configure_training_policy\(\*, num_epochs\):\n",
 )
 
 
@@ -150,15 +150,17 @@ def _split_payload_and_separator(segment: str) -> tuple[str, str]:
 def _split_evolve_payload_sections(block_payload: str) -> tuple[list[str], list[str]]:
     normalized = normalize_source(block_payload)
     start_offsets: list[int] = []
-    for marker in _EVOLVE_PAYLOAD_START_MARKERS:
-        match = re.search(rf"(?m)^{re.escape(marker)}", normalized)
+    for pattern in _EVOLVE_PAYLOAD_START_PATTERNS:
+        match = re.search(pattern, normalized, flags=re.MULTILINE)
         if match is None:
             raise EvolveBlockError(
                 "source must contain the expected evolve payload sections"
             )
         start_offsets.append(match.start())
     if start_offsets != sorted(start_offsets):
-        raise EvolveBlockError("source must contain the expected evolve payload sections")
+        raise EvolveBlockError(
+            "source must contain the expected evolve payload sections"
+        )
     immutable_parts: list[str] = []
     payloads: list[str] = []
     immutable_parts.append(normalized[: start_offsets[0]])
