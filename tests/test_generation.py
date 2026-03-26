@@ -248,10 +248,21 @@ def test_openrouter_generation_uses_model_pool_round_robin(monkeypatch):
         "SEARCH must match exactly one location in the CURRENT PROGRAM" in system_prompt
     )
     assert not first_prompt.lstrip().startswith("{")
-    assert "PRIOR PROGRAMS:" in first_prompt
+    assert "OBJECTIVE:" in first_prompt
+    assert "TASK CONTEXT:" in first_prompt
+    assert "- dataset_id: mnist:v1" in first_prompt
+    assert "- epochs: 5" in first_prompt
+    assert "- split_sizes:" in first_prompt
+    assert "- dataset_metadata:" in first_prompt
+    assert "- num_classes: 10" in first_prompt
+    assert "REFERENCE PROGRAMS:" in first_prompt
     assert "CURRENT PROGRAM:" in first_prompt
-    assert "Here is the current program we are trying to improve" in first_prompt
-    assert "(you will need to propose a modification to it below)." in first_prompt
+    assert "Optimize for higher score / val_acc." in first_prompt
+    assert "Use REFERENCE PROGRAMS as inspiration only." in first_prompt
+    assert (
+        "Patch this program. SEARCH blocks must match text from CURRENT PROGRAM"
+        in first_prompt
+    )
     assert "score: 0.5" in first_prompt
     assert "val_acc: 0.5" in first_prompt
     assert "val_loss: n/a" in first_prompt
@@ -305,7 +316,7 @@ def test_openrouter_generation_uses_weighted_random_probabilities(monkeypatch):
     assert result.provenance_json["request_messages"] == payloads[0]["messages"]
 
 
-def test_openrouter_generation_prompt_includes_failure_feedback(monkeypatch):
+def test_openrouter_generation_prompt_includes_expected_sections(monkeypatch):
     backend = OpenRouterGenerationBackend(api_key="test-key")
     payloads = []
 
@@ -327,6 +338,9 @@ def test_openrouter_generation_prompt_includes_failure_feedback(monkeypatch):
     prompt = payloads[0]["messages"][1]["content"]
     assert "# EVOLVE-BLOCK-START" in system_prompt
     assert "# EVOLVE-BLOCK-END" in system_prompt
+    assert "OBJECTIVE:" in prompt
+    assert "TASK CONTEXT:" in prompt
+    assert "REFERENCE PROGRAMS:" in prompt
     assert "CURRENT PROGRAM:" in prompt
     assert "REPLACEMENTS:" in prompt
 
@@ -343,7 +357,9 @@ def test_openrouter_generation_prompt_lists_prior_programs_before_current_progra
     )
 
     prior_section, current_section = prompt.split("CURRENT PROGRAM:\n", maxsplit=1)
-    assert prior_section.startswith("PRIOR PROGRAMS:\n---\nscore: 0.998")
+    assert "OBJECTIVE:" in prior_section
+    assert "TASK CONTEXT:" in prior_section
+    assert "REFERENCE PROGRAMS:\n---\nscore: 0.998" in prior_section
     assert "val_acc: 0.998" in prior_section
     assert "val_loss: 0.023" in prior_section
     assert "[...]" in prior_section
@@ -356,7 +372,7 @@ def test_openrouter_generation_prompt_lists_prior_programs_before_current_progra
         not in prior_section
     )
     assert (
-        "CURRENT PROGRAM:\nHere is the current program we are trying to improve"
+        "CURRENT PROGRAM:\nPatch this program. SEARCH blocks must match text from CURRENT PROGRAM"
         in prompt
     )
     assert "score: 0.992" in current_section

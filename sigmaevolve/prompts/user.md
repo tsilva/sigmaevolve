@@ -1,7 +1,14 @@
-PRIOR PROGRAMS:
+OBJECTIVE:
+- Propose a safe improvement to CURRENT PROGRAM.
+- Optimize for higher score / val_acc.
+- Use lower val_loss as a secondary signal when comparing similar edits.
+- Prefer the smallest coherent change likely to improve results.
+- Use REFERENCE PROGRAMS as inspiration only.
+TASK CONTEXT:
+{{task_context}}
+REFERENCE PROGRAMS:
 {{prior_programs}}
 CURRENT PROGRAM:
-Here is the current program we are trying to improve
-(you will need to propose a modification to it below).
+Patch this program. SEARCH blocks must match text from CURRENT PROGRAM, not from REFERENCE PROGRAMS.
 {{current_program}}
 REPLACEMENTS:
