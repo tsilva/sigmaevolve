@@ -3,8 +3,8 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import logging
 import random
-import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -12,6 +12,9 @@ from types import ModuleType
 from typing import Any
 
 import numpy as np
+
+
+logger = logging.getLogger(__name__)
 
 
 class StrategyContractError(RuntimeError):
@@ -350,7 +353,7 @@ def _run_harness(config: dict[str, Any]) -> int:
             }
         )
         write_json_atomic(debug_output_path, debug_payload)
-        print(str(exc), file=sys.stderr)
+        logger.error("%s", exc)
         return 2
 
 

@@ -61,7 +61,7 @@ class TrialRunner:
 
         apply_wandb_env(wandb_env)
         if isinstance(database_url, str) and database_url:
-            os.environ.setdefault("SIGMAEVOLVE_DATABASE_URL", database_url)
+            os.environ.setdefault("DATABASE_URL", database_url)
         repository = SQLAlchemyRepository(database_url)
         dataset_manager = DatasetManager(Path(dataset_root), providers={})
         runner = RunnerService(repository=repository, dataset_manager=dataset_manager)

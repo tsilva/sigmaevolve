@@ -186,6 +186,33 @@ def test_failed_trials_persist_error_status_and_error_type(repository):
     assert updated.error_json == {"reason": "boom", "error_type": "execution_crash"}
 
 
+def test_eval_failed_prediction_load_is_classified_as_artifact_error(repository):
+    repository.register_dataset("mnist:v1", "/tmp/manifest.json")
+    track = repository.create_track(name="errors", dataset_id="mnist:v1", policy_json={})
+
+    trial, created = repository.create_queued_trial_if_absent(
+        track_id=track.track_id,
+        source="print('candidate')\n",
+        provenance_json=make_llm_provenance(model="worker"),
+    )
+    assert created is True
+    assert trial is not None
+
+    repository.finalize_trial(
+        trial_id=trial.trial_id,
+        runner_id=None,
+        outcome_reason="eval_failed",
+        metrics=None,
+        score=0.0,
+        error_info={"reason": "prediction_load_failed"},
+    )
+
+    updated = repository.get_trial(trial.trial_id)
+    assert updated is not None
+    assert updated.status == "error"
+    assert updated.error_json == {"reason": "prediction_load_failed", "error_type": "evaluation_artifact_error"}
+
+
 def test_generation_attempt_trial_uses_specific_error_type_when_present(repository):
     repository.register_dataset("mnist:v1", "/tmp/manifest.json")
     track = repository.create_track(name="generation-errors", dataset_id="mnist:v1", policy_json={})
