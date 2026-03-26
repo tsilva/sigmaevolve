@@ -72,20 +72,21 @@ def compute_classification_metrics(
     labels: list[int],
 ) -> dict[str, Any]:
     # Validate the scoring inputs before computing aggregates.
-    if len(predictions) != len(labels):
+    num_examples = len(labels)
+    if len(predictions) != num_examples:
         raise ValueError("Predictions and labels must have the same length.")
-    if not labels:
+    if num_examples == 0:
         raise ValueError("Cannot score an empty validation split.")
 
     # Derive the aggregate metrics from the aligned predictions and labels.
     correct = sum(int(pred == label) for pred, label in zip(predictions, labels))
-    accuracy = correct / len(labels)
+    accuracy = correct / num_examples
 
     # Return the metrics payload in a reviewable shape.
     return {
         "accuracy": accuracy,
         "correct": correct,
-        "num_examples": len(labels),
+        "num_examples": num_examples,
     }
 
 
@@ -97,16 +98,17 @@ def compute_score(
     del outcome_reason
 
     # Fall back to zero when the trial never produced metrics.
-    if not metrics:
+    has_metrics = bool(metrics)
+    if not has_metrics:
         return 0.0
 
     # Resolve the configured metric before converting it to a float score.
     primary_metric = scorer_config.get("primary_metric", "accuracy")
-    value = metrics.get(primary_metric)
-    if value is None:
+    score_value = metrics.get(primary_metric)
+    if score_value is None:
         raise ValueError(f"Primary metric {primary_metric!r} not present in metrics.")
 
-    return float(value)
+    return float(score_value)
 
 
 # ---- runtime_config.py ----
@@ -204,8 +206,9 @@ def _deep_merge_dict(base: dict[str, Any], override: dict[str, Any]) -> dict[str
     # Merge nested dictionaries recursively while replacing non-dict values.
     merged = dict(base)
     for key, value in override.items():
-        if isinstance(value, dict) and isinstance(merged.get(key), dict):
-            merged[key] = _deep_merge_dict(merged[key], value)
+        base_value = merged.get(key)
+        if isinstance(value, dict) and isinstance(base_value, dict):
+            merged[key] = _deep_merge_dict(base_value, value)
         else:
             merged[key] = value
     return merged
@@ -216,18 +219,26 @@ def _normalize_modal_gpu_preferences(value: Any) -> list[str] | None:
     if value is None:
         return None
     if not isinstance(value, list):
-        raise ValueError("Track policy modal_gpu_preferences must be a list of GPU names or null.")
+        raise ValueError(
+            "Track policy modal_gpu_preferences must be a list of GPU names or null."
+        )
     if not value:
-        raise ValueError("Track policy modal_gpu_preferences must be null or a non-empty list.")
+        raise ValueError(
+            "Track policy modal_gpu_preferences must be null or a non-empty list."
+        )
     normalized: list[str] = []
 
     # Normalize each GPU label by trimming whitespace and rejecting empty entries.
     for entry in value:
         if not isinstance(entry, str):
-            raise ValueError("Track policy modal_gpu_preferences entries must be non-empty strings.")
+            raise ValueError(
+                "Track policy modal_gpu_preferences entries must be non-empty strings."
+            )
         candidate = entry.strip()
         if not candidate:
-            raise ValueError("Track policy modal_gpu_preferences entries must be non-empty strings.")
+            raise ValueError(
+                "Track policy modal_gpu_preferences entries must be non-empty strings."
+            )
         normalized.append(candidate)
     return normalized
 
@@ -255,7 +266,7 @@ class DatasetManifest:
 
     def to_dict(self) -> dict[str, Any]:
         # Return a plain dict so manifests can be serialized directly.
-        return {
+        payload = {
             "dataset_id": self.dataset_id,
             "root_dir": self.root_dir,
             "train_split_path": self.train_split_path,
@@ -268,10 +279,14 @@ class DatasetManifest:
             "fingerprint": self.fingerprint,
             "metadata": dict(self.metadata),
         }
+        return payload
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "DatasetManifest":
         # Rebuild the strongly typed manifest from a persisted dict payload.
+        split_sizes = dict(raw["split_sizes"])
+        checksums = dict(raw["checksums"])
+        metadata = dict(raw.get("metadata", {}))
         return cls(
             dataset_id=raw["dataset_id"],
             root_dir=raw["root_dir"],
@@ -280,10 +295,10 @@ class DatasetManifest:
             validation_labels_path=raw["validation_labels_path"],
             test_split_path=raw["test_split_path"],
             test_labels_path=raw["test_labels_path"],
-            split_sizes=dict(raw["split_sizes"]),
-            checksums=dict(raw["checksums"]),
+            split_sizes=split_sizes,
+            checksums=checksums,
             fingerprint=raw["fingerprint"],
-            metadata=dict(raw.get("metadata", {})),
+            metadata=metadata,
         )
 
 
@@ -314,7 +329,7 @@ class TrackPolicy:
         if self.modal_gpu_preferences is not None:
             modal_gpu_preferences = list(self.modal_gpu_preferences)
 
-        return {
+        payload = {
             "epochs": self.epochs,
             "dispatch_ttl_sec": self.dispatch_ttl_sec,
             "heartbeat_interval_sec": self.heartbeat_interval_sec,
@@ -325,13 +340,13 @@ class TrackPolicy:
             "sampling_settings": dict(self.sampling_settings),
             "generation_backend": dict(self.generation_backend),
         }
+        return payload
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "TrackPolicy":
         # Merge overrides onto the default policy before coercing field types.
         base = cls()
-        merged = base.to_dict()
-        merged = _deep_merge_dict(merged, raw or {})
+        merged = _deep_merge_dict(base.to_dict(), raw or {})
 
         # Rebuild the dataclass with normalized scalar and nested policy fields.
         return cls(
@@ -406,7 +421,10 @@ class GenerationResult:
 
     @property
     def succeeded(self) -> bool:
-        return self.error_info is None and self.source is not None
+        has_error = self.error_info is not None
+        has_source = self.source is not None
+
+        return not has_error and has_source
 
 
 @dataclass(frozen=True)

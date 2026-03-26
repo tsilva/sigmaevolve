@@ -46,9 +46,11 @@ def _apply_runtime_options(
 ):
     # Collect the optional GPU and WandB settings before mutating the handle.
     options: dict[str, Any] = {}
-    if gpu is not None:
+    has_gpu_override = gpu is not None
+    if has_gpu_override:
         options["gpu"] = gpu
-    if wandb_env:
+    has_wandb_secret = bool(wandb_env)
+    if has_wandb_secret:
         options["secrets"] = [modal.Secret.from_dict(dict(wandb_env))]
     if not options:
         return handle
@@ -84,8 +86,13 @@ class _ModalClassProxy:
             self.class_name,
             environment_name=self.environment_name,
         )
-        cls = _apply_runtime_options(cls, modal=modal, gpu=gpu, wandb_env=self.wandb_env)
-        method = getattr(cls(), self.method_name)
+        runtime_cls = _apply_runtime_options(
+            cls,
+            modal=modal,
+            gpu=gpu,
+            wandb_env=self.wandb_env,
+        )
+        method = getattr(runtime_cls(), self.method_name)
 
         # Spawn the remote function call with the database and dataset parameters.
         return ModalSpawnResult(
@@ -133,13 +140,13 @@ def deploy_modal_app(
 ) -> dict[str, Any]:
     # Reject unsupported deployment names until the deployed module supports them.
     modal = require_modal()
-    uses_default_names = (
+    is_default_deployment = (
         app_name != DEFAULT_MODAL_APP_NAME
         or function_name != DEFAULT_MODAL_FUNCTION_NAME
         or dataset_volume_name != DEFAULT_MODAL_DATASET_VOLUME
         or dataset_mount_path != DEFAULT_MODAL_DATASET_MOUNT
     )
-    if uses_default_names:
+    if not is_default_deployment:
         raise ValueError(
             "Custom Modal app/function/volume names are not yet supported by the deployed app module. "
             "Use the defaults for now."
@@ -151,13 +158,14 @@ def deploy_modal_app(
     # Deploy the app with Modal's progress output enabled.
     with modal.enable_output():
         app.deploy(name=app_name, environment_name=environment_name)
-    return {
+    deployment_payload = {
         "app_name": app_name,
         "function_name": function_name,
         "dataset_volume_name": dataset_volume_name,
         "dataset_mount_path": dataset_mount_path,
         "environment_name": environment_name,
     }
+    return deployment_payload
 
 
 def sync_dataset_to_modal(
@@ -255,7 +263,8 @@ class TrialRunner:
 
         # Reconstruct the repository and dataset manager from the remote runtime inputs.
         apply_wandb_env(wandb_env)
-        if isinstance(database_url, str) and database_url:
+        has_database_url = isinstance(database_url, str) and bool(database_url)
+        if has_database_url:
             os.environ.setdefault("DATABASE_URL", database_url)
         repository = SQLAlchemyRepository(database_url)
         dataset_manager = DatasetManager(Path(dataset_root), providers={})

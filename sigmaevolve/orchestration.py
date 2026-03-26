@@ -352,10 +352,12 @@ class TrackController:
             self._dispatch_in_progress = True
             self._condition.notify_all()
         try:
+            # Reserve the next batch before handing work to the launch executor.
+            dispatch_ttl_sec = int(self.track.policy_json["dispatch_ttl_sec"])
             reserved = self.repository.reserve_trials(
                 track_id=self.track.track_id,
                 max_parallelism=self.max_parallelism,
-                dispatch_ttl_sec=int(self.track.policy_json["dispatch_ttl_sec"]),
+                dispatch_ttl_sec=dispatch_ttl_sec,
                 limit=self.max_parallelism,
             )
             if not reserved:
@@ -427,7 +429,9 @@ class TrackController:
             trial = self.repository.get_trial(trial_id)
             if trial is None:
                 continue
-            launcher_metadata = dict((trial.provenance_json or {}).get("launcher") or {})
+            provenance_json = trial.provenance_json or {}
+            launcher_json = provenance_json.get("launcher") or {}
+            launcher_metadata = dict(launcher_json)
             if launcher_metadata.get("kind") != "modal":
                 continue
 
@@ -473,6 +477,9 @@ class TrackController:
             raw_generated = future.result()
         except Exception as exc:
             # Persist generator exceptions as failed generation-attempt trials.
+            failure_reason = "generator_exception"
+            failure_detail = str(exc)
+            failure_error_json = {"exception_type": type(exc).__name__}
             with self._condition:
                 cycle.failures += 1
                 self._result = self.generation.record_generation_attempt_failure(
@@ -484,10 +491,10 @@ class TrackController:
                         generation_index=attempt.generation_index,
                         duplicate_retry_count=attempt.duplicate_retry_count,
                     ),
-                    reason="generator_exception",
-                    detail=str(exc),
-                    extra_error_json={"exception_type": type(exc).__name__},
-                    result_error=str(exc),
+                    reason=failure_reason,
+                    detail=failure_detail,
+                    extra_error_json=failure_error_json,
+                    result_error=failure_detail,
                 )
                 retry_needed = True
                 failures = cycle.failures
@@ -501,8 +508,8 @@ class TrackController:
                 slot_index=attempt.slot_index,
                 generation_index=attempt.generation_index,
                 duplicate_retry_count=attempt.duplicate_retry_count,
-                reason="generator_exception",
-                detail=str(exc),
+                reason=failure_reason,
+                detail=failure_detail,
                 failures=failures,
                 max_failures=max_failures,
                 completed=completed,
@@ -515,14 +522,20 @@ class TrackController:
             if not generated.succeeded:
                 error_info = dict(generated.error_info or {})
                 # Record provider-level failures directly from the returned error payload.
+                failure_reason = str(error_info.get("reason") or "generation_failed")
+                failure_detail = (
+                    str(error_info["detail"])
+                    if error_info.get("detail") is not None
+                    else None
+                )
                 with self._condition:
                     cycle.failures += 1
                     self._result = self.generation.record_generation_attempt_failure(
                         track_id=self.track.track_id,
                         result=self._result,
                         provenance_json=generated.provenance_json,
-                        reason=str(error_info.get("reason") or "generation_failed"),
-                        detail=str(error_info["detail"]) if error_info.get("detail") is not None else None,
+                        reason=failure_reason,
+                        detail=failure_detail,
                         extra_error_json=error_info,
                     )
                     retry_needed = True
@@ -537,8 +550,8 @@ class TrackController:
                     slot_index=attempt.slot_index,
                     generation_index=attempt.generation_index,
                     duplicate_retry_count=attempt.duplicate_retry_count,
-                    reason=str(error_info.get("reason") or "generation_failed"),
-                    detail=str(error_info["detail"]) if error_info.get("detail") is not None else "",
+                    reason=failure_reason,
+                    detail=failure_detail or "",
                     failures=failures,
                     max_failures=max_failures,
                     completed=completed,
@@ -555,15 +568,18 @@ class TrackController:
                     )
                 except Exception as exc:
                     # Convert invalid mutations into failed generation attempts.
+                    failure_reason = "candidate_materialization_failed"
+                    failure_detail = str(exc)
+                    failure_error = f"invalid_mutation:{exc}"
                     with self._condition:
                         cycle.failures += 1
                         self._result = self.generation.record_generation_attempt_failure(
                             track_id=self.track.track_id,
                             result=self._result,
                             provenance_json=generated.provenance_json,
-                            reason="candidate_materialization_failed",
-                            detail=str(exc),
-                            result_error=f"invalid_mutation:{exc}",
+                            reason=failure_reason,
+                            detail=failure_detail,
+                            result_error=failure_error,
                         )
                         retry_needed = True
                         failures = cycle.failures
@@ -577,8 +593,8 @@ class TrackController:
                         slot_index=attempt.slot_index,
                         generation_index=attempt.generation_index,
                         duplicate_retry_count=attempt.duplicate_retry_count,
-                        reason="candidate_materialization_failed",
-                        detail=str(exc),
+                        reason=failure_reason,
+                        detail=failure_detail,
                         failures=failures,
                         max_failures=max_failures,
                         completed=completed,
@@ -626,18 +642,19 @@ class TrackController:
         with self._condition:
             cycle = self._fill_cycle
             has_cycle = cycle is not None
-            below_failure_budget = (
+            has_failure_budget = (
                 has_cycle
                 and cycle.failures + len(self._pending_generations) < cycle.max_failures
             )
             should_retry = (
                 has_cycle
                 and retry_needed
-                and below_failure_budget
+                and has_failure_budget
                 and not self._stop_event.is_set()
             )
             if should_retry:
-                next_retry = (attempt.slot_index, attempt.generation_index, attempt.duplicate_retry_count + 1)
+                retry_count = attempt.duplicate_retry_count + 1
+                next_retry = (attempt.slot_index, attempt.generation_index, retry_count)
             if next_retry is None:
                 stopped_payload = self._finish_fill_cycle_if_ready()
             else:
@@ -784,16 +801,20 @@ class ModalRemoteLauncher:
         dispatch_token: str,
         launch_policy: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
+        # Normalize the optional GPU preference list before trying remote launches.
         requested_gpus = (launch_policy or {}).get("modal_gpu_preferences")
         if requested_gpus is None:
             attempts: list[str | None] = [None]
         elif isinstance(requested_gpus, list) and requested_gpus:
             attempts = [str(gpu) for gpu in requested_gpus]
         else:
-            raise ValueError("Track launch policy modal_gpu_preferences must be null or a non-empty list.")
+            raise ValueError(
+                "Track launch policy modal_gpu_preferences must be null or a non-empty list."
+            )
 
         failures: list[str] = []
         attempted_gpus: list[str] = []
+        # Try each configured GPU option until one remote spawn succeeds.
         for gpu in attempts:
             if gpu is not None:
                 attempted_gpus.append(gpu)
@@ -809,6 +830,7 @@ class ModalRemoteLauncher:
             function_call = getattr(spawn_result, "function_call", spawn_result)
             effective_gpu = getattr(spawn_result, "effective_gpu", gpu)
 
+            # Assemble launcher metadata only after the remote call has succeeded.
             metadata: dict[str, Any] = {
                 "kind": "modal",
                 "gpu_attempts": list(attempted_gpus),
@@ -894,11 +916,13 @@ class Orchestrator:
         max_parallelism: int,
         ready_queue_threshold: int = 0,
     ) -> TrackController:
+        # Resolve the track record before wiring up the long-running controller.
         track = self.repository.get_track(track_id)
         if track is None:
             raise KeyError(f"Track not found: {track_id}")
         if max_parallelism < 0:
             raise ValueError("max_parallelism must be >= 0")
+        # Build the controller with continuous mode enabled for background orchestration.
         controller = TrackController(
             repository=self.repository,
             dataset_manager=self.dataset_manager,
@@ -911,6 +935,7 @@ class Orchestrator:
             max_parallelism=int(max_parallelism),
             continuous=True,
         )
+        # Start background work only after the controller has been fully configured.
         controller.start()
         return controller
 
@@ -922,6 +947,7 @@ class Orchestrator:
         ready_queue_threshold: int = 1,
         max_parallelism: int = 1,
     ):
+        # Resolve and validate the track before running the one-shot controller.
         track = self.repository.get_track(track_id)
         if track is None:
             raise KeyError(f"Track not found: {track_id}")
@@ -931,6 +957,7 @@ class Orchestrator:
             raise ValueError("ready_queue_threshold must be >= 0")
         if max_parallelism < 0:
             raise ValueError("max_parallelism must be >= 0")
+        # Emit the reconcile start event before any queue-filling work begins.
         emit_report_event(
             reporter,
             "reconcile_started",
@@ -939,12 +966,14 @@ class Orchestrator:
         )
         initial_queue_count = self.repository.count_trials(track_id, statuses={"queued"})
         if initial_queue_count >= ready_queue_threshold:
+            # Skip the fill phase when the queue already meets the target threshold.
             emit_report_event(
                 reporter,
                 "queue_fill_skipped",
                 queued_count=initial_queue_count,
                 target_queue_count=ready_queue_threshold,
             )
+        # Run the controller in one-shot mode until the queue fill settles.
         controller = TrackController(
             repository=self.repository,
             dataset_manager=self.dataset_manager,
@@ -962,6 +991,7 @@ class Orchestrator:
             result = controller.wait_until_one_shot_complete()
         finally:
             controller.stop()
+        # Report the aggregate reconcile outcome after the controller shuts down.
         emit_report_event(
             reporter,
             "reconcile_finished",
