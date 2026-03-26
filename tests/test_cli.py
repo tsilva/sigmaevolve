@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import re
 from io import StringIO
 from types import SimpleNamespace
 
@@ -15,7 +16,7 @@ from sigmaevolve.core import DEFAULT_GENERATION_MODEL
 from sigmaevolve.datasets import ArrayDatasetProvider
 from sigmaevolve.env import load_env_file, resolve_runtime_config
 from sigmaevolve.orchestration import build_system
-from sigmaevolve.storage import normalize_database_url
+from sigmaevolve.storage import SQLAlchemyRepository, normalize_database_url
 
 
 def _write_track_file(tmp_path, payload: dict, filename: str = "track.json") -> str:
@@ -42,6 +43,12 @@ def _run_cli(argv: list[str]) -> tuple[int, str, str]:
     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
         code = main(argv)
     return code, out.getvalue(), err.getvalue()
+
+
+def _track_id_from_stderr(stderr: str) -> str:
+    match = re.search(r"Created track (\S+)\.", stderr)
+    assert match is not None
+    return match.group(1)
 
 
 def _set_runtime_env(
@@ -113,9 +120,10 @@ def test_cli_create_track_and_list_trials(tmp_path, patched_cli_system, monkeypa
         },
     )
 
-    code, stdout, _ = _run_cli(["create-track", track_file])
+    code, stdout, stderr = _run_cli(["create-track", track_file])
     assert code == 0
-    track_id = json.loads(stdout)["track_id"]
+    assert stdout == ""
+    track_id = _track_id_from_stderr(stderr)
     code, stdout, _ = _run_cli(["list-trials", track_id])
     assert code == 0
     trials = json.loads(stdout)
@@ -133,12 +141,15 @@ def test_cli_create_track_uses_default_generation_model(
     _set_runtime_env(monkeypatch, database_url=db_url, dataset_root=dataset_root)
     track_file = _write_track_file(tmp_path, {"dataset_id": "mnist:v1"})
 
-    code, stdout, _ = _run_cli(["create-track", track_file])
+    code, stdout, stderr = _run_cli(["create-track", track_file])
     assert code == 0
-    track = json.loads(stdout)
-    assert "max_parallelism" not in track["policy_json"]
-    assert "ready_queue_threshold" not in track["policy_json"]
-    pool = track["policy_json"]["generation_backend"]["model_pool"]
+    assert stdout == ""
+    track_id = _track_id_from_stderr(stderr)
+    track = SQLAlchemyRepository(db_url).get_track(track_id)
+    assert track is not None
+    assert "max_parallelism" not in track.policy_json
+    assert "ready_queue_threshold" not in track.policy_json
+    pool = track.policy_json["generation_backend"]["model_pool"]
     assert pool[0]["model"] == DEFAULT_GENERATION_MODEL
 
 
@@ -171,10 +182,13 @@ def test_cli_create_track_from_track_file(tmp_path, patched_cli_system, monkeypa
         },
     )
 
-    code, stdout, _ = _run_cli(["create-track", track_file])
+    code, stdout, stderr = _run_cli(["create-track", track_file])
     assert code == 0
-    track = json.loads(stdout)
-    pool = track["policy_json"]["generation_backend"]["model_pool"]
+    assert stdout == ""
+    track_id = _track_id_from_stderr(stderr)
+    track = SQLAlchemyRepository(db_url).get_track(track_id)
+    assert track is not None
+    pool = track.policy_json["generation_backend"]["model_pool"]
     assert len(pool) == 2
     assert pool[1]["model"] == "anthropic/claude-sonnet-4.6"
 
@@ -216,17 +230,18 @@ def test_cli_create_track_reports_progress_to_stderr(
 
     code, stdout, stderr = _run_cli(["create-track", track_file])
     assert code == 0
-    payload = json.loads(stdout)
-    assert payload["dataset_id"] == "mnist:v1"
+    assert stdout == ""
+    track_id = _track_id_from_stderr(stderr)
     assert "Loading track definition" in stderr
     assert "Ensuring dataset mnist:v1 is prepared." in stderr
     assert "Prepared dataset mnist:v1" in stderr
     assert (
         "Creating track for dataset mnist:v1 and seeding the baseline trial." in stderr
     )
-    assert f"Created track {payload['track_id']}." in stderr
+    assert f"Created track {track_id}." in stderr
     assert "Run it with:" in stderr
-    assert f"launch {payload['track_id']} 1" in stderr
+    assert f"sigmaevolve launch {track_id} 1" in stderr
+    assert str(track_file) not in stderr
     assert "--dataset-root" not in stderr
     assert "--launcher" not in stderr
 
@@ -346,7 +361,9 @@ def test_cli_launch_count_reports_progress_to_stderr(
         "launch-track.json",
     )
 
-    track_id = json.loads(_run_cli(["create-track", track_file])[1])["track_id"]
+    _, stdout, stderr = _run_cli(["create-track", track_file])
+    assert stdout == ""
+    track_id = _track_id_from_stderr(stderr)
     code, stdout, stderr = _run_cli(["launch", track_id, "1"])
     assert code == 0
     payload = json.loads(stdout)
@@ -372,7 +389,9 @@ def test_cli_launch_maintain_running_stops_after_max_cycles(
         "maintain-track.json",
     )
 
-    track_id = json.loads(_run_cli(["create-track", track_file])[1])["track_id"]
+    _, stdout, stderr = _run_cli(["create-track", track_file])
+    assert stdout == ""
+    track_id = _track_id_from_stderr(stderr)
     code, stdout, _ = _run_cli(
         [
             "--launcher",
@@ -404,7 +423,9 @@ def test_cli_daemon_reports_controller_mode_in_stderr(
         tmp_path, {"dataset_id": "mnist:v1"}, "daemon-track.json"
     )
 
-    track_id = json.loads(_run_cli(["create-track", track_file])[1])["track_id"]
+    _, stdout, stderr = _run_cli(["create-track", track_file])
+    assert stdout == ""
+    track_id = _track_id_from_stderr(stderr)
     code, stdout, stderr = _run_cli(
         [
             "--launcher",

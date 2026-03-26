@@ -360,13 +360,44 @@ def slim_provenance_payload(
             slimmed["wandb"] = slim_wandb
 
     generation = payload.get("generation")
-    has_generation = isinstance(generation, dict)
-    response_text = generation.get("response_text") if has_generation else None
-    should_persist_response_text = isinstance(response_text, str) and bool(
-        response_text.strip()
-    )
-    if should_persist_response_text:
-        slimmed["generation"] = {"response_text": response_text}
+    if isinstance(generation, dict):
+        slim_generation: dict[str, Any] = {}
+
+        response_text = generation.get("response_text")
+        has_response_text = isinstance(response_text, str) and bool(
+            response_text.strip()
+        )
+        if has_response_text:
+            slim_generation["response_text"] = response_text
+
+        generated_source = generation.get("generated_source")
+        has_generated_source = isinstance(generated_source, str) and bool(
+            generated_source.strip()
+        )
+        if has_generated_source:
+            slim_generation["generated_source"] = generated_source
+
+        assertions_passed = generation.get("assertions_passed")
+        if isinstance(assertions_passed, bool):
+            slim_generation["assertions_passed"] = assertions_passed
+
+        assertion_failures = generation.get("assertion_failures")
+        if isinstance(assertion_failures, list):
+            slim_generation["assertion_failures"] = [
+                failure
+                for failure in assertion_failures
+                if isinstance(failure, str) and failure.strip()
+            ]
+
+        candidate_hash = generation.get("candidate_hash")
+        has_candidate_hash = isinstance(candidate_hash, str) and bool(
+            candidate_hash.strip()
+        )
+        if has_candidate_hash:
+            slim_generation["candidate_hash"] = candidate_hash
+
+        if slim_generation:
+            slimmed["generation"] = slim_generation
 
     return slimmed
 
