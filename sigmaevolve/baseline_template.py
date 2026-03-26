@@ -10,7 +10,6 @@ from pathlib import Path
 import numpy as np
 import torch
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -26,7 +25,9 @@ def write_json_atomic(path, payload):
     temp_path.replace(path)
 
 
-def write_eval_atomic(eval_dir, eval_index, predictions, elapsed_time_sec, epoch, metrics=None):
+def write_eval_atomic(
+    eval_dir, eval_index, predictions, elapsed_time_sec, epoch, metrics=None
+):
     # Stage the evaluation payload before writing the atomic artifact.
     eval_dir.mkdir(parents=True, exist_ok=True)
     temp_path = eval_dir / f".eval_{eval_index:04d}.tmp.npz"
@@ -69,11 +70,14 @@ def prepare_feature_tensor(features, *, input_shape=None):
 
     # Reject flat inputs before reshaping them into model features.
     if features.ndim < 2:
-        raise TrainScriptContractError("training features must include at least one non-batch dimension")
+        raise TrainScriptContractError(
+            "training features must include at least one non-batch dimension"
+        )
 
     flat_features = features.reshape(int(features.shape[0]), -1)
     tensor = torch.from_numpy(flat_features)
     return (int(flat_features.shape[1]),), tensor.contiguous()
+
 
 # EVOLVE-BLOCK-START
 
@@ -104,6 +108,7 @@ CONFIG = {
 
 # EVOLVE-BLOCK-END
 
+
 def normalize_feature_tensors(train_x, validation_x):
     # Reject tensors that were not flattened into feature matrices.
     if train_x.ndim != 2 or validation_x.ndim != 2:
@@ -127,7 +132,9 @@ def normalize_predictions(raw_predictions, *, num_examples, num_classes):
 
     # Reject scalar outputs that do not map to per-example predictions.
     if array.ndim == 0:
-        raise TrainScriptContractError("model evaluation must return one prediction per validation example.")
+        raise TrainScriptContractError(
+            "model evaluation must return one prediction per validation example."
+        )
 
     # Keep the prediction count aligned with the validation split.
     if array.shape[0] != num_examples:
@@ -193,7 +200,9 @@ def require_callable(name):
 
     # Require evolve-block callables to be present and executable.
     if not callable(value):
-        raise TrainScriptContractError(f"train.py is missing required evolve-block callable: {name}")
+        raise TrainScriptContractError(
+            f"train.py is missing required evolve-block callable: {name}"
+        )
     return value
 
 
@@ -204,7 +213,9 @@ def require_mapping(name, value):
         raise TrainScriptContractError(f"{name} must return a dict.")
     return value
 
+
 # EVOLVE-BLOCK-START
+
 
 class EvolvedModel(torch.nn.Module):
     def __init__(self, input_shape, num_classes):
@@ -229,7 +240,9 @@ class EvolvedModel(torch.nn.Module):
 def build_model(*, input_shape, num_classes):
     return EvolvedModel(input_shape=input_shape, num_classes=num_classes)
 
+
 # EVOLVE-BLOCK-END
+
 
 def run_validation(model, validation_loader, *, num_classes):
     model.eval()
@@ -248,10 +261,14 @@ def run_validation(model, validation_loader, *, num_classes):
 
     # Require the validation loader to produce at least one batch.
     if not predictions:
-        raise TrainScriptContractError("validation loader must yield at least one batch")
+        raise TrainScriptContractError(
+            "validation loader must yield at least one batch"
+        )
     return torch.cat(predictions, dim=0)
 
+
 # EVOLVE-BLOCK-START
+
 
 def configure_data(*, train_x, train_y, validation_x, random_seed):
     del random_seed
@@ -272,16 +289,21 @@ def configure_data(*, train_x, train_y, validation_x, random_seed):
             shuffle=data_config["shuffle_validation"],
         ),
     }
+
+
 # EVOLVE-BLOCK-END
 
 # EVOLVE-BLOCK-START
+
 
 def configure_optimization(*, model, train_loader, num_epochs, num_classes):
     del train_loader
     del num_epochs
     del num_classes
     optimization_config = CONFIG["optimization"]
-    trainable_parameters = [parameter for parameter in model.parameters() if parameter.requires_grad]
+    trainable_parameters = [
+        parameter for parameter in model.parameters() if parameter.requires_grad
+    ]
     optimizer = None
 
     # Instantiate AdamW only when the model exposes trainable parameters.
@@ -301,9 +323,11 @@ def configure_optimization(*, model, train_loader, num_epochs, num_classes):
         "grad_clip_norm": optimization_config["grad_clip_norm"],
     }
 
+
 # EVOLVE-BLOCK-END
 
 # EVOLVE-BLOCK-START
+
 
 def configure_training_policy(*, num_epochs):
     del num_epochs
@@ -312,7 +336,9 @@ def configure_training_policy(*, num_epochs):
         "early_stopping_patience": training_policy["early_stopping_patience"],
     }
 
+
 # EVOLVE-BLOCK-END
+
 
 def main(argv=None):
     parser = argparse.ArgumentParser()
@@ -336,7 +362,9 @@ def main(argv=None):
         validation_features,
         validation_labels,
     )
-    splits_are_numpy_arrays = all(isinstance(value, np.ndarray) for value in split_arrays)
+    splits_are_numpy_arrays = all(
+        isinstance(value, np.ndarray) for value in split_arrays
+    )
     has_labels = train_labels is not None
 
     # Reject malformed dataset metadata before the training loop starts.
@@ -358,15 +386,23 @@ def main(argv=None):
     try:
         seed_everything(random_seed)
         input_shape, train_x = prepare_feature_tensor(train_features)
-        _, validation_x = prepare_feature_tensor(validation_features, input_shape=input_shape)
+        _, validation_x = prepare_feature_tensor(
+            validation_features, input_shape=input_shape
+        )
         train_x, validation_x = normalize_feature_tensors(train_x, validation_x)
         train_y = torch.from_numpy(train_labels)
         validation_y = torch.from_numpy(validation_labels.astype(np.int64))
-        num_classes = int(dataset_metadata.get("num_classes") or (np.max(train_labels) + 1))
+        num_classes = int(
+            dataset_metadata.get("num_classes") or (np.max(train_labels) + 1)
+        )
 
-        model = require_callable("build_model")(input_shape=input_shape, num_classes=num_classes)
+        model = require_callable("build_model")(
+            input_shape=input_shape, num_classes=num_classes
+        )
         if not isinstance(model, torch.nn.Module):
-            raise TrainScriptContractError("build_model must return a torch.nn.Module instance.")
+            raise TrainScriptContractError(
+                "build_model must return a torch.nn.Module instance."
+            )
 
         data_config = require_mapping(
             "configure_data",
@@ -380,7 +416,9 @@ def main(argv=None):
         train_loader = data_config.get("train_loader")
         validation_loader = data_config.get("validation_loader")
         if train_loader is None or validation_loader is None:
-            raise TrainScriptContractError("configure_data must return train_loader and validation_loader.")
+            raise TrainScriptContractError(
+                "configure_data must return train_loader and validation_loader."
+            )
 
         optimization_config = require_mapping(
             "configure_optimization",
@@ -394,9 +432,7 @@ def main(argv=None):
         trainable_parameters = optimization_config.get("trainable_parameters")
         if trainable_parameters is None:
             trainable_parameters = [
-                parameter
-                for parameter in model.parameters()
-                if parameter.requires_grad
+                parameter for parameter in model.parameters() if parameter.requires_grad
             ]
         trainable_parameters = list(trainable_parameters)
         optimizer = optimization_config.get("optimizer")
@@ -434,14 +470,20 @@ def main(argv=None):
             if callable(hook):
                 hook(epoch_index=epoch_index, num_epochs=num_epochs)
             model.train()
-            report("train", elapsed_time_sec=time.monotonic() - start_time, epoch_index=epoch_index)
+            report(
+                "train",
+                elapsed_time_sec=time.monotonic() - start_time,
+                epoch_index=epoch_index,
+            )
             for batch_x, batch_y in train_loader:
                 logits = coerce_model_logits(
                     model(batch_x),
                     batch_size=int(batch_x.shape[0]),
                     num_classes=num_classes,
                 )
-                loss = torch.nn.functional.cross_entropy(logits, batch_y, label_smoothing=label_smoothing)
+                loss = torch.nn.functional.cross_entropy(
+                    logits, batch_y, label_smoothing=label_smoothing
+                )
                 batch_size = int(batch_y.shape[0])
                 train_loss_total += float(loss.detach().item()) * batch_size
                 train_correct += int((logits.argmax(dim=1) == batch_y).sum().item())
@@ -455,14 +497,22 @@ def main(argv=None):
 
                 # Clip gradients only when the configuration requested it.
                 if grad_clip_norm is not None and trainable_parameters:
-                    torch.nn.utils.clip_grad_norm_(trainable_parameters, max_norm=float(grad_clip_norm))
+                    torch.nn.utils.clip_grad_norm_(
+                        trainable_parameters, max_norm=float(grad_clip_norm)
+                    )
                 optimizer.step()
 
                 # Advance the learning-rate schedule alongside optimizer updates.
                 if scheduler is not None:
                     scheduler.step()
-            report("eval", elapsed_time_sec=time.monotonic() - start_time, epoch_index=epoch_index)
-            validation_logits = run_validation(model, validation_loader, num_classes=num_classes)
+            report(
+                "eval",
+                elapsed_time_sec=time.monotonic() - start_time,
+                epoch_index=epoch_index,
+            )
+            validation_logits = run_validation(
+                model, validation_loader, num_classes=num_classes
+            )
             predictions = normalize_predictions(
                 validation_logits,
                 num_examples=int(validation_features.shape[0]),
@@ -477,7 +527,9 @@ def main(argv=None):
                     validation_logits,
                     validation_y,
                     label_smoothing=label_smoothing,
-                ).detach().item()
+                )
+                .detach()
+                .item()
             )
             val_acc = float((predictions == validation_labels).mean())
             write_eval_atomic(
@@ -509,14 +561,22 @@ def main(argv=None):
                     "epochs_without_improvement": stale_epochs,
                 }
             )
-            report("train", elapsed_time_sec=elapsed_after_eval, epoch_index=epochs_completed)
+            report(
+                "train",
+                elapsed_time_sec=elapsed_after_eval,
+                epoch_index=epochs_completed,
+            )
 
             # Stop early once the configured patience budget is exhausted.
             if patience and stale_epochs >= patience and epochs_completed < num_epochs:
                 debug_payload["early_stopped"] = True
                 debug_payload["early_stop_epoch"] = epochs_completed
                 break
-        report("finished", elapsed_time_sec=time.monotonic() - start_time, epoch_index=epochs_completed)
+        report(
+            "finished",
+            elapsed_time_sec=time.monotonic() - start_time,
+            epoch_index=epochs_completed,
+        )
         write_json_atomic(debug_output_path, debug_payload)
         return 0
     except TrainScriptContractError as exc:

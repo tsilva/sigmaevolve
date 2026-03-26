@@ -9,3 +9,4 @@ artifacts/
 node_modules/
 *.tsbuildinfo
 .vercel/
+.vercel

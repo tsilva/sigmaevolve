@@ -4,16 +4,14 @@ import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from uuid import uuid4
 from typing import Any
+from uuid import uuid4
 
 import modal
-
-from sigmaevolve.datasets import DatasetManager
 from sigmaevolve.core import DEFAULT_TRIAL_HARD_TIMEOUT_SEC
+from sigmaevolve.datasets import DatasetManager
 from sigmaevolve.execution import apply_wandb_env
 from sigmaevolve.orchestration import ModalRemoteLauncher
-
 
 DEFAULT_MODAL_APP_NAME = "sigmaevolve-runner"
 DEFAULT_MODAL_FUNCTION_NAME = "run_trial"
@@ -23,15 +21,6 @@ DEFAULT_MODAL_DATASET_MOUNT = "/mnt/datasets"
 
 
 def require_modal():
-    # Import Modal lazily so local workflows do not require the optional dependency.
-    try:
-        import modal  # type: ignore
-    except ImportError as exc:
-        raise RuntimeError(
-            "Modal support requires the 'modal' package. Install it with: "
-            "pip install '.[modal]'"
-        ) from exc
-
     return modal
 
 
@@ -153,9 +142,6 @@ def deploy_modal_app(
             "deployed app module. Use the defaults for now."
         )
 
-    # Import the deployed app object only after the configuration has been validated.
-    from sigmaevolve.modal import app
-
     # Deploy the app with Modal's progress output enabled.
     with modal.enable_output():
         app.deploy(name=app_name, environment_name=environment_name)
@@ -230,7 +216,9 @@ image = (
     )
     .add_local_python_source("sigmaevolve")
 )
-dataset_volume = modal.Volume.from_name(DEFAULT_MODAL_DATASET_VOLUME, create_if_missing=True)
+dataset_volume = modal.Volume.from_name(
+    DEFAULT_MODAL_DATASET_VOLUME, create_if_missing=True
+)
 
 
 @app.cls(
@@ -249,9 +237,9 @@ class TrialRunner:
         wandb_env: dict[str, str] | None = None,
     ) -> None:
         # Import the heavy runtime dependencies lazily inside the Modal worker.
-        from sigmaevolve.datasets import DatasetManager
-        from sigmaevolve.execution import RunnerService
-        from sigmaevolve.storage import SQLAlchemyRepository
+        from sigmaevolve.datasets import DatasetManager  # noqa: PLC0415
+        from sigmaevolve.execution import RunnerService  # noqa: PLC0415
+        from sigmaevolve.storage import SQLAlchemyRepository  # noqa: PLC0415
 
         # Reconstruct the repository and dataset manager from the remote runtime inputs.
         apply_wandb_env(wandb_env)

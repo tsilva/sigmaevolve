@@ -19,6 +19,10 @@ const KNOWN_TRIAL_STATUSES = new Set<TrialStatusFilter>([
   "error",
 ]);
 
+function isTrialStatusFilter(value: string): value is Exclude<TrialStatusFilter, "all"> {
+  return KNOWN_TRIAL_STATUSES.has(value as TrialStatusFilter);
+}
+
 type TrialCursor = {
   createdAt: string;
   trialId: string;
@@ -48,7 +52,7 @@ function decodeCursor(value: string | null): TrialCursor | null {
 
 export function parseStatusFilter(value: string | null): TrialStatusFilter {
   // Accept only the known status values that the API can query directly.
-  if (value && KNOWN_TRIAL_STATUSES.has(value as TrialStatusFilter)) {
+  if (value && isTrialStatusFilter(value)) {
     return value;
   }
 

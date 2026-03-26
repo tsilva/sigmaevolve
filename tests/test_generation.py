@@ -8,6 +8,7 @@ import pytest
 
 from sigmaevolve.core import DatasetManifest, TrackRecord, TrialSummary, now_utc
 from sigmaevolve.generation import (
+    EvolveBlockError,
     OpenRouterGenerationBackend,
     apply_search_replace_blocks,
     assert_only_evolve_blocks_changed,
@@ -21,7 +22,6 @@ from sigmaevolve.generation import (
     materialize_candidate_source,
     parse_search_replace_blocks,
     replace_evolve_block_payloads,
-    EvolveBlockError,
 )
 
 
@@ -147,10 +147,12 @@ def _negative_trials():
 
 
 def _mutated_script(forward_body: str) -> str:
-    return build_candidate_train_script(build_model_block(f"""
+    return build_candidate_train_script(
+        build_model_block(f"""
 def forward(self, x):
     {forward_body.strip()}
-"""))
+""")
+    )
 
 
 class _FakeResponse:
@@ -567,25 +569,6 @@ def test_openrouter_generation_captures_transport_errors(monkeypatch):
     assert "network down" in result.error_info["detail"]
 
 
-from sigmaevolve.generation import build_baseline_train_script
-from sigmaevolve.generation import (
-    EvolveBlockError,
-    apply_search_replace_blocks,
-    assert_only_evolve_blocks_changed,
-    extract_evolve_block_payloads,
-    materialize_candidate_source,
-    parse_search_replace_blocks,
-    replace_evolve_block_payloads,
-)
-from sigmaevolve.generation import (
-    build_candidate_train_script,
-    build_config_block,
-    build_data_block,
-    build_model_block,
-    build_optimization_block,
-)
-
-
 def test_replace_evolve_block_payloads_rewrites_only_block_contents():
     source = build_baseline_train_script()
     payloads = extract_evolve_block_payloads(source)
@@ -613,7 +596,8 @@ def forward(self, x):
 def test_build_candidate_train_script_replaces_only_data_block():
     source = build_baseline_train_script()
     source_payloads = extract_evolve_block_payloads(source)
-    updated = build_candidate_train_script(data_block_payload=build_data_block("""
+    updated = build_candidate_train_script(
+        data_block_payload=build_data_block("""
 batch_size = 8
 return {
     "batch_size": batch_size,
@@ -628,7 +612,8 @@ return {
         shuffle=False,
     ),
 }
-"""))
+""")
+    )
 
     updated_payloads = extract_evolve_block_payloads(updated)
     assert updated_payloads[0] == source_payloads[0]
@@ -736,7 +721,8 @@ def test_materialize_candidate_source_matches_search_blocks_without_outer_indent
 def test_build_candidate_train_script_replaces_only_config_block():
     source = build_baseline_train_script()
     source_payloads = extract_evolve_block_payloads(source)
-    updated = build_candidate_train_script(config_block_payload=build_config_block("""
+    updated = build_candidate_train_script(
+        config_block_payload=build_config_block("""
 CONFIG = {
     "normalization_std_floor": 1e-5,
     "binary_probability_threshold": 0.55,
@@ -761,7 +747,8 @@ CONFIG = {
         "early_stopping_patience": 2,
     },
 }
-"""))
+""")
+    )
 
     updated_payloads = extract_evolve_block_payloads(updated)
     assert '"binary_probability_threshold": 0.55' in updated_payloads[0]

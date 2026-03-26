@@ -8,7 +8,11 @@ import pytest
 
 from sigmaevolve import execution as strategy_runtime
 from sigmaevolve.core import CANDIDATE_KIND_STRATEGY_V1
-from sigmaevolve.execution import RunnerService, collect_wandb_env, resolve_wandb_settings
+from sigmaevolve.execution import (
+    RunnerService,
+    collect_wandb_env,
+    resolve_wandb_settings,
+)
 from sigmaevolve.generation import (
     build_candidate_train_script,
     build_data_block,
@@ -22,7 +26,6 @@ from sigmaevolve.orchestration import (
 )
 from sigmaevolve.storage import classify_error_type
 from tests.support import make_llm_provenance
-
 
 SUCCESS_BLOCK = build_model_block(
     """
@@ -173,11 +176,19 @@ return {
 
 
 def build_inline_system(repository, dataset_manager, hard_timeout_sec=5.0):
-    runner = RunnerService(repository=repository, dataset_manager=dataset_manager, hard_timeout_sec=hard_timeout_sec)
-    return EvolutionSystem(repository, dataset_manager, None, InlineRunnerLauncher(runner), runner)
+    runner = RunnerService(
+        repository=repository,
+        dataset_manager=dataset_manager,
+        hard_timeout_sec=hard_timeout_sec,
+    )
+    return EvolutionSystem(
+        repository, dataset_manager, None, InlineRunnerLauncher(runner), runner
+    )
 
 
-def _create_track(system, policy_json: dict | None = None, dataset_id: str = "mnist:v1"):
+def _create_track(
+    system, policy_json: dict | None = None, dataset_id: str = "mnist:v1"
+):
     return system.create_track(dataset_id, policy_json or {})
 
 
@@ -193,14 +204,20 @@ def finalize_baseline(system, track_id):
 
 
 def _run_trial(system, track_id, source):
-    trial_source = source if "# EVOLVE-BLOCK-START" in source else build_candidate_train_script(source)
+    trial_source = (
+        source
+        if "# EVOLVE-BLOCK-START" in source
+        else build_candidate_train_script(source)
+    )
     _, created = system.repository.create_queued_trial_if_absent(
         track_id,
         trial_source,
         make_llm_provenance(candidate_kind=CANDIDATE_KIND_STRATEGY_V1),
     )
     assert created is True
-    reserved = system.repository.reserve_trials(track_id, max_parallelism=1, dispatch_ttl_sec=60, limit=1)[0]
+    reserved = system.repository.reserve_trials(
+        track_id, max_parallelism=1, dispatch_ttl_sec=60, limit=1
+    )[0]
     system.launcher.launch_trial(reserved.trial_id, reserved.dispatch_token)
     return system.repository.get_trial(reserved.trial_id)
 
@@ -218,7 +235,9 @@ def test_heartbeat_thread_retries_after_transient_failure():
     repository = FlakyRepository()
     runner = RunnerService(repository=repository, dataset_manager=object())
 
-    stop_event, thread = runner._start_heartbeat("trial-1", "runner-1", interval_sec=0.05)
+    stop_event, thread = runner._start_heartbeat(
+        "trial-1", "runner-1", interval_sec=0.05
+    )
     time.sleep(0.18)
     stop_event.set()
     thread.join(timeout=1.0)
@@ -241,7 +260,9 @@ def test_successful_run_produces_metrics_and_score(repository, dataset_manager):
     assert finished.error_json is None
 
 
-def test_successful_run_creates_wandb_experiment(repository, dataset_manager, fake_wandb):
+def test_successful_run_creates_wandb_experiment(
+    repository, dataset_manager, fake_wandb
+):
     system = build_inline_system(repository, dataset_manager)
     system.prepare_dataset("mnist:v1")
     track = _create_track(system, {"epochs": 2})
@@ -256,13 +277,19 @@ def test_successful_run_creates_wandb_experiment(repository, dataset_manager, fa
     assert finished.provenance_json["wandb"]["project"] == "sigmaevolve"
     assert finished.provenance_json["wandb"]["run_id"] == run.id
     assert finished.provenance_json["wandb"]["run_url"] == run.url
-    terminal_entries = [entry for entry in run.logged if entry["payload"]["trial_state"] == "terminal"]
+    terminal_entries = [
+        entry for entry in run.logged if entry["payload"]["trial_state"] == "terminal"
+    ]
     assert terminal_entries
     terminal_payload = terminal_entries[-1]["payload"]
     assert terminal_payload["train/loss"] >= 0.0
     assert 0.0 <= terminal_payload["train/acc"] <= 1.0
-    assert terminal_payload["val/loss"] == pytest.approx(finished.metrics_json["val_loss"])
-    assert terminal_payload["val/acc"] == pytest.approx(finished.metrics_json["accuracy"])
+    assert terminal_payload["val/loss"] == pytest.approx(
+        finished.metrics_json["val_loss"]
+    )
+    assert terminal_payload["val/acc"] == pytest.approx(
+        finished.metrics_json["accuracy"]
+    )
     assert run.summary["outcome_reason"] == "succeeded"
     assert run.summary["train/loss"] >= 0.0
     assert 0.0 <= run.summary["train/acc"] <= 1.0
@@ -294,14 +321,18 @@ def test_successful_run_with_custom_optimization_block(repository, dataset_manag
     finished = _run_trial(
         system,
         track.track_id,
-        build_candidate_train_script(optimization_block_payload=NOOP_OPTIMIZATION_BLOCK),
+        build_candidate_train_script(
+            optimization_block_payload=NOOP_OPTIMIZATION_BLOCK
+        ),
     )
     assert finished.outcome_reason == "succeeded"
     assert finished.metrics_json["eval_count"] == 2
     assert finished.error_json is None
 
 
-def test_timeout_with_no_completed_eval_finalizes_with_zero_score(repository, dataset_manager):
+def test_timeout_with_no_completed_eval_finalizes_with_zero_score(
+    repository, dataset_manager
+):
     system = build_inline_system(repository, dataset_manager, hard_timeout_sec=0.3)
     system.prepare_dataset("mnist:v1")
     track = _create_track(system, {"epochs": 3})
@@ -327,7 +358,9 @@ def test_timeout_with_completed_eval_keeps_best_score(repository, dataset_manage
     assert finished.error_json is None
 
 
-def test_equal_accuracy_uses_lower_time_to_best_eval_as_tiebreaker(repository, dataset_manager):
+def test_equal_accuracy_uses_lower_time_to_best_eval_as_tiebreaker(
+    repository, dataset_manager
+):
     system = build_inline_system(repository, dataset_manager, hard_timeout_sec=1.5)
     system.prepare_dataset("mnist:v1")
     track = _create_track(system, {"epochs": 4})
@@ -335,7 +368,9 @@ def test_equal_accuracy_uses_lower_time_to_best_eval_as_tiebreaker(repository, d
     finished = _run_trial(system, track.track_id, TIEBREAKER_BLOCK)
     assert finished.outcome_reason == "timeout"
     assert finished.metrics_json["accuracy"] == 1.0
-    assert finished.metrics_json["time_to_best_eval_sec"] == pytest.approx(0.05, abs=0.08)
+    assert finished.metrics_json["time_to_best_eval_sec"] == pytest.approx(
+        0.05, abs=0.08
+    )
     assert finished.metrics_json["eval_count"] == 2
 
 
@@ -370,7 +405,10 @@ def test_missing_required_exports_finalizes_as_eval_failed(repository, dataset_m
     assert finished.status == "error"
     assert finished.outcome_reason == "eval_failed"
     assert finished.error_json["reason"] == "train_script_contract_violation"
-    assert classify_error_type(finished.outcome_reason or "", finished.error_json) == "execution_contract_violation"
+    assert (
+        classify_error_type(finished.outcome_reason or "", finished.error_json)
+        == "execution_contract_violation"
+    )
     assert finished.score == 0.0
 
 
@@ -402,7 +440,9 @@ def test_run_emits_lifecycle_logs(repository, dataset_manager, caplog):
     assert any("Finalized trial" in message for message in messages)
 
 
-def test_run_uses_unbuffered_python_for_child_process(repository, dataset_manager, monkeypatch):
+def test_run_uses_unbuffered_python_for_child_process(
+    repository, dataset_manager, monkeypatch
+):
     system = build_inline_system(repository, dataset_manager)
     system.prepare_dataset("mnist:v1")
     track = _create_track(system, {"epochs": 1})
@@ -414,7 +454,9 @@ def test_run_uses_unbuffered_python_for_child_process(repository, dataset_manage
         make_llm_provenance(candidate_kind=CANDIDATE_KIND_STRATEGY_V1),
     )
     assert created is True
-    reserved = system.repository.reserve_trials(track.track_id, max_parallelism=1, dispatch_ttl_sec=60, limit=1)[0]
+    reserved = system.repository.reserve_trials(
+        track.track_id, max_parallelism=1, dispatch_ttl_sec=60, limit=1
+    )[0]
 
     seen: dict[str, object] = {}
 
@@ -427,9 +469,13 @@ def test_run_uses_unbuffered_python_for_child_process(repository, dataset_manage
             {"returncode": 0, "stdout": "", "stderr": "", "timed_out": False},
         )()
 
-    monkeypatch.setattr("sigmaevolve.execution._run_streamed_subprocess", fake_run_streamed_subprocess)
+    monkeypatch.setattr(
+        "sigmaevolve.execution._run_streamed_subprocess", fake_run_streamed_subprocess
+    )
 
-    system.runner_service.run_reserved_trial(reserved.trial_id, reserved.dispatch_token, "runner-unbuffered")
+    system.runner_service.run_reserved_trial(
+        reserved.trial_id, reserved.dispatch_token, "runner-unbuffered"
+    )
 
     command = seen["command"]
     assert isinstance(command, list)
@@ -437,7 +483,9 @@ def test_run_uses_unbuffered_python_for_child_process(repository, dataset_manage
     assert str(command[2]).endswith("train.py")
 
 
-def test_active_run_persists_live_metrics_before_finalization(repository, dataset_manager, fake_wandb):
+def test_active_run_persists_live_metrics_before_finalization(
+    repository, dataset_manager, fake_wandb
+):
     system = build_inline_system(repository, dataset_manager)
     system.prepare_dataset("mnist:v1")
     track = _create_track(system, {"epochs": 3})
@@ -449,7 +497,9 @@ def test_active_run_persists_live_metrics_before_finalization(repository, datase
     )
     assert created is True
 
-    reserved = system.repository.reserve_trials(track.track_id, max_parallelism=1, dispatch_ttl_sec=60, limit=1)[0]
+    reserved = system.repository.reserve_trials(
+        track.track_id, max_parallelism=1, dispatch_ttl_sec=60, limit=1
+    )[0]
     runner_id = "runner-live"
     worker = threading.Thread(
         target=system.runner_service.run_reserved_trial,
@@ -462,7 +512,11 @@ def test_active_run_persists_live_metrics_before_finalization(repository, datase
     deadline = time.monotonic() + 5.0
     while time.monotonic() < deadline:
         current = system.repository.get_trial(reserved.trial_id)
-        if current is not None and current.status == "active" and current.metrics_json is not None:
+        if (
+            current is not None
+            and current.status == "active"
+            and current.metrics_json is not None
+        ):
             active_snapshot = current
             break
         time.sleep(0.1)
@@ -488,7 +542,9 @@ def test_active_run_persists_live_metrics_before_finalization(repository, datase
     assert isinstance(runs, list)
     assert len(runs) == 1
     run = runs[0]
-    active_entries = [entry for entry in run.logged if entry["payload"]["trial_state"] == "active"]
+    active_entries = [
+        entry for entry in run.logged if entry["payload"]["trial_state"] == "active"
+    ]
     assert active_entries
     active_payload = active_entries[-1]["payload"]
     assert "train/loss" in active_payload
@@ -498,7 +554,9 @@ def test_active_run_persists_live_metrics_before_finalization(repository, datase
     assert run.finished == {"exit_code": 0}
 
 
-def test_collect_active_metrics_payload_uses_eval_artifacts(repository, dataset_manager):
+def test_collect_active_metrics_payload_uses_eval_artifacts(
+    repository, dataset_manager
+):
     runner = RunnerService(repository=repository, dataset_manager=dataset_manager)
     manifest = dataset_manager.prepare("mnist:v1")
 
@@ -519,7 +577,9 @@ def test_collect_active_metrics_payload_uses_eval_artifacts(repository, dataset_
         val_loss=0.2,
         val_acc=1.0,
     )
-    progress_path.write_text(json.dumps({"phase": "eval", "eval_index": 1, "last_completed_eval_sec": 0.25}))
+    progress_path.write_text(
+        json.dumps({"phase": "eval", "eval_index": 1, "last_completed_eval_sec": 0.25})
+    )
     debug_path.write_text(json.dumps({"eval_count": 1}))
 
     metrics = runner._collect_active_metrics_payload(
@@ -688,10 +748,20 @@ def test_modal_launcher_spawns_named_method_without_gpu_override(monkeypatch):
     assert captured["spawn"]["dispatch_token"] == "dispatch_1"
     assert captured["spawn"]["database_url"] == "postgresql://example/db"
     assert captured["spawn"]["dataset_root"] == "/mnt/datasets"
-    assert captured["secret_payload"] == {"WANDB_API_KEY": "wandb-test-key", "WANDB_PROJECT": "sigmaevolve"}
+    assert captured["secret_payload"] == {
+        "WANDB_API_KEY": "wandb-test-key",
+        "WANDB_PROJECT": "sigmaevolve",
+    }
     assert captured["with_options"] == [
         {
-            "secrets": [{"secret_payload": {"WANDB_API_KEY": "wandb-test-key", "WANDB_PROJECT": "sigmaevolve"}}],
+            "secrets": [
+                {
+                    "secret_payload": {
+                        "WANDB_API_KEY": "wandb-test-key",
+                        "WANDB_PROJECT": "sigmaevolve",
+                    }
+                }
+            ],
         }
     ]
     assert metadata == {
@@ -807,14 +877,20 @@ def test_modal_launcher_surfaces_class_lookup_errors(monkeypatch):
         @staticmethod
         def from_name(app_name, name, environment_name=None):
             del app_name, name, environment_name
-            raise RuntimeError("Class 'TrialRunner' not found in app 'sigmaevolve-runner'.")
+            raise RuntimeError(
+                "Class 'TrialRunner' not found in app 'sigmaevolve-runner'."
+            )
 
     class FakeModal:
         Cls = FakeCls
         Secret = type(
             "FakeSecret",
             (),
-            {"from_dict": staticmethod(lambda payload: {"secret_payload": dict(payload)})},
+            {
+                "from_dict": staticmethod(
+                    lambda payload: {"secret_payload": dict(payload)}
+                )
+            },
         )
 
     monkeypatch.setattr("sigmaevolve.modal.require_modal", lambda: FakeModal)

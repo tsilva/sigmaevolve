@@ -9,10 +9,12 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from sigmaevolve.cli import CliReconcileReporter
-from sigmaevolve.cli import main
+from sigmaevolve import cli as cli_module
+from sigmaevolve.cli import CliReconcileReporter, main
 from sigmaevolve.core import DEFAULT_GENERATION_MODEL
-from sigmaevolve.env import resolve_runtime_config
+from sigmaevolve.datasets import ArrayDatasetProvider
+from sigmaevolve.env import load_env_file, resolve_runtime_config
+from sigmaevolve.orchestration import build_system
 from sigmaevolve.storage import normalize_database_url
 
 
@@ -23,8 +25,6 @@ def _write_track_file(tmp_path, payload: dict, filename: str = "track.json") -> 
 
 
 def _make_provider():
-    from sigmaevolve.datasets import ArrayDatasetProvider
-
     return ArrayDatasetProvider(
         train_features=np.ones((4, 2), dtype=np.float32),
         train_labels=np.array([0, 1, 0, 1], dtype=np.int64),
@@ -89,9 +89,6 @@ def _set_runtime_env(
 
 @pytest.fixture
 def patched_cli_system(monkeypatch):
-    from sigmaevolve import cli as cli_module
-    from sigmaevolve.orchestration import build_system
-
     provider = _make_provider()
 
     def fake_make_system(args):
@@ -127,7 +124,9 @@ def test_cli_create_track_and_list_trials(tmp_path, patched_cli_system, monkeypa
     assert trials[0]["time_to_best_eval_sec"] is None
 
 
-def test_cli_create_track_uses_default_generation_model(tmp_path, patched_cli_system, monkeypatch):
+def test_cli_create_track_uses_default_generation_model(
+    tmp_path, patched_cli_system, monkeypatch
+):
     del patched_cli_system
     db_url = f"sqlite:///{tmp_path / 'cli-default-policy.sqlite'}"
     dataset_root = tmp_path / "datasets"
@@ -155,8 +154,18 @@ def test_cli_create_track_from_track_file(tmp_path, patched_cli_system, monkeypa
             "generation_backend": {
                 "selection": "round_robin",
                 "model_pool": [
-                    {"model": "x-ai/grok-4.1-fast", "temperature": 0.2, "max_tokens": 1000, "retry_count": 1},
-                    {"model": "anthropic/claude-sonnet-4.6", "temperature": 0.7, "max_tokens": 2000, "retry_count": 1},
+                    {
+                        "model": "x-ai/grok-4.1-fast",
+                        "temperature": 0.2,
+                        "max_tokens": 1000,
+                        "retry_count": 1,
+                    },
+                    {
+                        "model": "anthropic/claude-sonnet-4.6",
+                        "temperature": 0.7,
+                        "max_tokens": 2000,
+                        "retry_count": 1,
+                    },
                 ],
             },
         },
@@ -170,7 +179,9 @@ def test_cli_create_track_from_track_file(tmp_path, patched_cli_system, monkeypa
     assert pool[1]["model"] == "anthropic/claude-sonnet-4.6"
 
 
-def test_cli_create_track_reports_progress_to_stderr(tmp_path, patched_cli_system, monkeypatch):
+def test_cli_create_track_reports_progress_to_stderr(
+    tmp_path, patched_cli_system, monkeypatch
+):
     del patched_cli_system
     db_url = f"sqlite:///{tmp_path / 'cli-create-track-progress.sqlite'}"
     dataset_root = tmp_path / "datasets"
@@ -190,7 +201,9 @@ def test_cli_create_track_reports_progress_to_stderr(tmp_path, patched_cli_syste
     assert "Loading track definition" in stderr
     assert "Ensuring dataset mnist:v1 is prepared." in stderr
     assert "Prepared dataset mnist:v1" in stderr
-    assert "Creating track for dataset mnist:v1 and seeding the baseline trial." in stderr
+    assert (
+        "Creating track for dataset mnist:v1 and seeding the baseline trial." in stderr
+    )
     assert f"Created track {payload['track_id']}." in stderr
     assert "Run it with:" in stderr
     assert f"launch {payload['track_id']} 1" in stderr
@@ -209,14 +222,11 @@ def test_cli_loads_env_file_for_defaults(tmp_path, monkeypatch):
             [
                 f"SIGMAEVOLVE_DATABASE_URL=sqlite:///{db_path}",
                 f"SIGMAEVOLVE_DATASET_ROOT={dataset_root}",
-                f"SIGMAEVOLVE_OPENROUTER_API_KEY=test-key",
-                f"SENTINEL=loaded",
+                "SIGMAEVOLVE_OPENROUTER_API_KEY=test-key",
+                "SENTINEL=loaded",
             ]
         )
     )
-
-    from sigmaevolve import cli as cli_module
-    from sigmaevolve.env import load_env_file
 
     original_loader = load_env_file
 
@@ -234,8 +244,6 @@ def test_cli_loads_env_file_for_defaults(tmp_path, monkeypatch):
 
 
 def test_cli_modal_commands_call_support_helpers(tmp_path, monkeypatch):
-    from sigmaevolve import cli as cli_module
-
     deployed = {}
     synced = {}
 
@@ -274,7 +282,9 @@ def test_cli_modal_commands_call_support_helpers(tmp_path, monkeypatch):
     assert synced["environment_name"] == "prod"
 
 
-def test_cli_reconcile_reporter_dispatch_table_logs_known_events_and_ignores_unknown(monkeypatch):
+def test_cli_reconcile_reporter_dispatch_table_logs_known_events_and_ignores_unknown(
+    monkeypatch,
+):
     messages: list[str] = []
 
     def fake_info(message, *args):
@@ -303,7 +313,9 @@ def test_cli_reconcile_reporter_dispatch_table_logs_known_events_and_ignores_unk
     assert any("Queue fill [" in message for message in messages)
 
 
-def test_cli_launch_count_reports_progress_to_stderr(tmp_path, patched_cli_system, monkeypatch):
+def test_cli_launch_count_reports_progress_to_stderr(
+    tmp_path, patched_cli_system, monkeypatch
+):
     del patched_cli_system
     db_url = f"sqlite:///{tmp_path / 'cli-launch-progress.sqlite'}"
     dataset_root = tmp_path / "datasets"
@@ -325,7 +337,9 @@ def test_cli_launch_count_reports_progress_to_stderr(tmp_path, patched_cli_syste
     assert "Launch pass finished" in stderr
 
 
-def test_cli_launch_maintain_running_stops_after_max_cycles(tmp_path, patched_cli_system, monkeypatch):
+def test_cli_launch_maintain_running_stops_after_max_cycles(
+    tmp_path, patched_cli_system, monkeypatch
+):
     del patched_cli_system
     db_url = f"sqlite:///{tmp_path / 'cli-launch-maintain.sqlite'}"
     dataset_root = tmp_path / "datasets"
@@ -359,12 +373,16 @@ def test_cli_launch_maintain_running_stops_after_max_cycles(tmp_path, patched_cl
     assert payload["stopped_reason"] == "max_cycles_reached"
 
 
-def test_cli_daemon_reports_controller_mode_in_stderr(tmp_path, patched_cli_system, monkeypatch):
+def test_cli_daemon_reports_controller_mode_in_stderr(
+    tmp_path, patched_cli_system, monkeypatch
+):
     del patched_cli_system
     db_url = f"sqlite:///{tmp_path / 'cli-launch-controller.sqlite'}"
     dataset_root = tmp_path / "datasets"
     _set_runtime_env(monkeypatch, database_url=db_url, dataset_root=dataset_root)
-    track_file = _write_track_file(tmp_path, {"dataset_id": "mnist:v1"}, "daemon-track.json")
+    track_file = _write_track_file(
+        tmp_path, {"dataset_id": "mnist:v1"}, "daemon-track.json"
+    )
 
     track_id = json.loads(_run_cli(["create-track", track_file])[1])["track_id"]
     code, stdout, stderr = _run_cli(
@@ -388,8 +406,6 @@ def test_cli_daemon_reports_controller_mode_in_stderr(tmp_path, patched_cli_syst
 
 
 def test_make_system_with_modal_launcher_uses_modal_proxy(monkeypatch, tmp_path):
-    from sigmaevolve import cli as cli_module
-
     captured = {}
 
     def fake_create_modal_launcher(**kwargs):
@@ -423,7 +439,11 @@ def test_make_system_with_modal_launcher_uses_modal_proxy(monkeypatch, tmp_path)
 
 
 def test_runtime_config_prefers_sigmaevolve_env_names(monkeypatch):
-    _set_runtime_env(monkeypatch, database_url="postgresql://scoped/db", openrouter_api_key="scoped-key")
+    _set_runtime_env(
+        monkeypatch,
+        database_url="postgresql://scoped/db",
+        openrouter_api_key="scoped-key",
+    )
     monkeypatch.setenv("DATABASE_URL", "postgresql://fallback/db")
     monkeypatch.setenv("OPENROUTER_API_KEY", "fallback-key")
 
@@ -434,12 +454,12 @@ def test_runtime_config_prefers_sigmaevolve_env_names(monkeypatch):
 
 
 def test_cli_rejects_removed_runtime_config_flags():
-    from sigmaevolve import cli as cli_module
-
     parser = cli_module.build_parser()
 
     with pytest.raises(SystemExit):
-        parser.parse_args(["--database-url", "postgresql://example/db", "list-trials", "track_1"])
+        parser.parse_args(
+            ["--database-url", "postgresql://example/db", "list-trials", "track_1"]
+        )
 
     with pytest.raises(SystemExit):
         parser.parse_args(["--modal-app-name", "custom-app", "modal-deploy"])
@@ -454,12 +474,17 @@ def test_cli_rejects_removed_runtime_config_flags():
         parser.parse_args(["prepare-dataset", "mnist:v1"])
 
     with pytest.raises(SystemExit):
-        parser.parse_args(["rescore", "--all-tracks", "--scorer-json", '{"primary_metric":"accuracy"}'])
+        parser.parse_args(
+            [
+                "rescore",
+                "--all-tracks",
+                "--scorer-json",
+                '{"primary_metric":"accuracy"}',
+            ]
+        )
 
 
 def test_cli_help_documents_env_runtime_config(capsys):
-    from sigmaevolve import cli as cli_module
-
     parser = cli_module.build_parser()
 
     with pytest.raises(SystemExit):

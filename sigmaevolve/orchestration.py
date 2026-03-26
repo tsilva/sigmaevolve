@@ -10,23 +10,26 @@ from typing import Any, Callable, Protocol
 from sigmaevolve.core import (
     ACTIVE_STATUSES,
     CANDIDATE_KIND_STRATEGY_V1,
-    DatasetRecord,
     OUTCOME_STALE,
+    DatasetRecord,
     ReconcileResult,
     TrackPolicy,
     TrackRecord,
     TrialRecord,
-    now_utc,
 )
 from sigmaevolve.datasets import DatasetManager, TorchvisionClassificationProvider
 from sigmaevolve.execution import RunnerService
-from sigmaevolve.generation import OpenRouterGenerationBackend
-from sigmaevolve.generation import GenerationCoordinator
-from sigmaevolve.generation import build_baseline_train_script
+from sigmaevolve.generation import (
+    GenerationCoordinator,
+    OpenRouterGenerationBackend,
+    build_baseline_train_script,
+)
 from sigmaevolve.storage import SQLAlchemyRepository
 
 
-def _emit(reporter: Callable[[str, dict[str, Any]], None] | None, event: str, **payload: Any) -> None:
+def _emit(
+    reporter: Callable[[str, dict[str, Any]], None] | None, event: str, **payload: Any
+) -> None:
     # Funnel controller events through the optional reporter callback.
     # Skip emission entirely when no reporter was supplied.
     if reporter is not None:
@@ -66,7 +69,9 @@ class TrackController:
         self.dataset_manager = dataset_manager
         self.generation = generation
         self.launcher = launcher
-        self.generation_failure_limit_multiplier = int(generation_failure_limit_multiplier)
+        self.generation_failure_limit_multiplier = int(
+            generation_failure_limit_multiplier
+        )
         self.track = track
         self.reporter = reporter
         self.ready_queue_threshold = int(ready_queue_threshold)
@@ -131,9 +136,15 @@ class TrackController:
         self._run_sweep(emit_always=True)
         # Prime one-shot mode with the number of new generations still needed.
         if not self.continuous:
-            queue_count = self.repository.count_trials(self.track.track_id, statuses={"queued"})
-            self._one_shot_requested_generations = max(0, self.ready_queue_threshold - queue_count)
-            self._one_shot_generation_finished = self._one_shot_requested_generations == 0
+            queue_count = self.repository.count_trials(
+                self.track.track_id, statuses={"queued"}
+            )
+            self._one_shot_requested_generations = max(
+                0, self.ready_queue_threshold - queue_count
+            )
+            self._one_shot_generation_finished = (
+                self._one_shot_requested_generations == 0
+            )
 
         # Start the controller loop after the initial state is fully prepared.
         self._controller_thread.start()
@@ -198,15 +209,21 @@ class TrackController:
             return True
 
         # One-shot mode is complete once there is nothing left to queue or dispatch.
-        active_count = self.repository.count_trials(self.track.track_id, statuses=ACTIVE_STATUSES)
-        queue_count = self.repository.count_trials(self.track.track_id, statuses={"queued"})
+        active_count = self.repository.count_trials(
+            self.track.track_id, statuses=ACTIVE_STATUSES
+        )
+        queue_count = self.repository.count_trials(
+            self.track.track_id, statuses={"queued"}
+        )
         return active_count >= self.max_parallelism or queue_count == 0
 
     def _desired_queue_threshold(self) -> int:
         # Continuous mode maintains only enough queued work to fill open slots.
         if not self.continuous:
             return self.ready_queue_threshold
-        active_count = self.repository.count_trials(self.track.track_id, statuses=ACTIVE_STATUSES)
+        active_count = self.repository.count_trials(
+            self.track.track_id, statuses=ACTIVE_STATUSES
+        )
         return max(0, self.max_parallelism - active_count)
 
     def _ensure_dataset_manifest(self):
@@ -252,14 +269,10 @@ class TrackController:
             return []
 
         ready = [
-            retry
-            for retry in self._deferred_retries
-            if retry[2] == next_retry_count
+            retry for retry in self._deferred_retries if retry[2] == next_retry_count
         ]
         self._deferred_retries = [
-            retry
-            for retry in self._deferred_retries
-            if retry[2] != next_retry_count
+            retry for retry in self._deferred_retries if retry[2] != next_retry_count
         ]
         return ready
 
@@ -270,7 +283,9 @@ class TrackController:
         with self._condition:
             # Start a fresh fill cycle whenever the ready queue falls below target.
             if self._fill_cycle is None:
-                queue_count = self.repository.count_trials(self.track.track_id, statuses={"queued"})
+                queue_count = self.repository.count_trials(
+                    self.track.track_id, statuses={"queued"}
+                )
                 # Expand to the remaining queue deficit in continuous mode.
                 if self.continuous:
                     target_queue_count = self._desired_queue_threshold()
@@ -296,7 +311,9 @@ class TrackController:
                         "max_failures": self._fill_cycle.max_failures,
                     }
                     for slot_index in range(deficit):
-                        attempts_to_schedule.append((slot_index, self._generation_index, 0))
+                        attempts_to_schedule.append(
+                            (slot_index, self._generation_index, 0)
+                        )
                         self._generation_index += 1
             else:
                 attempts_to_schedule = self._next_retry_batch_locked()
@@ -354,7 +371,9 @@ class TrackController:
 
     def _drain_completed_generations(self) -> bool:
         with self._condition:
-            completed = [future for future in self._pending_generations if future.done()]
+            completed = [
+                future for future in self._pending_generations if future.done()
+            ]
         for future in completed:
             self._on_generation_complete(future)
         return bool(completed)
@@ -364,8 +383,12 @@ class TrackController:
         if self.max_parallelism <= 0:
             return False
 
-        active_count = self.repository.count_trials(self.track.track_id, statuses=ACTIVE_STATUSES)
-        queue_count = self.repository.count_trials(self.track.track_id, statuses={"queued"})
+        active_count = self.repository.count_trials(
+            self.track.track_id, statuses=ACTIVE_STATUSES
+        )
+        queue_count = self.repository.count_trials(
+            self.track.track_id, statuses={"queued"}
+        )
         has_dispatch_capacity = active_count < self.max_parallelism
         has_queued_trials = queue_count > 0
         # Wait until the controller has both launch capacity and queued work.
@@ -469,7 +492,9 @@ class TrackController:
             try:
                 # Reject launchers that cannot cancel remote runs.
                 if not callable(cancel_run):
-                    raise RuntimeError("Active launcher does not support remote cancellation.")
+                    raise RuntimeError(
+                        "Active launcher does not support remote cancellation."
+                    )
                 cancel_run(launcher_metadata)
             except Exception as exc:
                 self.repository.finalize_trial(
@@ -603,13 +628,15 @@ class TrackController:
                     failure_error = f"invalid_mutation:{exc}"
                     with self._condition:
                         cycle.failures += 1
-                        self._result = self.generation.record_generation_attempt_failure(
-                            track_id=self.track.track_id,
-                            result=self._result,
-                            provenance_json=generated.provenance_json,
-                            reason=failure_reason,
-                            detail=failure_detail,
-                            result_error=failure_error,
+                        self._result = (
+                            self.generation.record_generation_attempt_failure(
+                                track_id=self.track.track_id,
+                                result=self._result,
+                                provenance_json=generated.provenance_json,
+                                reason=failure_reason,
+                                detail=failure_detail,
+                                result_error=failure_error,
+                            )
                         )
                         retry_needed = True
                         failures = cycle.failures
@@ -697,7 +724,9 @@ class TrackController:
         if stopped_payload is not None:
             _emit(self.reporter, stopped_payload["event"], **stopped_payload["payload"])
 
-    def _finish_fill_cycle_if_ready(self, *, force: bool = False) -> dict[str, Any] | None:
+    def _finish_fill_cycle_if_ready(
+        self, *, force: bool = False
+    ) -> dict[str, Any] | None:
         # Ignore finish requests when there is no active fill cycle.
         cycle = self._fill_cycle
         if cycle is None:
@@ -714,7 +743,9 @@ class TrackController:
         if not force and missing_completions and has_failure_budget:
             return None
 
-        stopped_on_failures = missing_completions and cycle.failures >= cycle.max_failures
+        stopped_on_failures = (
+            missing_completions and cycle.failures >= cycle.max_failures
+        )
         event = "queue_fill_stopped" if stopped_on_failures else "queue_fill_completed"
         payload = {
             "completed": completed_slots,
@@ -755,7 +786,9 @@ class TrackController:
             # Persist launcher metadata and mark the trial as launched.
             # Only write launcher metadata when the launcher returned some.
             if launch_metadata:
-                self.repository.record_trial_launcher_metadata(trial.trial_id, launch_metadata)
+                self.repository.record_trial_launcher_metadata(
+                    trial.trial_id, launch_metadata
+                )
             with self._condition:
                 self._result.launched_trial_ids.append(trial.trial_id)
                 self._condition.notify_all()
@@ -777,11 +810,9 @@ class RunnerLauncher(Protocol):
         trial_id: str,
         dispatch_token: str,
         launch_policy: dict[str, Any] | None = None,
-    ) -> dict[str, Any] | None:
-        ...
+    ) -> dict[str, Any] | None: ...
 
-    def cancel_run(self, launcher_metadata: dict[str, Any]) -> None:
-        ...
+    def cancel_run(self, launcher_metadata: dict[str, Any]) -> None: ...
 
 
 class InlineRunnerLauncher:
@@ -864,7 +895,9 @@ class Orchestrator:
         self.dataset_manager = dataset_manager
         self.generator = generator
         self.launcher = launcher
-        self.generation = GenerationCoordinator(repository=repository, generator=generator)
+        self.generation = GenerationCoordinator(
+            repository=repository, generator=generator
+        )
 
     def _sample_successful_context_trials(
         self,
@@ -951,7 +984,9 @@ class Orchestrator:
             track_id=track_id,
             launcher=self.launcher.__class__.__name__,
         )
-        initial_queue_count = self.repository.count_trials(track_id, statuses={"queued"})
+        initial_queue_count = self.repository.count_trials(
+            track_id, statuses={"queued"}
+        )
         if initial_queue_count >= ready_queue_threshold:
             # Skip the fill phase when the queue already meets the target threshold.
             emit_report_event(
@@ -1005,7 +1040,9 @@ class EvolutionSystem:
         self.generator = generator
         self.launcher = launcher
         self.runner_service = runner_service
-        self.orchestrator = Orchestrator(repository, dataset_manager, generator, launcher)
+        self.orchestrator = Orchestrator(
+            repository, dataset_manager, generator, launcher
+        )
 
     def prepare_dataset(self, dataset_id: str) -> DatasetRecord:
         # Prepare the dataset locally and return the current manifest location.
@@ -1067,14 +1104,24 @@ class EvolutionSystem:
             ready_queue_threshold=ready_queue_threshold,
         )
 
-    def claim_trial(self, trial_id: str, dispatch_token: str, runner_id: str) -> TrialRecord | None:
-        return self.repository.claim_trial(trial_id=trial_id, dispatch_token=dispatch_token, runner_id=runner_id)
+    def claim_trial(
+        self, trial_id: str, dispatch_token: str, runner_id: str
+    ) -> TrialRecord | None:
+        return self.repository.claim_trial(
+            trial_id=trial_id, dispatch_token=dispatch_token, runner_id=runner_id
+        )
 
     def heartbeat_trial(self, trial_id: str, runner_id: str, meta: dict) -> None:
-        self.repository.heartbeat_trial(trial_id=trial_id, runner_id=runner_id, meta=meta)
+        self.repository.heartbeat_trial(
+            trial_id=trial_id, runner_id=runner_id, meta=meta
+        )
 
-    def update_active_trial_metrics(self, trial_id: str, runner_id: str, metrics: dict) -> None:
-        self.repository.update_active_trial_metrics(trial_id=trial_id, runner_id=runner_id, metrics=metrics)
+    def update_active_trial_metrics(
+        self, trial_id: str, runner_id: str, metrics: dict
+    ) -> None:
+        self.repository.update_active_trial_metrics(
+            trial_id=trial_id, runner_id=runner_id, metrics=metrics
+        )
 
     def finalize_trial(
         self,
@@ -1115,7 +1162,9 @@ def build_system(
         providers=effective_providers,
     )
     generator = OpenRouterGenerationBackend(api_key=openrouter_api_key)
-    runner_service = RunnerService(repository=repository, dataset_manager=dataset_manager)
+    runner_service = RunnerService(
+        repository=repository, dataset_manager=dataset_manager
+    )
     launcher = launcher or InlineRunnerLauncher(runner_service)
 
     # Return the fully wired orchestration facade.

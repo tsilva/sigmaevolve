@@ -8,7 +8,6 @@ import sqlalchemy as sa
 
 from sigmaevolve.storage import (
     classify_error_type,
-    tracks_table,
     trials_table,
 )
 from tests.support import make_llm_provenance
@@ -74,11 +73,15 @@ def test_track_and_trial_mutations_publish_dashboard_notifications(repository):
     assert trial is not None
     assert notifications[-1] == (track.track_id, "trial_changed")
 
-    reserved = repository.reserve_trials(track.track_id, max_parallelism=1, dispatch_ttl_sec=60, limit=1)
+    reserved = repository.reserve_trials(
+        track.track_id, max_parallelism=1, dispatch_ttl_sec=60, limit=1
+    )
     assert len(reserved) == 1
     assert notifications[-1] == (track.track_id, "trial_changed")
 
-    claimed = repository.claim_trial(reserved[0].trial_id, reserved[0].dispatch_token, "runner-1")
+    claimed = repository.claim_trial(
+        reserved[0].trial_id, reserved[0].dispatch_token, "runner-1"
+    )
     assert claimed is not None
     assert notifications[-1] == (track.track_id, "trial_changed")
 
@@ -92,7 +95,9 @@ def test_track_and_trial_mutations_publish_dashboard_notifications(repository):
     assert notifications[-1] == (track.track_id, "trial_changed")
 
 
-def test_update_active_trial_metrics_updates_only_matching_active_runner_and_notifies(repository):
+def test_update_active_trial_metrics_updates_only_matching_active_runner_and_notifies(
+    repository,
+):
     notifications = _capture_dashboard_notifications(repository)
     track = _create_track(repository)
     trial, created = repository.create_queued_trial_if_absent(
@@ -103,14 +108,23 @@ def test_update_active_trial_metrics_updates_only_matching_active_runner_and_not
     assert created is True
     assert trial is not None
 
-    reserved = repository.reserve_trials(track.track_id, max_parallelism=1, dispatch_ttl_sec=60, limit=1)
-    claimed = repository.claim_trial(reserved[0].trial_id, reserved[0].dispatch_token, "runner-1")
+    reserved = repository.reserve_trials(
+        track.track_id, max_parallelism=1, dispatch_ttl_sec=60, limit=1
+    )
+    claimed = repository.claim_trial(
+        reserved[0].trial_id, reserved[0].dispatch_token, "runner-1"
+    )
     assert claimed is not None
 
     repository.update_active_trial_metrics(
         trial_id=claimed.trial_id,
         runner_id="runner-1",
-        metrics={"accuracy": 0.5, "eval_count": 1, "last_phase": "train", "best_accuracy": 0.5},
+        metrics={
+            "accuracy": 0.5,
+            "eval_count": 1,
+            "last_phase": "train",
+            "best_accuracy": 0.5,
+        },
     )
     updated = repository.get_trial(claimed.trial_id)
     assert updated is not None
@@ -153,8 +167,12 @@ def test_finalize_trial_overwrites_interim_metrics_and_slims_payload(repository)
     assert created is True
     assert trial is not None
 
-    reserved = repository.reserve_trials(track.track_id, max_parallelism=1, dispatch_ttl_sec=60, limit=1)
-    claimed = repository.claim_trial(reserved[0].trial_id, reserved[0].dispatch_token, "runner-1")
+    reserved = repository.reserve_trials(
+        track.track_id, max_parallelism=1, dispatch_ttl_sec=60, limit=1
+    )
+    claimed = repository.claim_trial(
+        reserved[0].trial_id, reserved[0].dispatch_token, "runner-1"
+    )
     assert claimed is not None
 
     repository.update_active_trial_metrics(
@@ -220,7 +238,10 @@ def test_failed_trials_persist_compact_error_payload_and_classify_on_read(reposi
         "stderr": "trace",
         "returncode": 1,
     }
-    assert classify_error_type(updated.outcome_reason or "", updated.error_json) == "evaluation_artifact_error"
+    assert (
+        classify_error_type(updated.outcome_reason or "", updated.error_json)
+        == "evaluation_artifact_error"
+    )
 
 
 def test_generation_attempt_trial_persists_slim_failure_provenance(repository):
@@ -256,7 +277,10 @@ def test_generation_attempt_trial_persists_slim_failure_provenance(repository):
         "reason": "candidate_materialization_failed",
         "finish_reason": "length",
     }
-    assert classify_error_type(trial.outcome_reason or "", trial.error_json) == "generation_output_truncated"
+    assert (
+        classify_error_type(trial.outcome_reason or "", trial.error_json)
+        == "generation_output_truncated"
+    )
     assert trial.provenance_json == {
         "backend": "openrouter",
         "model": "worker",
@@ -366,7 +390,9 @@ def test_trial_indexes_exist():
     assert "created_at" in rendered[2]
 
 
-def test_sample_trial_context_includes_scored_timeouts_and_uses_time_to_best_eval_tiebreak(repository):
+def test_sample_trial_context_includes_scored_timeouts_and_uses_time_to_best_eval_tiebreak(
+    repository,
+):
     track = _create_track(repository)
 
     fast_timeout, _ = repository.create_queued_trial_if_absent(
@@ -425,8 +451,12 @@ def test_runner_finalize_does_not_overwrite_stale_terminal_state(repository):
     assert created is True
     assert trial is not None
 
-    reserved = repository.reserve_trials(track.track_id, max_parallelism=1, dispatch_ttl_sec=60, limit=1)
-    claimed = repository.claim_trial(reserved[0].trial_id, reserved[0].dispatch_token, "runner-1")
+    reserved = repository.reserve_trials(
+        track.track_id, max_parallelism=1, dispatch_ttl_sec=60, limit=1
+    )
+    claimed = repository.claim_trial(
+        reserved[0].trial_id, reserved[0].dispatch_token, "runner-1"
+    )
     assert claimed is not None
 
     with repository.transaction() as conn:
@@ -532,7 +562,13 @@ def test_migrate_reduced_schema_rewrites_old_tables(repository):
                         "generation_backend": {
                             "backend": "openrouter",
                             "selection": "round_robin",
-                            "model_pool": [{"model": "test/model", "temperature": 0.1, "max_tokens": 1500}],
+                            "model_pool": [
+                                {
+                                    "model": "test/model",
+                                    "temperature": 0.1,
+                                    "max_tokens": 1500,
+                                }
+                            ],
                         },
                     }
                 )

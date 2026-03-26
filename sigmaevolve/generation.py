@@ -1,8 +1,32 @@
 from __future__ import annotations
 
+import json
+import os
+import random
+import re
+from concurrent.futures import Future, ThreadPoolExecutor
+from dataclasses import dataclass
+from difflib import SequenceMatcher
+from functools import lru_cache
+from importlib import resources
 from pathlib import Path
+from textwrap import indent
+from typing import Any, Protocol
+from urllib import request
+from urllib.error import HTTPError, URLError
 
-from sigmaevolve.core import normalize_source
+from sigmaevolve.core import (
+    CANDIDATE_KIND_STRATEGY_V1,
+    OUTCOME_DUPLICATE,
+    OUTCOME_GENERATION_FAILED,
+    DatasetManifest,
+    GenerationResult,
+    ReconcileResult,
+    TrackRecord,
+    TrialSummary,
+    compute_script_hash,
+    normalize_source,
+)
 
 _BASELINE_TEMPLATE_PATH = Path(__file__).with_name("baseline_template.py")
 
@@ -10,12 +34,6 @@ _BASELINE_TEMPLATE_PATH = Path(__file__).with_name("baseline_template.py")
 def build_baseline_train_script() -> str:
     template_source = _BASELINE_TEMPLATE_PATH.read_text(encoding="utf-8")
     return normalize_source(template_source)
-
-import os
-import re
-from dataclasses import dataclass
-
-from sigmaevolve.core import normalize_source
 
 
 EVOLVE_BLOCK_START = "# EVOLVE-BLOCK-START"
@@ -119,7 +137,9 @@ def extract_evolve_block_payloads(source: str) -> list[str]:
     return block_payloads
 
 
-def replace_evolve_block_payloads(template_source: str, block_payloads: list[str]) -> str:
+def replace_evolve_block_payloads(
+    template_source: str, block_payloads: list[str]
+) -> str:
     immutable_parts, current_payloads = split_evolve_blocks(template_source)
     if len(block_payloads) != len(current_payloads):
         raise EvolveBlockError(
@@ -174,17 +194,20 @@ def parse_search_replace_blocks(response_text: str) -> list[SearchReplaceBlock]:
             replace_lines.append(lines[cursor])
             cursor += 1
         if cursor >= len(lines):
-            raise EvolveBlockError("SEARCH/REPLACE block is missing >>>>>>> REPLACE terminator")
+            raise EvolveBlockError(
+                "SEARCH/REPLACE block is missing >>>>>>> REPLACE terminator"
+            )
         cursor += 1
 
         search = "".join(search_lines)
         if not search:
-            raise EvolveBlockError("SEARCH/REPLACE block must include non-empty SEARCH text")
+            raise EvolveBlockError(
+                "SEARCH/REPLACE block must include non-empty SEARCH text"
+            )
         replace = "".join(replace_lines)
-        contains_marker_line = (
-            _contains_evolve_block_marker_line(search)
-            or _contains_evolve_block_marker_line(replace)
-        )
+        contains_marker_line = _contains_evolve_block_marker_line(
+            search
+        ) or _contains_evolve_block_marker_line(replace)
         if contains_marker_line:
             raise EvolveBlockError(
                 "SEARCH/REPLACE blocks may not include evolve block marker lines"
@@ -198,14 +221,18 @@ def parse_search_replace_blocks(response_text: str) -> list[SearchReplaceBlock]:
     return blocks
 
 
-def apply_search_replace_blocks(current_source: str, blocks: list[SearchReplaceBlock]) -> str:
+def apply_search_replace_blocks(
+    current_source: str, blocks: list[SearchReplaceBlock]
+) -> str:
     updated_lines = normalize_source(current_source).splitlines(keepends=True)
     for index, block in enumerate(blocks, start=1):
         search_lines = normalize_source(block.search).splitlines(keepends=True)
         replace_lines, _ = _canonicalize_patch_text(block.replace)
         matches = _find_matching_line_ranges(updated_lines, search_lines)
         if not matches:
-            raise EvolveBlockError(f"SEARCH block {index} did not match the current program")
+            raise EvolveBlockError(
+                f"SEARCH block {index} did not match the current program"
+            )
         if len(matches) > 1:
             raise EvolveBlockError(
                 f"SEARCH block {index} matched multiple locations in the current program"
@@ -230,7 +257,8 @@ def materialize_candidate_source(current_source: str, generated_source: str) -> 
 
     # Accept a full program only when both evolve-block markers are present.
     has_evolve_block_tags = (
-        EVOLVE_BLOCK_START in normalized_generated and EVOLVE_BLOCK_END in normalized_generated
+        EVOLVE_BLOCK_START in normalized_generated
+        and EVOLVE_BLOCK_END in normalized_generated
     )
     if has_evolve_block_tags:
         return normalized_generated
@@ -239,34 +267,17 @@ def materialize_candidate_source(current_source: str, generated_source: str) -> 
     )
 
 
-def assert_only_evolve_blocks_changed(parent_source: str, candidate_source: str) -> None:
+def assert_only_evolve_blocks_changed(
+    parent_source: str, candidate_source: str
+) -> None:
     parent_parts, parent_payloads = split_evolve_blocks(parent_source)
     candidate_parts, candidate_payloads = split_evolve_blocks(candidate_source)
     if parent_parts != candidate_parts:
-        raise EvolveBlockError("candidate modified immutable text outside evolve blocks")
+        raise EvolveBlockError(
+            "candidate modified immutable text outside evolve blocks"
+        )
     if len(parent_payloads) != len(candidate_payloads):
         raise EvolveBlockError("candidate changed the number of evolve blocks")
-
-
-import json
-import os
-import random
-import re
-from difflib import SequenceMatcher
-from functools import lru_cache
-from importlib import resources
-from dataclasses import dataclass
-from typing import Protocol
-from urllib import request
-from urllib.error import HTTPError, URLError
-
-from sigmaevolve.core import (
-    CANDIDATE_KIND_STRATEGY_V1,
-    DatasetManifest,
-    GenerationResult,
-    TrackRecord,
-    TrialSummary,
-)
 
 
 class GenerationBackend(Protocol):
@@ -278,8 +289,7 @@ class GenerationBackend(Protocol):
         negative_trials: list[TrialSummary] | None = None,
         generation_index: int = 0,
         duplicate_retry_count: int = 0,
-    ) -> GenerationResult:
-        ...
+    ) -> GenerationResult: ...
 
 
 @dataclass(frozen=True)
@@ -343,7 +353,11 @@ class FixedGenerationBackend:
 
 @lru_cache(maxsize=None)
 def _load_prompt_template(name: str) -> str:
-    return (resources.files("sigmaevolve.prompts") / name).read_text(encoding="utf-8").strip()
+    return (
+        (resources.files("sigmaevolve.prompts") / name)
+        .read_text(encoding="utf-8")
+        .strip()
+    )
 
 
 def _render_prompt_template(name: str, **variables: str) -> str:
@@ -353,7 +367,9 @@ def _render_prompt_template(name: str, **variables: str) -> str:
     def replace_variable(match: re.Match[str]) -> str:
         variable_name = match.group(1)
         if variable_name not in variables:
-            raise ValueError(f"Prompt template {name!r} is missing variable {variable_name!r}.")
+            raise ValueError(
+                f"Prompt template {name!r} is missing variable {variable_name!r}."
+            )
         return variables[variable_name]
 
     return re.sub(r"{{([a-zA-Z0-9_]+)}}", replace_variable, template)
@@ -477,7 +493,9 @@ class OpenRouterGenerationBackend:
                         nested = ", ".join(self._format_scalar(part) for part in item)
                         lines.append(f"{' ' * (indent + 2)}- {nested}")
                     else:
-                        lines.append(f"{' ' * (indent + 2)}- {self._format_scalar(item)}")
+                        lines.append(
+                            f"{' ' * (indent + 2)}- {self._format_scalar(item)}"
+                        )
                 continue
             lines.append(f"{prefix}- {label}: {self._format_scalar(value)}")
         return lines
@@ -520,9 +538,7 @@ class OpenRouterGenerationBackend:
     def _strip_evolve_block_tags(self, source: str) -> str:
         lines = source.splitlines()
         filtered_lines = [
-            line
-            for line in lines
-            if line not in {EVOLVE_BLOCK_START, EVOLVE_BLOCK_END}
+            line for line in lines if line not in {EVOLVE_BLOCK_START, EVOLVE_BLOCK_END}
         ]
         return "\n".join(filtered_lines) + ("\n" if source.endswith("\n") else "")
 
@@ -589,7 +605,9 @@ class OpenRouterGenerationBackend:
         prior_programs = context_trials[1:] if len(context_trials) > 1 else []
         current_program_stripped_source = None
         if current_program is not None:
-            current_program_stripped_source = self._strip_evolve_block_tags(current_program.source)
+            current_program_stripped_source = self._strip_evolve_block_tags(
+                current_program.source
+            )
 
         # Render prior programs in diff-focused form when the prompt has history.
         if prior_programs:
@@ -610,7 +628,9 @@ class OpenRouterGenerationBackend:
 
         # Render the primary current program in full so the model has a base candidate.
         if current_program is not None:
-            current_program_text = "\n".join(self._render_trial_prompt_block(current_program))
+            current_program_text = "\n".join(
+                self._render_trial_prompt_block(current_program)
+            )
         else:
             current_program_text = "None."
         return _render_prompt_template(
@@ -653,10 +673,14 @@ class OpenRouterGenerationBackend:
     ) -> _GenerationRequestContext:
         # Resolve the concrete generation config before constructing prompt text.
         generation_policy = dict(track.policy_json["generation_backend"])
-        generation_policy["_generation_index"] = generation_index + duplicate_retry_count
+        generation_policy["_generation_index"] = (
+            generation_index + duplicate_retry_count
+        )
         selected_config = self._normalize_generation_config(generation_policy)
         selected_temperature = float(selected_config.get("temperature", 0.2))
-        selected_config["temperature"] = selected_temperature + (0.1 * duplicate_retry_count)
+        selected_config["temperature"] = selected_temperature + (
+            0.1 * duplicate_retry_count
+        )
 
         request_messages = self._build_prompt(
             track,
@@ -686,7 +710,9 @@ class OpenRouterGenerationBackend:
         # Preserve the prompt text and response metadata in a single provenance shape.
         request_messages = context.request_messages
         system_prompt = request_messages[0]["content"] if request_messages else ""
-        user_prompt = request_messages[1]["content"] if len(request_messages) > 1 else ""
+        user_prompt = (
+            request_messages[1]["content"] if len(request_messages) > 1 else ""
+        )
         generation_payload: dict[str, object] = {
             "system_prompt": system_prompt,
             "user_prompt": user_prompt,
@@ -922,7 +948,10 @@ class OpenRouterGenerationBackend:
         except URLError as exc:
             return self._build_generation_result(
                 context=context,
-                error_info={"reason": "provider_request_failed", "detail": str(exc.reason)},
+                error_info={
+                    "reason": "provider_request_failed",
+                    "detail": str(exc.reason),
+                },
             )
         except Exception as exc:
             return self._build_generation_result(
@@ -983,22 +1012,6 @@ class OpenRouterGenerationBackend:
         )
 
 
-import random
-from concurrent.futures import Future, ThreadPoolExecutor
-from dataclasses import dataclass
-from typing import Any
-
-from sigmaevolve.core import compute_script_hash
-from sigmaevolve.core import (
-    CANDIDATE_KIND_STRATEGY_V1,
-    GenerationResult,
-    OUTCOME_DUPLICATE,
-    OUTCOME_GENERATION_FAILED,
-    ReconcileResult,
-    TrialSummary,
-)
-
-
 @dataclass(frozen=True)
 class GenerationAttempt:
     slot_index: int
@@ -1049,8 +1062,12 @@ class GenerationCoordinator:
             remaining_weights.pop(selected_index)
 
         # Return the sampled trials in a stable best-first order.
-        candidate_ranks = {trial.trial_id: index for index, trial in enumerate(candidates)}
-        sampled.sort(key=lambda trial: (-float(trial.score), candidate_ranks[trial.trial_id]))
+        candidate_ranks = {
+            trial.trial_id: index for index, trial in enumerate(candidates)
+        }
+        sampled.sort(
+            key=lambda trial: (-float(trial.score), candidate_ranks[trial.trial_id])
+        )
         return sampled
 
     def sample_generation_context_trials(
@@ -1084,7 +1101,9 @@ class GenerationCoordinator:
             return [
                 TrialSummary(
                     trial_id=trial.trial_id,
-                    metrics_json=dict(trial.metrics_json) if trial.metrics_json else None,
+                    metrics_json=dict(trial.metrics_json)
+                    if trial.metrics_json
+                    else None,
                     source=trial.source,
                     provenance_json=provenance,
                     outcome_reason=trial.outcome_reason,
@@ -1151,13 +1170,19 @@ class GenerationCoordinator:
         model = generation_backend.get("model")
         if not isinstance(model, str) or not model:
             model_pool = generation_backend.get("model_pool")
-            if isinstance(model_pool, list) and model_pool and isinstance(model_pool[0], dict):
+            if (
+                isinstance(model_pool, list)
+                and model_pool
+                and isinstance(model_pool[0], dict)
+            ):
                 pool_model = model_pool[0].get("model")
                 model = str(pool_model) if pool_model else "unknown"
             else:
                 model = "unknown"
 
-        system_prompt = "Generation backend failed before prompts could be fully recorded."
+        system_prompt = (
+            "Generation backend failed before prompts could be fully recorded."
+        )
         user_prompt = (
             "No user prompt was captured because generation aborted before the "
             "provider call completed."
@@ -1300,7 +1325,9 @@ class GenerationCoordinator:
         result.duplicate_trial_ids.append(duplicate_trial.trial_id)
         return result
 
-    def materialize_candidate_source(self, parent_source: str, generated_source: str) -> str:
+    def materialize_candidate_source(
+        self, parent_source: str, generated_source: str
+    ) -> str:
         candidate_source = materialize_candidate_source(parent_source, generated_source)
         assert_only_evolve_blocks_changed(parent_source, candidate_source)
         return candidate_source
@@ -1348,9 +1375,6 @@ class GenerationCoordinator:
             "event": "generation_duplicate",
             "payload": {"existing_trial_id": trial.trial_id},
         }
-
-
-from textwrap import indent
 
 
 CONFIG_BLOCK_INDEX = 0
