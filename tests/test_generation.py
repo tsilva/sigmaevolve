@@ -597,13 +597,13 @@ def test_materialize_candidate_source_matches_search_blocks_without_outer_indent
     response = """<<<<<<< SEARCH
     "learning_rate": 0.002,
     "weight_decay": 1e-4,
-    "scheduler_max_lr": 0.002,
-    "scheduler_pct_start": 0.2,
+    "label_smoothing": 0.0,
+    "grad_clip_norm": 1.0,
 =======
     "learning_rate": 0.001,
     "weight_decay": 1e-5,
-    "scheduler_max_lr": 0.005,
-    "scheduler_pct_start": 0.25,
+    "label_smoothing": 0.1,
+    "grad_clip_norm": 0.5,
 >>>>>>> REPLACE
 """
 
@@ -627,14 +627,7 @@ CONFIG = {
     "initial_best_accuracy": -1.0,
     "accuracy_improvement_tol": 1e-8,
     "model": {
-        "mlp_hidden_dims": (256, 128),
-        "cnn_channels": (24, 48),
-        "cnn_kernel_sizes": (5, 3),
-        "cnn_paddings": (2, 1),
-        "cnn_pool_kernel_size": 2,
-        "cnn_adaptive_pool_size": (4, 4),
-        "cnn_projection_dim": 64,
-        "dropout_p": 0.1,
+        "hidden_dims": (256, 128),
     },
     "data": {
         "max_batch_size": 512,
@@ -644,16 +637,11 @@ CONFIG = {
     "optimization": {
         "learning_rate": 0.002,
         "weight_decay": 1e-4,
-        "scheduler_max_lr": 0.002,
-        "scheduler_pct_start": 0.2,
-        "label_smoothing_multiclass": 0.02,
-        "label_smoothing_binary": 0.0,
+        "label_smoothing": 0.0,
         "grad_clip_norm": 1.0,
     },
     "training_policy": {
-        "patience_threshold_epochs": 2,
         "early_stopping_patience": 2,
-        "short_run_patience": 0,
     },
 }
 """
@@ -670,33 +658,25 @@ def test_apply_search_replace_blocks_preserves_internal_indentation():
     source = build_baseline_train_script()
     response = """<<<<<<< SEARCH
 def configure_training_policy(*, num_epochs):
+    del num_epochs
     training_policy = CONFIG["training_policy"]
-    patience = (
-        training_policy["early_stopping_patience"]
-        if num_epochs > training_policy["patience_threshold_epochs"]
-        else training_policy["short_run_patience"]
-    )
     return {
-        "early_stopping_patience": patience,
+        "early_stopping_patience": training_policy["early_stopping_patience"],
     }
 =======
 def configure_training_policy(*, num_epochs):
+    del num_epochs
     training_policy = CONFIG["training_policy"]
-    patience = (
-        training_policy["early_stopping_patience"] + 3
-        if num_epochs > 5
-        else max(1, num_epochs // 2)
-    )
     return {
-        "early_stopping_patience": patience,
+        "early_stopping_patience": training_policy["early_stopping_patience"] + 3,
     }
 >>>>>>> REPLACE
 """
 
     updated = materialize_candidate_source(source, response)
 
-    assert '        training_policy["early_stopping_patience"] + 3' in updated
-    assert '        "early_stopping_patience": patience,' in updated
+    assert '        "early_stopping_patience": training_policy["early_stopping_patience"] + 3,' in updated
+    assert '    del num_epochs' in updated
     assert_only_evolve_blocks_changed(source, updated)
 
 

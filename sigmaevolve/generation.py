@@ -311,6 +311,15 @@ def _render_prompt_template(name: str, **variables: str) -> str:
     return re.sub(r"{{([a-zA-Z0-9_]+)}}", replace_variable, template)
 
 
+@dataclass(frozen=True)
+class _GenerationRequestContext:
+    selected_config: dict[str, object]
+    request_messages: list[dict[str, str]]
+    context_trials: list[TrialSummary]
+    generation_index: int
+    duplicate_retry_count: int
+
+
 class OpenRouterGenerationBackend:
     def __init__(
         self,
@@ -551,11 +560,41 @@ class OpenRouterGenerationBackend:
             {"role": "user", "content": user_prompt},
         ]
 
-    def _base_provenance(
+    def _build_request_context(
         self,
-        selected_config: dict[str, object],
-        request_messages: list[dict[str, str]],
+        track: TrackRecord,
+        dataset_manifest: DatasetManifest,
         context_trials: list[TrialSummary],
+        negative_trials: list[TrialSummary],
+        *,
+        generation_index: int,
+        duplicate_retry_count: int,
+    ) -> _GenerationRequestContext:
+        # Resolve the concrete generation config before constructing prompt text.
+        generation_policy = dict(track.policy_json["generation_backend"])
+        generation_policy["_generation_index"] = generation_index + duplicate_retry_count
+        selected_config = self._normalize_generation_config(generation_policy)
+        selected_temperature = float(selected_config.get("temperature", 0.2))
+        selected_config["temperature"] = selected_temperature + (0.1 * duplicate_retry_count)
+
+        request_messages = self._build_prompt(
+            track,
+            dataset_manifest,
+            context_trials,
+            negative_trials,
+            selected_config,
+        )
+        return _GenerationRequestContext(
+            selected_config=selected_config,
+            request_messages=request_messages,
+            context_trials=context_trials,
+            generation_index=generation_index,
+            duplicate_retry_count=duplicate_retry_count,
+        )
+
+    def _build_provenance(
+        self,
+        context: _GenerationRequestContext,
         *,
         generation_index: int,
         duplicate_retry_count: int,
@@ -564,6 +603,7 @@ class OpenRouterGenerationBackend:
         response_metadata: dict[str, object] | None = None,
     ) -> dict[str, object]:
         # Preserve the prompt text and response metadata in a single provenance shape.
+        request_messages = context.request_messages
         system_prompt = request_messages[0]["content"] if request_messages else ""
         user_prompt = request_messages[1]["content"] if len(request_messages) > 1 else ""
         generation_payload: dict[str, object] = {
@@ -581,13 +621,13 @@ class OpenRouterGenerationBackend:
         # Add the generation bookkeeping fields shared by success and failure cases.
         provenance_json: dict[str, object] = {
             "backend": "openrouter",
-            "model": str(selected_config["model"]),
+            "model": str(context.selected_config["model"]),
             "candidate_kind": CANDIDATE_KIND_STRATEGY_V1,
-            "generation_config": dict(selected_config),
+            "generation_config": dict(context.selected_config),
             "generation_index": generation_index,
             "duplicate_retry_count": duplicate_retry_count,
             "request_messages": request_messages,
-            "context_trial_ids": [trial.trial_id for trial in context_trials],
+            "context_trial_ids": [trial.trial_id for trial in context.context_trials],
             "generation": generation_payload,
         }
         if provider_response_id:
@@ -711,14 +751,11 @@ class OpenRouterGenerationBackend:
             error_info["error_type"] = "generation_provider_failure"
         return error_info
 
-    def _error_result(
+    def _build_generation_result(
         self,
         *,
-        selected_config: dict[str, object],
-        request_messages: list[dict[str, str]],
-        context_trials: list[TrialSummary],
-        generation_index: int,
-        duplicate_retry_count: int,
+        context: _GenerationRequestContext,
+        source: str | None = None,
         error_info: dict[str, object],
         provider_response_id: str | None = None,
         response_text: str | None = None,
@@ -726,18 +763,16 @@ class OpenRouterGenerationBackend:
     ) -> GenerationResult:
         # Wrap provider failures in the same provenance shape as successful results.
         return GenerationResult(
-            source=None,
-            provenance_json=self._base_provenance(
-                selected_config,
-                request_messages,
-                context_trials,
-                generation_index=generation_index,
-                duplicate_retry_count=duplicate_retry_count,
+            source=source,
+            provenance_json=self._build_provenance(
+                context,
+                generation_index=context.generation_index,
+                duplicate_retry_count=context.duplicate_retry_count,
                 provider_response_id=provider_response_id,
                 response_text=response_text,
                 response_metadata=response_metadata,
             ),
-            error_info=error_info,
+            error_info=dict(error_info) or None,
         )
 
     def generate(
@@ -749,41 +784,30 @@ class OpenRouterGenerationBackend:
         generation_index: int = 0,
         duplicate_retry_count: int = 0,
     ) -> GenerationResult:
-        # Resolve the concrete generation config for this attempt and retry number.
-        generation_policy = dict(track.policy_json["generation_backend"])
-        generation_policy["_generation_index"] = generation_index + duplicate_retry_count
-        selected_config = self._normalize_generation_config(generation_policy)
-        selected_temperature = float(selected_config.get("temperature", 0.2))
-        selected_config["temperature"] = selected_temperature + (0.1 * duplicate_retry_count)
-
-        # Build the request messages before checking provider credentials.
-        request_messages = self._build_prompt(
+        # Resolve the concrete generation config and prompt messages once up front.
+        context = self._build_request_context(
             track,
             dataset_manifest,
             context_trials,
             negative_trials or [],
-            selected_config,
+            generation_index=generation_index,
+            duplicate_retry_count=duplicate_retry_count,
         )
         if not self.api_key:
-            missing_api_key_error = {
-                "reason": "missing_api_key",
-                "detail": "OPENROUTER_API_KEY is required for OpenRouter generation.",
-            }
-            return self._error_result(
-                selected_config=selected_config,
-                request_messages=request_messages,
-                context_trials=context_trials,
-                generation_index=generation_index,
-                duplicate_retry_count=duplicate_retry_count,
-                error_info=missing_api_key_error,
+            return self._build_generation_result(
+                context=context,
+                error_info={
+                    "reason": "missing_api_key",
+                    "detail": "OPENROUTER_API_KEY is required for OpenRouter generation.",
+                },
             )
 
         # Build the OpenRouter request payload and HTTP request object.
         payload = {
-            "model": selected_config["model"],
-            "messages": request_messages,
-            "temperature": selected_config.get("temperature", 0.2),
-            "max_tokens": selected_config.get("max_tokens", 2500),
+            "model": context.selected_config["model"],
+            "messages": context.request_messages,
+            "temperature": context.selected_config.get("temperature", 0.2),
+            "max_tokens": context.selected_config.get("max_tokens", 2500),
         }
         req = request.Request(
             "https://openrouter.ai/api/v1/chat/completions",
@@ -803,12 +827,8 @@ class OpenRouterGenerationBackend:
                 raw_body = response.read().decode("utf-8")
         except HTTPError as exc:
             raw_body = exc.read().decode("utf-8", errors="replace")
-            return self._error_result(
-                selected_config=selected_config,
-                request_messages=request_messages,
-                context_trials=context_trials,
-                generation_index=generation_index,
-                duplicate_retry_count=duplicate_retry_count,
+            return self._build_generation_result(
+                context=context,
                 error_info={
                     "reason": "provider_http_error",
                     "detail": f"{exc.code} {exc.reason}",
@@ -817,21 +837,13 @@ class OpenRouterGenerationBackend:
                 },
             )
         except URLError as exc:
-            return self._error_result(
-                selected_config=selected_config,
-                request_messages=request_messages,
-                context_trials=context_trials,
-                generation_index=generation_index,
-                duplicate_retry_count=duplicate_retry_count,
+            return self._build_generation_result(
+                context=context,
                 error_info={"reason": "provider_request_failed", "detail": str(exc.reason)},
             )
         except Exception as exc:
-            return self._error_result(
-                selected_config=selected_config,
-                request_messages=request_messages,
-                context_trials=context_trials,
-                generation_index=generation_index,
-                duplicate_retry_count=duplicate_retry_count,
+            return self._build_generation_result(
+                context=context,
                 error_info={"reason": "provider_request_failed", "detail": str(exc)},
             )
 
@@ -839,22 +851,14 @@ class OpenRouterGenerationBackend:
         try:
             body = json.loads(raw_body)
         except json.JSONDecodeError as exc:
-            return self._error_result(
-                selected_config=selected_config,
-                request_messages=request_messages,
-                context_trials=context_trials,
-                generation_index=generation_index,
-                duplicate_retry_count=duplicate_retry_count,
+            return self._build_generation_result(
+                context=context,
                 error_info={"reason": "provider_response_invalid_json", "detail": str(exc), "response_body": raw_body},
             )
         choices = body.get("choices")
         if not isinstance(choices, list) or not choices:
-            return self._error_result(
-                selected_config=selected_config,
-                request_messages=request_messages,
-                context_trials=context_trials,
-                generation_index=generation_index,
-                duplicate_retry_count=duplicate_retry_count,
+            return self._build_generation_result(
+                context=context,
                 provider_response_id=body.get("id"),
                 error_info={"reason": "provider_response_missing_choices", "response_body": raw_body},
             )
@@ -865,12 +869,8 @@ class OpenRouterGenerationBackend:
         response_metadata = self._extract_response_metadata(body, choice)
         content = self._extract_message_content(message)
         if not isinstance(content, str) or not content.strip():
-            return self._error_result(
-                selected_config=selected_config,
-                request_messages=request_messages,
-                context_trials=context_trials,
-                generation_index=generation_index,
-                duplicate_retry_count=duplicate_retry_count,
+            return self._build_generation_result(
+                context=context,
                 provider_response_id=body.get("id"),
                 response_text=content if isinstance(content, str) else None,
                 response_metadata=response_metadata,
@@ -883,18 +883,13 @@ class OpenRouterGenerationBackend:
             )
 
         # Return the normalized source with a complete provenance record.
-        return GenerationResult(
+        return self._build_generation_result(
+            context=context,
             source=self._extract_source(content),
-            provenance_json=self._base_provenance(
-                selected_config,
-                request_messages,
-                context_trials,
-                generation_index=generation_index,
-                duplicate_retry_count=duplicate_retry_count,
-                provider_response_id=body.get("id"),
-                response_text=content,
-                response_metadata=response_metadata,
-            ),
+            provider_response_id=body.get("id"),
+            response_text=content,
+            response_metadata=response_metadata,
+            error_info={},
         )
 
 

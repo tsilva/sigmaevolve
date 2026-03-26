@@ -56,13 +56,13 @@ def read_split(path):
 
 
 def prepare_feature_tensor(features, *, input_shape=None):
-    input_shape = input_shape or tuple(int(dim) for dim in features.shape[1:])
-    if not input_shape:
+    del input_shape
+    if features.ndim < 2:
         raise TrainScriptContractError("training features must include at least one non-batch dimension")
-    tensor = torch.from_numpy(features.astype(np.float32))
-    if len(input_shape) == 2:
-        tensor = tensor.unsqueeze(1)
-    return input_shape, tensor.contiguous()
+
+    flat_features = features.reshape(int(features.shape[0]), -1)
+    tensor = torch.from_numpy(flat_features)
+    return (int(flat_features.shape[1]),), tensor.contiguous()
 
 # EVOLVE-BLOCK-START
 
@@ -73,14 +73,7 @@ CONFIG = {
     "initial_best_accuracy": -1.0,
     "accuracy_improvement_tol": 1e-9,
     "model": {
-        "mlp_hidden_dims": (256, 128),
-        "cnn_channels": (24, 48),
-        "cnn_kernel_sizes": (5, 3),
-        "cnn_paddings": (2, 1),
-        "cnn_pool_kernel_size": 2,
-        "cnn_adaptive_pool_size": (4, 4),
-        "cnn_projection_dim": 64,
-        "dropout_p": 0.1,
+        "hidden_dims": (256, 128),
     },
     "data": {
         "max_batch_size": 512,
@@ -90,28 +83,23 @@ CONFIG = {
     "optimization": {
         "learning_rate": 0.002,
         "weight_decay": 1e-4,
-        "scheduler_max_lr": 0.002,
-        "scheduler_pct_start": 0.2,
-        "label_smoothing_multiclass": 0.02,
-        "label_smoothing_binary": 0.0,
+        "label_smoothing": 0.0,
         "grad_clip_norm": 1.0,
     },
     "training_policy": {
-        "patience_threshold_epochs": 2,
         "early_stopping_patience": 2,
-        "short_run_patience": 0,
     },
 }
 
 # EVOLVE-BLOCK-END
 
 def normalize_feature_tensors(train_x, validation_x):
-    if train_x.ndim <= 1:
-        raise TrainScriptContractError("feature tensors must be at least 2D including the batch axis")
-    reduce_dims = (0,) if train_x.ndim == 2 else (0,) + tuple(range(2, train_x.ndim))
-    mean = train_x.mean(dim=reduce_dims, keepdim=True)
+    if train_x.ndim != 2 or validation_x.ndim != 2:
+        raise TrainScriptContractError("feature tensors must be 2D after flattening")
+
+    mean = train_x.mean(dim=0, keepdim=True)
     std = train_x.std(
-        dim=reduce_dims,
+        dim=0,
         keepdim=True,
         unbiased=False,
     ).clamp_min(CONFIG["normalization_std_floor"])
@@ -189,40 +177,16 @@ class EvolvedModel(torch.nn.Module):
     def __init__(self, input_shape, num_classes):
         super().__init__()
         model_config = CONFIG["model"]
-        if len(input_shape) <= 1:
-            flat_dim = int(np.prod(input_shape))
-            hidden_dim_1, hidden_dim_2 = model_config["mlp_hidden_dims"]
-            self.network = torch.nn.Sequential(
-                torch.nn.Linear(flat_dim, hidden_dim_1),
-                torch.nn.GELU(),
-                torch.nn.Linear(hidden_dim_1, hidden_dim_2),
-                torch.nn.GELU(),
-                torch.nn.Linear(hidden_dim_2, num_classes),
-            )
-        else:
-            channels = 1 if len(input_shape) == 2 else int(input_shape[0])
-            conv_channels_1, conv_channels_2 = model_config["cnn_channels"]
-            kernel_size_1, kernel_size_2 = model_config["cnn_kernel_sizes"]
-            padding_1, padding_2 = model_config["cnn_paddings"]
-            adaptive_pool_size = model_config["cnn_adaptive_pool_size"]
-            projection_dim = model_config["cnn_projection_dim"]
-            self.network = torch.nn.Sequential(
-                torch.nn.Conv2d(channels, conv_channels_1, kernel_size=kernel_size_1, padding=padding_1),
-                torch.nn.GELU(),
-                torch.nn.MaxPool2d(model_config["cnn_pool_kernel_size"]),
-                torch.nn.Conv2d(conv_channels_1, conv_channels_2, kernel_size=kernel_size_2, padding=padding_2),
-                torch.nn.GELU(),
-                torch.nn.MaxPool2d(model_config["cnn_pool_kernel_size"]),
-                torch.nn.AdaptiveAvgPool2d(adaptive_pool_size),
-                torch.nn.Flatten(),
-                torch.nn.Linear(
-                    conv_channels_2 * adaptive_pool_size[0] * adaptive_pool_size[1],
-                    projection_dim,
-                ),
-                torch.nn.GELU(),
-                torch.nn.Dropout(p=model_config["dropout_p"]),
-                torch.nn.Linear(projection_dim, num_classes),
-            )
+        flat_dim = int(np.prod(input_shape))
+        hidden_dim_1, hidden_dim_2 = model_config["hidden_dims"]
+
+        self.network = torch.nn.Sequential(
+            torch.nn.Linear(flat_dim, hidden_dim_1),
+            torch.nn.ReLU(),
+            torch.nn.Linear(hidden_dim_1, hidden_dim_2),
+            torch.nn.ReLU(),
+            torch.nn.Linear(hidden_dim_2, num_classes),
+        )
 
     def forward(self, x):
         return self.network(x)
@@ -273,30 +237,23 @@ def configure_data(*, train_x, train_y, validation_x, random_seed):
 # EVOLVE-BLOCK-START
 
 def configure_optimization(*, model, train_loader, num_epochs, num_classes):
+    del train_loader
+    del num_epochs
+    del num_classes
     optimization_config = CONFIG["optimization"]
     trainable_parameters = [parameter for parameter in model.parameters() if parameter.requires_grad]
-    optimizer = scheduler = None
+    optimizer = None
     if trainable_parameters:
         optimizer = torch.optim.AdamW(
             trainable_parameters,
             lr=optimization_config["learning_rate"],
             weight_decay=optimization_config["weight_decay"],
         )
-        scheduler = torch.optim.lr_scheduler.OneCycleLR(
-            optimizer,
-            max_lr=optimization_config["scheduler_max_lr"],
-            total_steps=max(1, num_epochs * max(1, len(train_loader))),
-            pct_start=optimization_config["scheduler_pct_start"],
-        )
     return {
         "trainable_parameters": trainable_parameters,
         "optimizer": optimizer,
-        "scheduler": scheduler,
-        "label_smoothing": (
-            optimization_config["label_smoothing_multiclass"]
-            if num_classes > 2
-            else optimization_config["label_smoothing_binary"]
-        ),
+        "scheduler": None,
+        "label_smoothing": optimization_config["label_smoothing"],
         "grad_clip_norm": optimization_config["grad_clip_norm"],
     }
 
@@ -305,14 +262,10 @@ def configure_optimization(*, model, train_loader, num_epochs, num_classes):
 # EVOLVE-BLOCK-START
 
 def configure_training_policy(*, num_epochs):
+    del num_epochs
     training_policy = CONFIG["training_policy"]
-    patience = (
-        training_policy["early_stopping_patience"]
-        if num_epochs > training_policy["patience_threshold_epochs"]
-        else training_policy["short_run_patience"]
-    )
     return {
-        "early_stopping_patience": patience,
+        "early_stopping_patience": training_policy["early_stopping_patience"],
     }
 
 # EVOLVE-BLOCK-END
@@ -359,7 +312,7 @@ def main(argv=None):
         input_shape, train_x = prepare_feature_tensor(train_features)
         _, validation_x = prepare_feature_tensor(validation_features, input_shape=input_shape)
         train_x, validation_x = normalize_feature_tensors(train_x, validation_x)
-        train_y = torch.from_numpy(train_labels.astype(np.int64))
+        train_y = torch.from_numpy(train_labels)
         validation_y = torch.from_numpy(validation_labels.astype(np.int64))
         num_classes = int(dataset_metadata.get("num_classes") or (np.max(train_labels) + 1))
 

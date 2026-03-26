@@ -133,16 +133,19 @@ def deploy_modal_app(
 ) -> dict[str, Any]:
     # Reject unsupported deployment names until the deployed module supports them.
     modal = require_modal()
-    if (
+    uses_default_names = (
         app_name != DEFAULT_MODAL_APP_NAME
         or function_name != DEFAULT_MODAL_FUNCTION_NAME
         or dataset_volume_name != DEFAULT_MODAL_DATASET_VOLUME
         or dataset_mount_path != DEFAULT_MODAL_DATASET_MOUNT
-    ):
+    )
+    if uses_default_names:
         raise ValueError(
             "Custom Modal app/function/volume names are not yet supported by the deployed app module. "
             "Use the defaults for now."
         )
+
+    # Import the deployed app object only after the configuration has been validated.
     from sigmaevolve.modal import app
 
     # Deploy the app with Modal's progress output enabled.
@@ -169,7 +172,8 @@ def sync_dataset_to_modal(
     manager = DatasetManager(local_dataset_root, providers={})
     manifest_path = manager.manifest_path_for(dataset_id)
     local_dir = manifest_path.parent
-    if not manifest_path.exists():
+    manifest_exists = manifest_path.exists()
+    if not manifest_exists:
         raise FileNotFoundError(f"Dataset manifest not found locally for {dataset_id!r}: {manifest_path}")
 
     # Open the target volume and upload the dataset directory in one batch.
@@ -244,15 +248,19 @@ class TrialRunner:
         dataset_root: str = DEFAULT_MODAL_DATASET_MOUNT,
         wandb_env: dict[str, str] | None = None,
     ) -> None:
+        # Import the heavy runtime dependencies lazily inside the Modal worker.
         from sigmaevolve.datasets import DatasetManager
         from sigmaevolve.execution import RunnerService
         from sigmaevolve.storage import SQLAlchemyRepository
 
+        # Reconstruct the repository and dataset manager from the remote runtime inputs.
         apply_wandb_env(wandb_env)
         if isinstance(database_url, str) and database_url:
             os.environ.setdefault("DATABASE_URL", database_url)
         repository = SQLAlchemyRepository(database_url)
         dataset_manager = DatasetManager(Path(dataset_root), providers={})
         runner = RunnerService(repository=repository, dataset_manager=dataset_manager)
+
+        # Run the reserved trial with a unique Modal-scoped runner identity.
         runner_id = f"modal_{uuid4().hex}"
         runner.run_reserved_trial(trial_id=trial_id, dispatch_token=dispatch_token, runner_id=runner_id)

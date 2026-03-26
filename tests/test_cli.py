@@ -12,6 +12,7 @@ import pytest
 from sigmaevolve.cli import CliReconcileReporter
 from sigmaevolve.cli import main
 from sigmaevolve.core import DEFAULT_GENERATION_MODEL
+from sigmaevolve.env import resolve_runtime_config
 from sigmaevolve.storage import normalize_database_url
 
 
@@ -43,6 +44,48 @@ def _run_cli(argv: list[str]) -> tuple[int, str, str]:
     return code, out.getvalue(), err.getvalue()
 
 
+def _set_runtime_env(
+    monkeypatch,
+    *,
+    database_url: str | None = None,
+    dataset_root: str | None = None,
+    openrouter_api_key: str | None = None,
+    modal_app_name: str | None = None,
+    modal_function_name: str | None = None,
+    modal_dataset_volume: str | None = None,
+    modal_dataset_mount: str | None = None,
+    modal_environment_name: str | None = None,
+) -> None:
+    # Clear both scoped and fallback env names so each test owns its runtime config.
+    for key in (
+        "SIGMAEVOLVE_DATABASE_URL",
+        "DATABASE_URL",
+        "SIGMAEVOLVE_DATASET_ROOT",
+        "SIGMAEVOLVE_OPENROUTER_API_KEY",
+        "OPENROUTER_API_KEY",
+        "SIGMAEVOLVE_MODAL_APP_NAME",
+        "SIGMAEVOLVE_MODAL_FUNCTION_NAME",
+        "SIGMAEVOLVE_MODAL_DATASET_VOLUME",
+        "SIGMAEVOLVE_MODAL_DATASET_MOUNT",
+        "SIGMAEVOLVE_MODAL_ENVIRONMENT_NAME",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    values = {
+        "SIGMAEVOLVE_DATABASE_URL": database_url,
+        "SIGMAEVOLVE_DATASET_ROOT": None if dataset_root is None else str(dataset_root),
+        "SIGMAEVOLVE_OPENROUTER_API_KEY": openrouter_api_key,
+        "SIGMAEVOLVE_MODAL_APP_NAME": modal_app_name,
+        "SIGMAEVOLVE_MODAL_FUNCTION_NAME": modal_function_name,
+        "SIGMAEVOLVE_MODAL_DATASET_VOLUME": modal_dataset_volume,
+        "SIGMAEVOLVE_MODAL_DATASET_MOUNT": modal_dataset_mount,
+        "SIGMAEVOLVE_MODAL_ENVIRONMENT_NAME": modal_environment_name,
+    }
+    for key, value in values.items():
+        if value is not None:
+            monkeypatch.setenv(key, value)
+
+
 @pytest.fixture
 def patched_cli_system(monkeypatch):
     from sigmaevolve import cli as cli_module
@@ -60,10 +103,11 @@ def patched_cli_system(monkeypatch):
     monkeypatch.setattr(cli_module, "_make_system", fake_make_system)
 
 
-def test_cli_create_track_and_list_trials(tmp_path, patched_cli_system):
+def test_cli_create_track_and_list_trials(tmp_path, patched_cli_system, monkeypatch):
     del patched_cli_system
     db_url = f"sqlite:///{tmp_path / 'cli.sqlite'}"
     dataset_root = tmp_path / "datasets"
+    _set_runtime_env(monkeypatch, database_url=db_url, dataset_root=dataset_root)
     track_file = _write_track_file(
         tmp_path,
         {
@@ -72,10 +116,10 @@ def test_cli_create_track_and_list_trials(tmp_path, patched_cli_system):
         },
     )
 
-    code, stdout, _ = _run_cli(["--database-url", db_url, "--dataset-root", str(dataset_root), "create-track", track_file])
+    code, stdout, _ = _run_cli(["create-track", track_file])
     assert code == 0
     track_id = json.loads(stdout)["track_id"]
-    code, stdout, _ = _run_cli(["--database-url", db_url, "--dataset-root", str(dataset_root), "list-trials", track_id])
+    code, stdout, _ = _run_cli(["list-trials", track_id])
     assert code == 0
     trials = json.loads(stdout)
     assert len(trials) == 1
@@ -83,13 +127,14 @@ def test_cli_create_track_and_list_trials(tmp_path, patched_cli_system):
     assert trials[0]["time_to_best_eval_sec"] is None
 
 
-def test_cli_create_track_uses_default_generation_model(tmp_path, patched_cli_system):
+def test_cli_create_track_uses_default_generation_model(tmp_path, patched_cli_system, monkeypatch):
     del patched_cli_system
     db_url = f"sqlite:///{tmp_path / 'cli-default-policy.sqlite'}"
     dataset_root = tmp_path / "datasets"
+    _set_runtime_env(monkeypatch, database_url=db_url, dataset_root=dataset_root)
     track_file = _write_track_file(tmp_path, {"dataset_id": "mnist:v1"})
 
-    code, stdout, _ = _run_cli(["--database-url", db_url, "--dataset-root", str(dataset_root), "create-track", track_file])
+    code, stdout, _ = _run_cli(["create-track", track_file])
     assert code == 0
     track = json.loads(stdout)
     assert "max_parallelism" not in track["policy_json"]
@@ -98,10 +143,11 @@ def test_cli_create_track_uses_default_generation_model(tmp_path, patched_cli_sy
     assert pool[0]["model"] == DEFAULT_GENERATION_MODEL
 
 
-def test_cli_create_track_from_track_file(tmp_path, patched_cli_system):
+def test_cli_create_track_from_track_file(tmp_path, patched_cli_system, monkeypatch):
     del patched_cli_system
     db_url = f"sqlite:///{tmp_path / 'cli-policy.sqlite'}"
     dataset_root = tmp_path / "datasets"
+    _set_runtime_env(monkeypatch, database_url=db_url, dataset_root=dataset_root)
     track_file = _write_track_file(
         tmp_path,
         {
@@ -118,7 +164,7 @@ def test_cli_create_track_from_track_file(tmp_path, patched_cli_system):
         },
     )
 
-    code, stdout, _ = _run_cli(["--database-url", db_url, "--dataset-root", str(dataset_root), "create-track", track_file])
+    code, stdout, _ = _run_cli(["create-track", track_file])
     assert code == 0
     track = json.loads(stdout)
     pool = track["policy_json"]["generation_backend"]["model_pool"]
@@ -126,10 +172,11 @@ def test_cli_create_track_from_track_file(tmp_path, patched_cli_system):
     assert pool[1]["model"] == "anthropic/claude-sonnet-4.6"
 
 
-def test_cli_create_track_reports_progress_to_stderr(tmp_path, patched_cli_system):
+def test_cli_create_track_reports_progress_to_stderr(tmp_path, patched_cli_system, monkeypatch):
     del patched_cli_system
     db_url = f"sqlite:///{tmp_path / 'cli-create-track-progress.sqlite'}"
     dataset_root = tmp_path / "datasets"
+    _set_runtime_env(monkeypatch, database_url=db_url, dataset_root=dataset_root)
     track_file = _write_track_file(
         tmp_path,
         {
@@ -139,9 +186,7 @@ def test_cli_create_track_reports_progress_to_stderr(tmp_path, patched_cli_syste
         "create-track-progress.json",
     )
 
-    code, stdout, stderr = _run_cli(
-        ["--database-url", db_url, "--dataset-root", str(dataset_root), "create-track", track_file]
-    )
+    code, stdout, stderr = _run_cli(["create-track", track_file])
     assert code == 0
     payload = json.loads(stdout)
     assert payload["dataset_id"] == "mnist:v1"
@@ -152,8 +197,8 @@ def test_cli_create_track_reports_progress_to_stderr(tmp_path, patched_cli_syste
     assert f"Created track {payload['track_id']}." in stderr
     assert "Run it with:" in stderr
     assert f"launch {payload['track_id']} 1" in stderr
-    assert "--dataset-root" in stderr
-    assert "--launcher" in stderr
+    assert "--dataset-root" not in stderr
+    assert "--launcher" not in stderr
 
 
 def test_cli_loads_env_file_for_defaults(tmp_path, monkeypatch):
@@ -165,15 +210,16 @@ def test_cli_loads_env_file_for_defaults(tmp_path, monkeypatch):
     env_file.write_text(
         "\n".join(
             [
-                f"OPENROUTER_API_KEY=test-key",
+                f"SIGMAEVOLVE_DATABASE_URL=sqlite:///{db_path}",
+                f"SIGMAEVOLVE_DATASET_ROOT={dataset_root}",
+                f"SIGMAEVOLVE_OPENROUTER_API_KEY=test-key",
                 f"SENTINEL=loaded",
-                f"UNRELATED_PATH={dataset_root}",
             ]
         )
     )
 
     from sigmaevolve import cli as cli_module
-    from sigmaevolve.core import load_env_file
+    from sigmaevolve.env import load_env_file
 
     original_loader = load_env_file
 
@@ -181,11 +227,12 @@ def test_cli_loads_env_file_for_defaults(tmp_path, monkeypatch):
         return original_loader(env_file, override=override)
 
     monkeypatch.setattr(cli_module, "load_env_file", fake_loader)
-    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    _set_runtime_env(monkeypatch)
+    monkeypatch.delenv("SIGMAEVOLVE_OPENROUTER_API_KEY", raising=False)
     monkeypatch.delenv("SENTINEL", raising=False)
 
-    assert main(["--database-url", f"sqlite:///{db_path}", "--dataset-root", str(dataset_root), "list-trials", "missing"]) == 0
-    assert os.environ["OPENROUTER_API_KEY"] == "test-key"
+    assert main(["list-trials", "missing"]) == 0
+    assert os.environ["SIGMAEVOLVE_OPENROUTER_API_KEY"] == "test-key"
     assert os.environ["SENTINEL"] == "loaded"
 
 
@@ -206,11 +253,28 @@ def test_cli_modal_commands_call_support_helpers(tmp_path, monkeypatch):
     monkeypatch.setattr(cli_module, "deploy_modal_app", fake_deploy_modal_app)
     monkeypatch.setattr(cli_module, "sync_dataset_to_modal", fake_sync_dataset_to_modal)
 
-    assert main(["--modal-app-name", "custom-app", "modal-deploy"]) == 0
-    assert deployed["app_name"] == "custom-app"
+    _set_runtime_env(
+        monkeypatch,
+        dataset_root=tmp_path / "datasets",
+        modal_app_name="custom-app",
+        modal_function_name="custom-function",
+        modal_dataset_volume="custom-volume",
+        modal_dataset_mount="/mnt/custom-datasets",
+        modal_environment_name="prod",
+    )
 
-    assert main(["--dataset-root", str(tmp_path / "datasets"), "modal-sync-dataset", "mnist:v1"]) == 0
+    assert main(["modal-deploy"]) == 0
+    assert deployed["app_name"] == "custom-app"
+    assert deployed["function_name"] == "custom-function"
+    assert deployed["dataset_volume_name"] == "custom-volume"
+    assert deployed["dataset_mount_path"] == "/mnt/custom-datasets"
+    assert deployed["environment_name"] == "prod"
+
+    assert main(["modal-sync-dataset", "mnist:v1"]) == 0
     assert synced["dataset_id"] == "mnist:v1"
+    assert synced["dataset_root"] == str(tmp_path / "datasets")
+    assert synced["volume_name"] == "custom-volume"
+    assert synced["environment_name"] == "prod"
 
 
 def test_cli_reconcile_reporter_dispatch_table_logs_known_events_and_ignores_unknown(monkeypatch):
@@ -242,16 +306,15 @@ def test_cli_reconcile_reporter_dispatch_table_logs_known_events_and_ignores_unk
     assert any("Queue fill [" in message for message in messages)
 
 
-def test_cli_launch_count_reports_progress_to_stderr(tmp_path, patched_cli_system):
+def test_cli_launch_count_reports_progress_to_stderr(tmp_path, patched_cli_system, monkeypatch):
     del patched_cli_system
     db_url = f"sqlite:///{tmp_path / 'cli-launch-progress.sqlite'}"
     dataset_root = tmp_path / "datasets"
+    _set_runtime_env(monkeypatch, database_url=db_url, dataset_root=dataset_root)
     track_file = _write_track_file(tmp_path, {"dataset_id": "mnist:v1"}, "launch-track.json")
 
-    track_id = json.loads(
-        _run_cli(["--database-url", db_url, "--dataset-root", str(dataset_root), "create-track", track_file])[1]
-    )["track_id"]
-    code, stdout, stderr = _run_cli(["--database-url", db_url, "--dataset-root", str(dataset_root), "launch", track_id, "1"])
+    track_id = json.loads(_run_cli(["create-track", track_file])[1])["track_id"]
+    code, stdout, stderr = _run_cli(["launch", track_id, "1"])
     assert code == 0
     payload = json.loads(stdout)
     assert "launched_trial_ids" in payload
@@ -261,10 +324,11 @@ def test_cli_launch_count_reports_progress_to_stderr(tmp_path, patched_cli_syste
     assert "Launch pass finished" in stderr
 
 
-def test_cli_launch_maintain_running_stops_after_max_cycles(tmp_path, patched_cli_system):
+def test_cli_launch_maintain_running_stops_after_max_cycles(tmp_path, patched_cli_system, monkeypatch):
     del patched_cli_system
     db_url = f"sqlite:///{tmp_path / 'cli-launch-maintain.sqlite'}"
     dataset_root = tmp_path / "datasets"
+    _set_runtime_env(monkeypatch, database_url=db_url, dataset_root=dataset_root)
     track_file = _write_track_file(
         tmp_path,
         {
@@ -274,15 +338,9 @@ def test_cli_launch_maintain_running_stops_after_max_cycles(tmp_path, patched_cl
         "maintain-track.json",
     )
 
-    track_id = json.loads(
-        _run_cli(["--database-url", db_url, "--dataset-root", str(dataset_root), "create-track", track_file])[1]
-    )["track_id"]
+    track_id = json.loads(_run_cli(["create-track", track_file])[1])["track_id"]
     code, stdout, _ = _run_cli(
         [
-            "--database-url",
-            db_url,
-            "--dataset-root",
-            str(dataset_root),
             "--launcher",
             "recording",
             "launch",
@@ -301,21 +359,16 @@ def test_cli_launch_maintain_running_stops_after_max_cycles(tmp_path, patched_cl
     assert payload["stopped_reason"] == "max_cycles_reached"
 
 
-def test_cli_daemon_reports_controller_mode_in_stderr(tmp_path, patched_cli_system):
+def test_cli_daemon_reports_controller_mode_in_stderr(tmp_path, patched_cli_system, monkeypatch):
     del patched_cli_system
     db_url = f"sqlite:///{tmp_path / 'cli-launch-controller.sqlite'}"
     dataset_root = tmp_path / "datasets"
+    _set_runtime_env(monkeypatch, database_url=db_url, dataset_root=dataset_root)
     track_file = _write_track_file(tmp_path, {"dataset_id": "mnist:v1"}, "daemon-track.json")
 
-    track_id = json.loads(
-        _run_cli(["--database-url", db_url, "--dataset-root", str(dataset_root), "create-track", track_file])[1]
-    )["track_id"]
+    track_id = json.loads(_run_cli(["create-track", track_file])[1])["track_id"]
     code, stdout, stderr = _run_cli(
         [
-            "--database-url",
-            db_url,
-            "--dataset-root",
-            str(dataset_root),
             "--launcher",
             "recording",
             "launch",
@@ -349,30 +402,61 @@ def test_make_system_with_modal_launcher_uses_modal_proxy(monkeypatch, tmp_path)
 
     monkeypatch.setattr(cli_module, "create_modal_launcher", fake_create_modal_launcher)
     monkeypatch.setattr(cli_module, "build_system", fake_build_system)
+    _set_runtime_env(
+        monkeypatch,
+        database_url="postgresql://example/db",
+        dataset_root=tmp_path / "datasets",
+        modal_app_name="sigmaevolve-runner",
+    )
     args = cli_module.build_parser().parse_args(
         [
-            "--database-url",
-            "postgresql://example/db",
             "--launcher",
             "modal",
-            "--modal-app-name",
-            "sigmaevolve-runner",
             "list-trials",
             "track_1",
         ]
     )
+    args = cli_module._apply_runtime_config(args)
     system = cli_module._make_system(args)
     assert captured["database_url"] == "postgresql://example/db"
     assert system.launcher is not None
 
 
-def test_database_url_defaults_from_env(monkeypatch):
+def test_runtime_config_prefers_sigmaevolve_env_names(monkeypatch):
+    _set_runtime_env(monkeypatch, database_url="postgresql://scoped/db", openrouter_api_key="scoped-key")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://fallback/db")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "fallback-key")
+
+    runtime_config = resolve_runtime_config()
+
+    assert runtime_config.database_url == "postgresql://scoped/db"
+    assert runtime_config.openrouter_api_key == "scoped-key"
+
+
+def test_cli_rejects_removed_runtime_config_flags():
     from sigmaevolve import cli as cli_module
 
-    monkeypatch.setenv("DATABASE_URL", "postgresql://example/db")
     parser = cli_module.build_parser()
-    args = parser.parse_args(["list-trials", "track_1"])
-    assert args.database_url == "postgresql://example/db"
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--database-url", "postgresql://example/db", "list-trials", "track_1"])
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--modal-app-name", "custom-app", "modal-deploy"])
+
+
+def test_cli_help_documents_env_runtime_config(capsys):
+    from sigmaevolve import cli as cli_module
+
+    parser = cli_module.build_parser()
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--help"])
+
+    captured = capsys.readouterr()
+    assert "SIGMAEVOLVE_DATABASE_URL or DATABASE_URL" in captured.out
+    assert "SIGMAEVOLVE_MODAL_APP_NAME" in captured.out
+    assert "--database-url" not in captured.out
 
 
 def test_normalize_database_url_accepts_neon_postgres_scheme():

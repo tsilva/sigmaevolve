@@ -1,20 +1,28 @@
 from __future__ import annotations
 
-
-# ---- cli_parser.py ----
-
 import argparse
 import json
-import os
+import logging
+import shlex
+import sys
+import time
+from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, TextIO
 
+from sigmaevolve.core import ACTIVE_STATUSES
+from sigmaevolve.env import load_env_file, resolve_runtime_config
+from sigmaevolve.execution import RunnerService, collect_wandb_env
 from sigmaevolve.modal import (
-    DEFAULT_MODAL_APP_NAME,
-    DEFAULT_MODAL_DATASET_MOUNT,
-    DEFAULT_MODAL_DATASET_VOLUME,
-    DEFAULT_MODAL_FUNCTION_NAME,
+    create_modal_launcher,
+    deploy_modal_app,
+    sync_dataset_to_modal,
 )
+from sigmaevolve.orchestration import InlineRunnerLauncher, RecordingLauncher, build_system
+
+
+logger = logging.getLogger(f"{__name__}.stderr")
+stdout_logger = logging.getLogger(f"{__name__}.stdout")
 
 
 def json_arg(value: str | None) -> dict[str, Any]:
@@ -80,23 +88,145 @@ def positive_float(value: str) -> float:
     return parsed
 
 
-def build_cli_parser(*, handlers: dict[str, Callable[..., int]]) -> argparse.ArgumentParser:
-    # Register the global connection and launcher options first.
-    parser = argparse.ArgumentParser(prog="sigmaevolve")
+@dataclass(frozen=True)
+class CommandSpec:
+    name: str
+    help: str
+    handler_name: str
+    configure: Callable[[argparse.ArgumentParser], None]
+
+
+def _configure_prepare_dataset_parser(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("dataset_id")
+
+
+def _configure_create_track_parser(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
-        "--database-url",
-        default=os.getenv("DATABASE_URL"),
-        help="SQLAlchemy database URL. Defaults to DATABASE_URL.",
+        "track_file",
+        help="Path to a JSON file containing dataset_id, optional name, and track policy fields.",
+    )
+
+
+def _configure_launch_parser(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("track_id")
+    parser.add_argument(
+        "count",
+        type=positive_int,
+        help="Trial count. Use as a one-shot launch target by default, or a maintained running target with --daemon.",
     )
     parser.add_argument(
-        "--dataset-root",
-        default="./artifacts/datasets",
-        help="Root directory for prepared datasets. Default: ./artifacts/datasets",
+        "--daemon",
+        action="store_true",
+        help="Continuously keep this many trials running until interrupted.",
     )
     parser.add_argument(
-        "--openrouter-api-key",
+        "--poll-interval-sec",
+        type=positive_float,
+        default=5.0,
+        help="Seconds to wait between daemon launch passes. Default: 5.0",
+    )
+    parser.add_argument(
+        "--max-cycles",
+        type=positive_int,
         default=None,
-        help="OpenRouter API key. Defaults to OPENROUTER_API_KEY.",
+        help="Optional number of daemon launch passes before exiting.",
+    )
+
+
+def _configure_list_trials_parser(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("track_id")
+    parser.add_argument(
+        "--status",
+        action="append",
+        choices=["queued", "dispatching", "active", "finished", "error"],
+        help="Filter by one or more statuses.",
+    )
+
+
+def _configure_sample_context_parser(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("track_id")
+    parser.add_argument("--limit", type=int, default=5)
+
+
+def _configure_rescore_parser(parser: argparse.ArgumentParser) -> None:
+    target = parser.add_mutually_exclusive_group(required=True)
+    target.add_argument("--track-id")
+    target.add_argument("--all-tracks", action="store_true")
+    parser.add_argument(
+        "--scorer-json",
+        required=True,
+        help='JSON object such as \'{"primary_metric":"accuracy"}\'.',
+    )
+
+
+def _configure_modal_sync_dataset_parser(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("dataset_id")
+
+
+COMMAND_SPECS = (
+    CommandSpec(
+        name="prepare-dataset",
+        help=argparse.SUPPRESS,
+        handler_name="prepare_dataset",
+        configure=_configure_prepare_dataset_parser,
+    ),
+    CommandSpec(
+        name="create-track",
+        help="Create a track and seed the baseline trial.",
+        handler_name="create_track",
+        configure=_configure_create_track_parser,
+    ),
+    CommandSpec(
+        name="launch",
+        help="Generate and launch trials for a track.",
+        handler_name="launch",
+        configure=_configure_launch_parser,
+    ),
+    CommandSpec(
+        name="list-trials",
+        help="List trials for a track.",
+        handler_name="list_trials",
+        configure=_configure_list_trials_parser,
+    ),
+    CommandSpec(
+        name="sample-context",
+        help="Show successful finished trials used for generation context.",
+        handler_name="sample_context",
+        configure=_configure_sample_context_parser,
+    ),
+    CommandSpec(
+        name="rescore",
+        help="Rescore finished trials without rerunning training.",
+        handler_name="rescore",
+        configure=_configure_rescore_parser,
+    ),
+    CommandSpec(
+        name="modal-deploy",
+        help="Deploy the Modal runner app.",
+        handler_name="modal_deploy",
+        configure=lambda parser: None,
+    ),
+    CommandSpec(
+        name="modal-sync-dataset",
+        help="Upload a prepared dataset to the Modal dataset volume.",
+        handler_name="modal_sync_dataset",
+        configure=_configure_modal_sync_dataset_parser,
+    ),
+)
+
+
+def build_cli_parser(*, handlers: dict[str, Callable[..., int]]) -> argparse.ArgumentParser:
+    # Document the env-only runtime config contract at the top-level help surface.
+    parser = argparse.ArgumentParser(
+        prog="sigmaevolve",
+        description=(
+            "Runtime config is resolved from environment variables instead of CLI flags. "
+            "Supported names: SIGMAEVOLVE_DATABASE_URL or DATABASE_URL, "
+            "SIGMAEVOLVE_DATASET_ROOT, SIGMAEVOLVE_OPENROUTER_API_KEY or OPENROUTER_API_KEY, "
+            "SIGMAEVOLVE_MODAL_APP_NAME, SIGMAEVOLVE_MODAL_FUNCTION_NAME, "
+            "SIGMAEVOLVE_MODAL_DATASET_VOLUME, SIGMAEVOLVE_MODAL_DATASET_MOUNT, "
+            "and SIGMAEVOLVE_MODAL_ENVIRONMENT_NAME."
+        ),
     )
     parser.add_argument(
         "--launcher",
@@ -104,123 +234,14 @@ def build_cli_parser(*, handlers: dict[str, Callable[..., int]]) -> argparse.Arg
         default="modal",
         help="Use modal to spawn remote runner jobs by default, inline to execute locally, or recording to reserve only.",
     )
-    parser.add_argument(
-        "--modal-app-name",
-        default=DEFAULT_MODAL_APP_NAME,
-        help=f"Deployed Modal app name. Default: {DEFAULT_MODAL_APP_NAME}",
-    )
-    parser.add_argument(
-        "--modal-function-name",
-        default=DEFAULT_MODAL_FUNCTION_NAME,
-        help=f"Deployed TrialRunner method name. Default: {DEFAULT_MODAL_FUNCTION_NAME}",
-    )
-    parser.add_argument(
-        "--modal-dataset-volume",
-        default=DEFAULT_MODAL_DATASET_VOLUME,
-        help=f"Modal Volume name for dataset artifacts. Default: {DEFAULT_MODAL_DATASET_VOLUME}",
-    )
-    parser.add_argument(
-        "--modal-dataset-mount",
-        default=DEFAULT_MODAL_DATASET_MOUNT,
-        help=f"Dataset mount path inside Modal containers. Default: {DEFAULT_MODAL_DATASET_MOUNT}",
-    )
-    parser.add_argument(
-        "--modal-environment-name",
-        default=None,
-        help="Optional Modal environment name.",
-    )
 
-    # Register subcommands after the shared options are in place.
+    # Register subcommands from one command-spec registry.
     subparsers = parser.add_subparsers(dest="command", required=True)
-
-    prepare_dataset = subparsers.add_parser("prepare-dataset", help=argparse.SUPPRESS)
-    prepare_dataset.add_argument("dataset_id")
-    prepare_dataset.set_defaults(func=handlers["prepare_dataset"])
-
-    create_track = subparsers.add_parser("create-track", help="Create a track and seed the baseline trial.")
-    create_track.add_argument(
-        "track_file",
-        help="Path to a JSON file containing dataset_id, optional name, and track policy fields.",
-    )
-    create_track.set_defaults(func=handlers["create_track"])
-
-    launch = subparsers.add_parser("launch", help="Generate and launch trials for a track.")
-    launch.add_argument("track_id")
-    launch.add_argument(
-        "count",
-        type=positive_int,
-        help="Trial count. Use as a one-shot launch target by default, or a maintained running target with --daemon.",
-    )
-    launch.add_argument(
-        "--daemon",
-        action="store_true",
-        help="Continuously keep this many trials running until interrupted.",
-    )
-    launch.add_argument(
-        "--poll-interval-sec",
-        type=positive_float,
-        default=5.0,
-        help="Seconds to wait between daemon launch passes. Default: 5.0",
-    )
-    launch.add_argument(
-        "--max-cycles",
-        type=positive_int,
-        default=None,
-        help="Optional number of daemon launch passes before exiting.",
-    )
-    launch.set_defaults(func=handlers["launch"])
-
-    list_trials = subparsers.add_parser("list-trials", help="List trials for a track.")
-    list_trials.add_argument("track_id")
-    list_trials.add_argument(
-        "--status",
-        action="append",
-        choices=["queued", "dispatching", "active", "finished", "error"],
-        help="Filter by one or more statuses.",
-    )
-    list_trials.set_defaults(func=handlers["list_trials"])
-
-    sample_context = subparsers.add_parser(
-        "sample-context",
-        help="Show successful finished trials used for generation context.",
-    )
-    sample_context.add_argument("track_id")
-    sample_context.add_argument("--limit", type=int, default=5)
-    sample_context.set_defaults(func=handlers["sample_context"])
-
-    rescore = subparsers.add_parser("rescore", help="Rescore finished trials without rerunning training.")
-    target = rescore.add_mutually_exclusive_group(required=True)
-    target.add_argument("--track-id")
-    target.add_argument("--all-tracks", action="store_true")
-    rescore.add_argument(
-        "--scorer-json",
-        required=True,
-        help='JSON object such as \'{"primary_metric":"accuracy"}\'.',
-    )
-    rescore.set_defaults(func=handlers["rescore"])
-
-    modal_deploy = subparsers.add_parser("modal-deploy", help="Deploy the Modal runner app.")
-    modal_deploy.set_defaults(func=handlers["modal_deploy"])
-
-    modal_sync_dataset = subparsers.add_parser(
-        "modal-sync-dataset",
-        help="Upload a prepared dataset to the Modal dataset volume.",
-    )
-    modal_sync_dataset.add_argument("dataset_id")
-    modal_sync_dataset.set_defaults(func=handlers["modal_sync_dataset"])
-
+    for spec in COMMAND_SPECS:
+        subparser = subparsers.add_parser(spec.name, help=spec.help)
+        spec.configure(subparser)
+        subparser.set_defaults(func=handlers[spec.handler_name])
     return parser
-
-
-# ---- cli_reporting.py ----
-
-import logging
-import time
-from dataclasses import dataclass
-from typing import Any, Callable
-
-
-logger = logging.getLogger("sigmaevolve.cli.stderr")
 
 
 @dataclass
@@ -255,22 +276,86 @@ class CliReconcileReporter:
         self.max_failures = 0
         self._handlers: dict[str, Callable[[dict[str, Any]], None]] = {
             "controller_started": self._handle_controller_started,
-            "controller_stopped": self._handle_controller_stopped,
+            "controller_stopped": lambda payload: self._handle_summary(
+                "Controller stopped:",
+                payload,
+                (
+                    ("generated_count", "generated"),
+                    ("launched_count", "launched"),
+                    ("duplicate_count", "duplicates"),
+                    ("failed_generation_count", "generation_failures"),
+                    ("error_count", "errors"),
+                ),
+            ),
             "reconcile_started": self._handle_reconcile_started,
-            "sweep_completed": self._handle_sweep_completed,
+            "sweep_completed": lambda payload: self._handle_summary(
+                "Sweep complete:",
+                payload,
+                (
+                    ("requeued_count", "requeued"),
+                    ("stale_count", "stale"),
+                ),
+            ),
             "queue_fill_started": self._handle_queue_fill_started,
             "queue_fill_skipped": self._handle_queue_fill_skipped,
             "generation_scheduled": self._handle_generation_scheduled,
-            "generation_accepted": self._handle_generation_accepted,
-            "generation_duplicate": self._handle_generation_duplicate,
+            "generation_accepted": lambda payload: self._handle_generation_progress(
+                payload,
+                f"Accepted candidate for slot {payload['slot_index'] + 1}: {payload['trial_id']}.",
+            ),
+            "generation_duplicate": lambda payload: self._handle_generation_progress(
+                payload,
+                "Duplicate candidate for slot "
+                f"{payload['slot_index'] + 1} "
+                f"(existing={payload['existing_trial_id']}, attempt={payload['duplicate_retry_count']}).",
+            ),
             "generation_failed": self._handle_generation_failed,
-            "queue_fill_completed": self._handle_queue_fill_completed,
-            "queue_fill_stopped": self._handle_queue_fill_stopped,
-            "launch_batch_started": self._handle_launch_batch_started,
-            "trial_launch_started": self._handle_trial_launch_started,
+            "queue_fill_completed": lambda payload: self._handle_summary(
+                "Queue fill complete:",
+                payload,
+                (
+                    ("completed", "accepted"),
+                    ("requested", "requested"),
+                    ("failures", "failures"),
+                    ("max_failures", "max_failures"),
+                ),
+                pair_fields={"completed": "requested", "failures": "max_failures"},
+            ),
+            "queue_fill_stopped": lambda payload: self._handle_summary(
+                "Queue fill stopped:",
+                payload,
+                (
+                    ("completed", "accepted"),
+                    ("requested", "requested"),
+                    ("failures", "failures"),
+                    ("max_failures", "max_failures"),
+                ),
+                pair_fields={"completed": "requested", "failures": "max_failures"},
+            ),
+            "launch_batch_started": lambda payload: self._handle_summary(
+                "Launching reserved trials:",
+                payload,
+                (
+                    ("reserved_count", "count"),
+                    ("max_parallelism", "max_parallelism"),
+                ),
+            ),
+            "trial_launch_started": lambda payload: self._log(f"Launching trial {payload['trial_id']}..."),
             "trial_launched": self._handle_trial_launched,
-            "trial_launch_failed": self._handle_trial_launch_failed,
-            "reconcile_finished": self._handle_reconcile_finished,
+            "trial_launch_failed": lambda payload: self._log(
+                f"Launch failed for {payload['trial_id']}: {payload['detail']}"
+            ),
+            "reconcile_finished": lambda payload: self._handle_summary(
+                "Launch pass finished:",
+                payload,
+                (
+                    ("generated_count", "generated"),
+                    ("launched_count", "launched"),
+                    ("duplicate_count", "duplicates"),
+                    ("failed_generation_count", "generation_failures"),
+                    ("error_count", "errors"),
+                ),
+            ),
         }
 
     def _elapsed(self) -> str:
@@ -296,12 +381,32 @@ class CliReconcileReporter:
         width = 20
         filled = int(width * completed / requested)
         bar = "#" * filled + "-" * (width - filled)
-
         return (
             f"Queue fill [{bar}] {completed}/{requested} accepted"
             f" | failures {failures}/{max_failures}"
             f" | in flight {in_flight}"
         )
+
+    def _handle_summary(
+        self,
+        prefix: str,
+        payload: dict[str, Any],
+        fields: tuple[tuple[str, str], ...],
+        *,
+        pair_fields: dict[str, str] | None = None,
+    ) -> None:
+        # Render each summary field in one reviewable message.
+        rendered_fields: list[str] = []
+        pair_fields = dict(pair_fields or {})
+        for key, label in fields:
+            partner_key = pair_fields.get(key)
+            if partner_key is not None:
+                rendered_fields.append(f"{label}={payload[key]}/{payload[partner_key]}")
+                continue
+            if key in pair_fields.values():
+                continue
+            rendered_fields.append(f"{label}={payload[key]}")
+        self._log(f"{prefix} {' '.join(rendered_fields)}.")
 
     def _log_progress(self, payload: dict[str, Any]) -> None:
         # Reuse the standard progress-line formatter for all fill-cycle updates.
@@ -321,21 +426,8 @@ class CliReconcileReporter:
             f"and max_parallelism={payload['max_parallelism']}."
         )
 
-    def _handle_controller_stopped(self, payload: dict[str, Any]) -> None:
-        self._log(
-            "Controller stopped: "
-            f"generated={payload['generated_count']} "
-            f"launched={payload['launched_count']} "
-            f"duplicates={payload['duplicate_count']} "
-            f"generation_failures={payload['failed_generation_count']} "
-            f"errors={payload['error_count']}."
-        )
-
     def _handle_reconcile_started(self, payload: dict[str, Any]) -> None:
         self._log(f"Running launch pass for {payload['track_id']} with launcher={payload['launcher']}.")
-
-    def _handle_sweep_completed(self, payload: dict[str, Any]) -> None:
-        self._log(f"Sweep complete: requeued={payload['requeued_count']}, stale={payload['stale_count']}.")
 
     def _handle_queue_fill_started(self, payload: dict[str, Any]) -> None:
         # Cache the fill-cycle budget before logging the initial progress line.
@@ -360,48 +452,19 @@ class CliReconcileReporter:
             f"(attempt {payload['duplicate_retry_count']}, generation_index={payload['generation_index']})."
         )
 
-    def _handle_generation_accepted(self, payload: dict[str, Any]) -> None:
-        self._log(f"Accepted candidate for slot {payload['slot_index'] + 1}: {payload['trial_id']}.")
-        self._log_progress(payload)
-
-    def _handle_generation_duplicate(self, payload: dict[str, Any]) -> None:
-        self._log(
-            "Duplicate candidate for slot "
-            f"{payload['slot_index'] + 1} "
-            f"(existing={payload['existing_trial_id']}, attempt={payload['duplicate_retry_count']})."
-        )
+    def _handle_generation_progress(self, payload: dict[str, Any], message: str) -> None:
+        self._log(message)
         self._log_progress(payload)
 
     def _handle_generation_failed(self, payload: dict[str, Any]) -> None:
         # Inline any provider detail so generation failures stay actionable.
         detail = f": {payload['detail']}" if payload.get("detail") else ""
-        self._log(
+        self._handle_generation_progress(
+            payload,
             "Generation failed for slot "
             f"{payload['slot_index'] + 1} "
-            f"(reason={payload['reason']}, attempt={payload['duplicate_retry_count']}){detail}"
+            f"(reason={payload['reason']}, attempt={payload['duplicate_retry_count']}){detail}",
         )
-        self._log_progress(payload)
-
-    def _handle_queue_fill_completed(self, payload: dict[str, Any]) -> None:
-        self._log(
-            f"Queue fill complete: accepted={payload['completed']}/{payload['requested']} "
-            f"with failures={payload['failures']}/{payload['max_failures']}."
-        )
-
-    def _handle_queue_fill_stopped(self, payload: dict[str, Any]) -> None:
-        self._log(
-            f"Queue fill stopped at {payload['completed']}/{payload['requested']} "
-            f"after reaching failure budget {payload['failures']}/{payload['max_failures']}."
-        )
-
-    def _handle_launch_batch_started(self, payload: dict[str, Any]) -> None:
-        self._log(
-            f"Launching reserved trials: count={payload['reserved_count']} "
-            f"max_parallelism={payload['max_parallelism']}."
-        )
-
-    def _handle_trial_launch_started(self, payload: dict[str, Any]) -> None:
-        self._log(f"Launching trial {payload['trial_id']}...")
 
     def _handle_trial_launched(self, payload: dict[str, Any]) -> None:
         # Surface the Modal run URL when the launcher returned one.
@@ -410,51 +473,11 @@ class CliReconcileReporter:
         suffix = f" ({run_url})" if isinstance(run_url, str) and run_url else ""
         self._log(f"Launched trial {payload['trial_id']}{suffix}.")
 
-    def _handle_trial_launch_failed(self, payload: dict[str, Any]) -> None:
-        self._log(f"Launch failed for {payload['trial_id']}: {payload['detail']}")
-
-    def _handle_reconcile_finished(self, payload: dict[str, Any]) -> None:
-        self._log(
-            "Launch pass finished: "
-            f"generated={payload['generated_count']} "
-            f"launched={payload['launched_count']} "
-            f"duplicates={payload['duplicate_count']} "
-            f"generation_failures={payload['failed_generation_count']} "
-            f"errors={payload['error_count']}."
-        )
-
     def __call__(self, event: str, payload: dict[str, Any]) -> None:
         # Dispatch only the events that this CLI reporter knows how to print.
         handler = self._handlers.get(event)
         if handler is not None:
             handler(payload)
-
-
-# ---- cli.py ----
-
-import argparse
-import json
-import logging
-import shlex
-import sys
-from dataclasses import asdict
-from typing import Any, TextIO
-
-from sigmaevolve.orchestration import build_system
-from sigmaevolve.core import load_env_file
-from sigmaevolve.core import ACTIVE_STATUSES
-from sigmaevolve.modal import (
-    create_modal_launcher,
-    deploy_modal_app,
-    sync_dataset_to_modal,
-)
-from sigmaevolve.orchestration import InlineRunnerLauncher, RecordingLauncher
-from sigmaevolve.execution import RunnerService
-from sigmaevolve.execution import collect_wandb_env
-
-
-logger = logging.getLogger(f"{__name__}.stderr")
-stdout_logger = logging.getLogger(f"{__name__}.stdout")
 
 
 def _configure_stream_logger(stream_logger: logging.Logger, stream: TextIO) -> None:
@@ -469,21 +492,29 @@ def _configure_stream_logger(stream_logger: logging.Logger, stream: TextIO) -> N
     stream_logger.propagate = False
 
 
-def _make_system(args) -> Any:
-    if not args.database_url:
-        raise RuntimeError("A Postgres database URL is required. Set DATABASE_URL.")
-    system = build_system(
-        database_url=args.database_url,
-        dataset_root=args.dataset_root,
-        openrouter_api_key=args.openrouter_api_key,
-    )
+def _apply_runtime_config(args: argparse.Namespace) -> argparse.Namespace:
+    # Resolve env-owned runtime settings once so every command sees the same config.
+    runtime_config = resolve_runtime_config()
+    args.database_url = runtime_config.database_url
+    args.dataset_root = runtime_config.dataset_root
+    args.openrouter_api_key = runtime_config.openrouter_api_key
+    args.modal_app_name = runtime_config.modal_app_name
+    args.modal_function_name = runtime_config.modal_function_name
+    args.modal_dataset_volume = runtime_config.modal_dataset_volume
+    args.modal_dataset_mount = runtime_config.modal_dataset_mount
+    args.modal_environment_name = runtime_config.modal_environment_name
+    return args
+
+
+def _resolve_launcher(system, args) -> Any:
     if args.launcher == "inline":
         runner = RunnerService(system.repository, system.dataset_manager)
-        launcher = InlineRunnerLauncher(runner)
-    elif args.launcher == "modal":
+        return InlineRunnerLauncher(runner)
+
+    if args.launcher == "modal":
         if args.command == "launch" and args.database_url.startswith("sqlite"):
             raise RuntimeError("Modal launcher requires a network-accessible database URL; sqlite is not supported.")
-        launcher = create_modal_launcher(
+        return create_modal_launcher(
             app_name=args.modal_app_name,
             function_name=args.modal_function_name,
             database_url=args.database_url,
@@ -491,8 +522,23 @@ def _make_system(args) -> Any:
             environment_name=args.modal_environment_name,
             wandb_env=collect_wandb_env(),
         )
-    else:
-        launcher = RecordingLauncher()
+
+    return RecordingLauncher()
+
+
+def _make_system(args) -> Any:
+    if not args.database_url:
+        raise RuntimeError(
+            "A Postgres database URL is required. Set SIGMAEVOLVE_DATABASE_URL or DATABASE_URL."
+        )
+
+    # Construct the core system first, then replace its launcher if requested.
+    system = build_system(
+        database_url=args.database_url,
+        dataset_root=args.dataset_root,
+        openrouter_api_key=args.openrouter_api_key,
+    )
+    launcher = _resolve_launcher(system, args)
     system.launcher = launcher
     system.orchestrator.launcher = launcher
     return system
@@ -515,6 +561,7 @@ def _launch_pass_settings(system, track_id: str, *, target_count: int, daemon: b
     active_count = system.repository.count_trials(track_id, statuses=ACTIVE_STATUSES)
     if not daemon:
         return max(queue_count, target_count), active_count + target_count
+
     needed_slots = max(0, target_count - active_count)
     return max(queue_count, needed_slots), target_count
 
@@ -549,28 +596,9 @@ def _trial_diagnostics(metrics_json: dict[str, Any] | None) -> dict[str, Any]:
 
 
 def _suggest_launch_command(args, track_id: str, *, count: int = 1) -> str:
-    command = [
-        sys.executable,
-        "-m",
-        "sigmaevolve.cli",
-        "--dataset-root",
-        args.dataset_root,
-        "--launcher",
-        args.launcher,
-    ]
-    if args.launcher == "modal":
-        command.extend(
-            [
-                "--modal-app-name",
-                args.modal_app_name,
-                "--modal-function-name",
-                args.modal_function_name,
-                "--modal-dataset-mount",
-                args.modal_dataset_mount,
-            ]
-        )
-        if args.modal_environment_name:
-            command.extend(["--modal-environment-name", args.modal_environment_name])
+    command = [sys.executable, "-m", "sigmaevolve.cli"]
+    if args.launcher != "modal":
+        command.extend(["--launcher", args.launcher])
     command.extend(["launch", track_id, str(count)])
     return shlex.join(command)
 
@@ -598,6 +626,7 @@ def cmd_create_track(args) -> int:
         logger.info("Prepared dataset %s at %s.", dataset_id, dataset.manifest_path)
     else:
         logger.info("Reusing prepared dataset %s at %s.", dataset_id, dataset.manifest_path)
+
     logger.info("Creating track for dataset %s and seeding the baseline trial.", dataset_id)
     track = system.create_track(name, dataset_id, policy)
     logger.info("Created track %s.", track.track_id)
@@ -763,6 +792,7 @@ def main(argv: list[str] | None = None) -> int:
     _configure_stream_logger(stdout_logger, sys.stdout)
     parser = build_parser()
     args = parser.parse_args(argv)
+    args = _apply_runtime_config(args)
     try:
         return int(args.func(args))
     except Exception as exc:

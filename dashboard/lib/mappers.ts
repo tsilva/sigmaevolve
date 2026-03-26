@@ -50,6 +50,7 @@ type TrialRow = {
 const FAILURE_OUTCOMES = new Set(["crashed", "eval_failed", "stale", "generation_failed"]);
 
 function hasErrorSignal(value: Record<string, unknown> | null): boolean {
+  // Treat any populated reason, detail, stderr, or returncode as an error signal.
   if (!value) {
     return false;
   }
@@ -69,6 +70,7 @@ function hasErrorSignal(value: Record<string, unknown> | null): boolean {
 }
 
 function asIsoDate(value: string | Date | null | undefined): string | null {
+  // Normalize nullable timestamps into ISO strings for the dashboard types.
   if (!value) {
     return null;
   }
@@ -76,6 +78,7 @@ function asIsoDate(value: string | Date | null | undefined): string | null {
 }
 
 function asNumber(value: number | string | null | undefined): number {
+  // Coerce nullable numeric fields into zero-based dashboard defaults.
   if (value === null || value === undefined) {
     return 0;
   }
@@ -83,6 +86,7 @@ function asNumber(value: number | string | null | undefined): number {
 }
 
 function asNullableNumber(value: number | string | null | undefined): number | null {
+  // Preserve nullability while still coercing numeric strings into numbers.
   if (value === null || value === undefined) {
     return null;
   }
@@ -90,6 +94,7 @@ function asNullableNumber(value: number | string | null | undefined): number | n
 }
 
 function asNullableString(value: string | null | undefined): string | null {
+  // Collapse empty string fields into null for cleaner rendering logic.
   if (typeof value !== "string" || value.length === 0) {
     return null;
   }
@@ -97,6 +102,7 @@ function asNullableString(value: string | null | undefined): string | null {
 }
 
 function asStringArray(value: unknown): string[] {
+  // Keep only non-empty string entries from mixed JSON arrays.
   if (!Array.isArray(value)) {
     return [];
   }
@@ -106,6 +112,7 @@ function asStringArray(value: unknown): string[] {
 function getGenerationPayload(
   provenanceJson: Record<string, unknown> | null,
 ): Record<string, unknown> | null {
+  // Lift the nested generation payload into a typed record when present.
   const generation = provenanceJson?.generation;
   if (!generation || typeof generation !== "object") {
     return null;
@@ -114,6 +121,7 @@ function getGenerationPayload(
 }
 
 export function mapTrackListItem(row: TrackRow): TrackListItem {
+  // Convert database row fields into the normalized dashboard track shape.
   return {
     trackId: row.trackId,
     name: row.name,
@@ -133,8 +141,11 @@ export function mapTrackListItem(row: TrackRow): TrackListItem {
 }
 
 export function mapTrialListItem(row: TrialRow): TrialListItem {
+  // Derive the trial-level error and generation state before building the response.
   const hasError = FAILURE_OUTCOMES.has(row.outcomeReason ?? "") || hasErrorSignal(row.errorJson ?? null);
   const generation = getGenerationPayload(row.provenanceJson ?? null);
+
+  // Return the dashboard-friendly trial view with normalized scalar fields.
   return {
     trialId: row.trialId,
     status: row.status,
