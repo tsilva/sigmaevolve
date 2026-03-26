@@ -3,11 +3,18 @@ from __future__ import annotations
 
 # ---- modal_support.py ----
 
+import logging
+import os
 from dataclasses import dataclass
 from pathlib import Path
+from uuid import uuid4
 from typing import Any
 
+import modal
+
 from sigmaevolve.datasets import DatasetManager
+from sigmaevolve.core import DEFAULT_TRIAL_HARD_TIMEOUT_SEC
+from sigmaevolve.execution import apply_wandb_env
 from sigmaevolve.orchestration import ModalRemoteLauncher
 
 
@@ -207,16 +214,6 @@ def sync_dataset_to_modal(
 
 
 # ---- modal_app.py ----
-
-import logging
-import os
-from pathlib import Path
-from uuid import uuid4
-
-import modal
-
-from sigmaevolve.core import DEFAULT_TRIAL_HARD_TIMEOUT_SEC
-from sigmaevolve.execution import apply_wandb_env
 
 
 logging.basicConfig(

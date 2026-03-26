@@ -8,7 +8,7 @@ import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Protocol
 
 from sigmaevolve.core import (
     ACTIVE_STATUSES,
@@ -23,6 +23,7 @@ from sigmaevolve.core import (
 from sigmaevolve.datasets import DatasetManager, TorchvisionClassificationProvider
 from sigmaevolve.execution import RunnerService
 from sigmaevolve.generation import OpenRouterGenerationBackend
+from sigmaevolve.generation import GenerationCoordinator
 from sigmaevolve.generation import build_baseline_train_script
 from sigmaevolve.storage import SQLAlchemyRepository
 
@@ -778,8 +779,6 @@ class TrackController:
 
 # ---- launchers.py ----
 
-from typing import Any, Protocol
-
 
 class RunnerLauncher(Protocol):
     def launch_trial(
@@ -858,9 +857,6 @@ class ModalRemoteLauncher:
 
 # ---- orchestrator.py ----
 
-from typing import Any, Callable
-
-from sigmaevolve.generation import GenerationCoordinator
 
 def emit_report_event(
     reporter: Callable[[str, dict[str, Any]], None] | None,
@@ -1008,6 +1004,7 @@ class Orchestrator:
 
 
 # ---- system.py ----
+
 class EvolutionSystem:
     def __init__(
         self,
