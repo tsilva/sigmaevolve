@@ -264,6 +264,11 @@ button {
   text-underline-offset: 0.14em;
 }
 
+.external-link-badge {
+  text-decoration: none;
+  font-weight: 600;
+}
+
 .track-score {
   font-family: var(--font-mono), monospace;
   color: var(--muted);

@@ -277,7 +277,7 @@ describe("DashboardShell", () => {
     expect(screen.queryByText("How each run went")).toBeNull();
   });
 
-  it("does not show a Modal run link in the table when the trial is not selected", () => {
+  it("does not show a launcher badge in the table when the trial is not selected", () => {
     renderShell({
       detail: createDetail([
         createTrial({
@@ -288,23 +288,35 @@ describe("DashboardShell", () => {
       ]),
     });
 
-    expect(screen.queryByRole("link", { name: "Open Modal run for trial_modal" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "Open launcher run for trial_modal" })).toBeNull();
   });
 
-  it("shows a Modal run link in the inspector when the selected trial has a remote run URL", () => {
+  it("shows launcher and wandb badges in the inspector when the selected trial has remote run URLs", () => {
     renderShell({
       detail: createDetail([
         createTrial({
           trialId: "trial_modal",
           modalRunId: "fc-123",
           modalRunUrl: "https://modal.com/apps/test/runs/fc-123",
+          provenanceJson: {
+            backend: "openrouter",
+            request_messages: [],
+            wandb: {
+              run_url: "https://wandb.ai/tsilva/sigmaevolve/runs/knro5y92",
+            },
+          },
         }),
       ]),
       initialSelectedTrialId: "trial_modal",
     });
 
-    const link = screen.getByRole("link", { name: "Open Modal run for trial_modal" });
-    expect(link.getAttribute("href")).toBe("https://modal.com/apps/test/runs/fc-123");
+    const launcherLink = screen.getByRole("link", { name: "Open launcher run for trial_modal" });
+    expect(launcherLink.getAttribute("href")).toBe("https://modal.com/apps/test/runs/fc-123");
+    expect(launcherLink.textContent).toBe("Launcher");
+
+    const wandbLink = screen.getByRole("link", { name: "Open Weights & Biases run for trial_modal" });
+    expect(wandbLink.getAttribute("href")).toBe("https://wandb.ai/tsilva/sigmaevolve/runs/knro5y92");
+    expect(wandbLink.textContent).toBe("W&B");
   });
 
   it("shows a mixed-source diff for the selected trial when prompt snippets are recorded", () => {
@@ -482,11 +494,13 @@ describe("DashboardShell", () => {
     expect(screen.queryByText('"generation_config"')).toBeNull();
   });
 
-  it("moves launcher fields into a launcher provenance group", () => {
+  it("shows launcher badges instead of launcher provenance URL rows", () => {
     const { container } = renderShell({
       detail: createDetail([
         createTrial({
           trialId: "trial_launcher",
+          modalRunId: "fc-123",
+          modalRunUrl: "https://modal.com/apps/test/runs/fc-123",
           provenanceJson: {
             backend: "openrouter",
             model: "x-ai/grok-4.1-fast",
@@ -503,15 +517,16 @@ describe("DashboardShell", () => {
     const subsectionLabels = Array.from(container.querySelectorAll(".trial-summary-subsection-label")).map(
       (element) => element.textContent,
     );
-    expect(subsectionLabels).toContain("Launcher");
+    expect(subsectionLabels).not.toContain("Launcher");
     expect(screen.queryByText("Launcher Run Id")).toBeNull();
     expect(screen.queryByText("fc-123")).toBeNull();
-    expect(screen.getByText("Launcher Run Url")).toBeTruthy();
-    const launcherLink = screen.getByRole("link", { name: "https://modal.com/apps/test/runs/fc-123" });
+    expect(screen.queryByText("Launcher Run Url")).toBeNull();
+    const launcherLink = screen.getByRole("link", { name: "Open launcher run for trial_launcher" });
     expect(launcherLink.getAttribute("href")).toBe("https://modal.com/apps/test/runs/fc-123");
+    expect(launcherLink.textContent).toBe("Launcher");
   });
 
-  it("hides wandb identifiers from the trial provenance panel", () => {
+  it("hides wandb identifiers from the trial provenance panel and promotes the run url to a badge", () => {
     renderShell({
       detail: createDetail([
         createTrial({
@@ -523,6 +538,9 @@ describe("DashboardShell", () => {
             wandb_entity: "tsilva",
             wandb_run_id: "0oosq56x",
             wandb_run_name: "track_2bfe1dc3071342489daddd272b6dd807:trial_ae821512cb4041d0a0609b5ddca63ca7",
+            wandb: {
+              run_url: "https://wandb.ai/tsilva/sigmaevolve/runs/knro5y92",
+            },
             extra_context: "still visible",
           },
         }),
@@ -537,11 +555,15 @@ describe("DashboardShell", () => {
     expect(screen.queryByText("Wandb Run Id")).toBeNull();
     expect(screen.queryByText("0oosq56x")).toBeNull();
     expect(screen.queryByText("Wandb Run Name")).toBeNull();
+    expect(screen.queryByText("Wandb Run Url")).toBeNull();
     expect(
       screen.queryByText("track_2bfe1dc3071342489daddd272b6dd807:trial_ae821512cb4041d0a0609b5ddca63ca7"),
     ).toBeNull();
     expect(screen.getByText("Extra Context")).toBeTruthy();
     expect(screen.getByText("still visible")).toBeTruthy();
+    const wandbLink = screen.getByRole("link", { name: "Open Weights & Biases run for trial_wandb" });
+    expect(wandbLink.getAttribute("href")).toBe("https://wandb.ai/tsilva/sigmaevolve/runs/knro5y92");
+    expect(wandbLink.textContent).toBe("W&B");
   });
 
   it("keeps the explorer visible when a filter changes the visible trial set", async () => {

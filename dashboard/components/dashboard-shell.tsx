@@ -110,7 +110,7 @@ type ProgressSegment = {
   label: string;
 };
 
-const HIDDEN_WANDB_KEYS = new Set(["project", "entity", "run_id", "run_name"]);
+const HIDDEN_WANDB_KEYS = new Set(["project", "entity", "run_id", "run_name", "run_url"]);
 
 type TrackProgressBarProps = {
   className?: string;
@@ -397,8 +397,12 @@ function getGenerationPropertyGroups(trackId: string, value: Record<string, unkn
 
   const launcherEntries: PropertyEntry[] = [];
   if (launcher && typeof launcher === "object") {
-    const { run_id: _runId, ...launcherWithoutRunId } = launcher as Record<string, unknown>;
-    appendPropertyEntries(launcherEntries, "Launcher", launcherWithoutRunId);
+    const {
+      run_id: _runId,
+      run_url: _runUrl,
+      ...launcherWithoutRunMetadata
+    } = launcher as Record<string, unknown>;
+    appendPropertyEntries(launcherEntries, "Launcher", launcherWithoutRunMetadata);
   } else {
     appendPropertyEntries(launcherEntries, "Launcher", launcher);
   }
@@ -477,25 +481,67 @@ function summarizeCrashDetails(value: string | null): string {
   return firstLine.length > 160 ? `${firstLine.slice(0, 157)}...` : firstLine;
 }
 
-function renderModalRunLink(trial: TrialListItem, label = "Modal run") {
-  if (!trial.modalRunUrl) {
+function getWandbRunUrl(provenance: Record<string, unknown> | null): string | null {
+  const wandb = provenance?.wandb;
+  if (!wandb || typeof wandb !== "object") {
     return null;
   }
 
+  const runUrl = (wandb as Record<string, unknown>).run_url;
+  return typeof runUrl === "string" && runUrl.trim().length > 0 ? runUrl : null;
+}
+
+function renderRunBadge({
+  href,
+  label,
+  ariaLabel,
+  title,
+}: {
+  href: string;
+  label: string;
+  ariaLabel: string;
+  title?: string;
+}) {
   return (
     <a
-      className="external-link-chip"
-      href={trial.modalRunUrl}
+      className="external-link-chip external-link-badge"
+      href={href}
       target="_blank"
       rel="noreferrer"
       onClick={(event) => event.stopPropagation()}
       onKeyDown={(event) => event.stopPropagation()}
-      aria-label={`Open Modal run for ${trial.trialId}`}
-      title={trial.modalRunId ?? undefined}
+      aria-label={ariaLabel}
+      title={title}
     >
       {label}
     </a>
   );
+}
+
+function renderLauncherRunBadge(trial: TrialListItem) {
+  if (!trial.modalRunUrl) {
+    return null;
+  }
+
+  return renderRunBadge({
+    href: trial.modalRunUrl,
+    label: "Launcher",
+    ariaLabel: `Open launcher run for ${trial.trialId}`,
+    title: trial.modalRunId ?? undefined,
+  });
+}
+
+function renderWandbRunBadge(trial: TrialListItem) {
+  const wandbRunUrl = getWandbRunUrl(trial.provenanceJson);
+  if (!wandbRunUrl) {
+    return null;
+  }
+
+  return renderRunBadge({
+    href: wandbRunUrl,
+    label: "W&B",
+    ariaLabel: `Open Weights & Biases run for ${trial.trialId}`,
+  });
 }
 
 function getTrackLabel(track: TrackListItem): string {
@@ -1518,7 +1564,8 @@ export function DashboardShell({
                       </span>
                       {selectedIsBestTrial ? <span className="flag-chip flag-best">best so far</span> : null}
                       {selectedTrialRank ? <span className="meta-chip">Rank #{selectedTrialRank} by score</span> : null}
-                      {renderModalRunLink(selectedTrial)}
+                      {renderLauncherRunBadge(selectedTrial)}
+                      {renderWandbRunBadge(selectedTrial)}
                     </div>
                   </div>
 
