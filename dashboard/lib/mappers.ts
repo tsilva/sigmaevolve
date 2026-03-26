@@ -5,7 +5,6 @@ import type {
 
 type TrackRow = {
   trackId: string;
-  name: string | null;
   datasetId: string;
   createdAt: string | Date;
   totalTrials: number | string | null;
@@ -41,7 +40,6 @@ type TrialRow = {
   finishedAt: string | Date | null;
   durationSec: number | string | null;
   hasError: boolean | null;
-  errorType: string | null;
   source: string | null;
   errorJson: Record<string, unknown> | null;
   provenanceJson: Record<string, unknown> | null;
@@ -120,11 +118,78 @@ function getGenerationPayload(
   return generation as Record<string, unknown>;
 }
 
+function classifyErrorType(
+  outcomeReason: string | null,
+  errorJson: Record<string, unknown> | null,
+): string | null {
+  const reason = typeof errorJson?.reason === "string" ? errorJson.reason : null;
+  const finishReason = typeof errorJson?.finish_reason === "string" ? errorJson.finish_reason : null;
+  const detail = typeof errorJson?.detail === "string" ? errorJson.detail : null;
+  const reachedLengthLimit = finishReason === "length";
+  const detailMentionsReasoning = typeof detail === "string" && detail.toLowerCase().includes("reasoning");
+
+  if (outcomeReason === "generation_failed") {
+    if (reason === "provider_response_missing_content" && reachedLengthLimit && detailMentionsReasoning) {
+      return "generation_reasoning_tokens_exhausted";
+    }
+    if (
+      (reason === "candidate_materialization_failed" || reason === "generation_assertion_failed") &&
+      reachedLengthLimit
+    ) {
+      return "generation_output_truncated";
+    }
+    if (reason === "candidate_materialization_failed" || reason === "generation_assertion_failed") {
+      return "generation_invalid_candidate";
+    }
+    if (reason === "generator_exception") {
+      return "generation_backend_exception";
+    }
+    if (
+      reason === "provider_http_error" ||
+      reason === "provider_request_failed" ||
+      reason === "provider_response_invalid_json" ||
+      reason === "provider_response_missing_choices" ||
+      reason === "provider_response_missing_content"
+    ) {
+      return "generation_provider_failure";
+    }
+    return "generation_failed";
+  }
+
+  if (outcomeReason === "crashed") {
+    return "execution_crash";
+  }
+
+  if (outcomeReason === "eval_failed") {
+    if (reason === "train_script_contract_violation") {
+      return "execution_contract_violation";
+    }
+    if (reason === "prediction_load_failed") {
+      return "evaluation_artifact_error";
+    }
+    if (reason === "predictions_missing") {
+      return "evaluation_predictions_missing";
+    }
+    return "evaluation_failed";
+  }
+
+  if (outcomeReason === "stale") {
+    if (reason === "dispatch_deadline_expired") {
+      return "dispatch_stale";
+    }
+    if (reason === "heartbeat_stale") {
+      return "runner_stale";
+    }
+    return "stale";
+  }
+
+  return null;
+}
+
 export function mapTrackListItem(row: TrackRow): TrackListItem {
   // Convert database row fields into the normalized dashboard track shape.
   return {
     trackId: row.trackId,
-    name: row.name,
     datasetId: row.datasetId,
     createdAt: asIsoDate(row.createdAt) ?? new Date(0).toISOString(),
     totalTrials: asNumber(row.totalTrials),
@@ -144,6 +209,7 @@ export function mapTrialListItem(row: TrialRow): TrialListItem {
   // Derive the trial-level error and generation state before building the response.
   const hasError = FAILURE_OUTCOMES.has(row.outcomeReason ?? "") || hasErrorSignal(row.errorJson ?? null);
   const generation = getGenerationPayload(row.provenanceJson ?? null);
+  const errorType = classifyErrorType(row.outcomeReason, row.errorJson ?? null);
 
   // Return the dashboard-friendly trial view with normalized scalar fields.
   return {
@@ -167,7 +233,7 @@ export function mapTrialListItem(row: TrialRow): TrialListItem {
     finishedAt: asIsoDate(row.finishedAt),
     durationSec: asNullableNumber(row.durationSec),
     hasError,
-    errorType: asNullableString(row.errorType),
+    errorType,
     source: row.source ?? "",
     responseText: asNullableString(generation?.response_text as string | null | undefined),
     generatedSource: asNullableString(generation?.generated_source as string | null | undefined),

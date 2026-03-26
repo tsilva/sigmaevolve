@@ -4,7 +4,6 @@ export type DashboardNotificationReason = "trial_changed" | "track_changed";
 
 export type TrackListItem = {
   trackId: string;
-  name: string | null;
   datasetId: string;
   createdAt: string;
   totalTrials: number;

@@ -21,5 +21,5 @@
 
 - Keep `docs/DB.md` in sync with the live schema at all times.
 - Whenever tables, columns, constraints, or the expected contents of persisted JSON fields change, update `docs/DB.md` in the same change.
-- When creating or editing code, follow the hard rules in `docs/CODE_STYLE.md`.
-- Use the examples in `docs/CODE_STYLE.md` as reference patterns, not as templates to copy mechanically.
+- When creating or editing Python code, follow the Ruff configuration in `pyproject.toml` and the repo-local `format-code` skill at `.codex/skills/format-code/SKILL.md`.
+- Use `.codex/skills/format-code/references/manual-style.md` as the reference for the remaining non-deterministic style rules and examples; do not copy the examples mechanically.

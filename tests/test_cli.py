@@ -113,7 +113,6 @@ def test_cli_create_track_and_list_trials(tmp_path, patched_cli_system, monkeypa
         tmp_path,
         {
             "dataset_id": "mnist:v1",
-            "name": "cli-test",
         },
     )
 
@@ -153,9 +152,7 @@ def test_cli_create_track_from_track_file(tmp_path, patched_cli_system, monkeypa
         tmp_path,
         {
             "dataset_id": "mnist:v1",
-            "name": "policy-track",
             "generation_backend": {
-                "backend": "openrouter",
                 "selection": "round_robin",
                 "model_pool": [
                     {"model": "x-ai/grok-4.1-fast", "temperature": 0.2, "max_tokens": 1000, "retry_count": 1},
@@ -182,7 +179,6 @@ def test_cli_create_track_reports_progress_to_stderr(tmp_path, patched_cli_syste
         tmp_path,
         {
             "dataset_id": "mnist:v1",
-            "name": "cli-progress",
         },
         "create-track-progress.json",
     )
@@ -338,7 +334,6 @@ def test_cli_launch_maintain_running_stops_after_max_cycles(tmp_path, patched_cl
         tmp_path,
         {
             "dataset_id": "mnist:v1",
-            "name": "cli-maintain",
         },
         "maintain-track.json",
     )

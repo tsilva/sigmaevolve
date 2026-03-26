@@ -1,5 +1,3 @@
-# ---- test_generation.py ----
-
 from __future__ import annotations
 
 import io
@@ -30,12 +28,10 @@ from sigmaevolve.generation import (
 def _track_with_pool():
     return TrackRecord(
         track_id="track_1",
-        name="pool",
         dataset_id="mnist:v1",
         policy_json={
             "epochs": 5,
             "generation_backend": {
-                "backend": "openrouter",
                 "selection": "round_robin",
                 "model_pool": [
                     {
@@ -58,12 +54,10 @@ def _track_with_pool():
 def _track_with_weighted_pool():
     return TrackRecord(
         track_id="track_weighted",
-        name="weighted",
         dataset_id="mnist:v1",
         policy_json={
             "epochs": 5,
             "generation_backend": {
-                "backend": "openrouter",
                 "selection": "weighted_random",
                 "seed": 11,
                 "model_pool": [
@@ -106,7 +100,6 @@ def _context():
     return [
         TrialSummary(
             trial_id="trial_1",
-            score=0.5,
             metrics_json={"accuracy": 0.5},
             source=_mutated_script(
                 "return torch.zeros((x.shape[0], 10), dtype=torch.float32)"
@@ -120,7 +113,6 @@ def _context_with_prior_programs():
     return [
         TrialSummary(
             trial_id="trial_current",
-            score=0.992,
             metrics_json={"accuracy": 0.992, "val_loss": 0.1},
             source=_mutated_script(
                 "return torch.zeros((x.shape[0], 10), dtype=torch.float32) + 0.2"
@@ -129,7 +121,6 @@ def _context_with_prior_programs():
         ),
         TrialSummary(
             trial_id="trial_prior",
-            score=0.998,
             metrics_json={"accuracy": 0.998, "val_loss": 0.023},
             source=_mutated_script(
                 "return torch.zeros((x.shape[0], 10), dtype=torch.float32) + 0.3"
@@ -143,7 +134,6 @@ def _negative_trials():
     return [
         TrialSummary(
             trial_id="trial_failed",
-            score=0.0,
             metrics_json=None,
             source=_mutated_script("raise RuntimeError('bad candidate')"),
             provenance_json={"backend": "openrouter", "model": "test/model"},
@@ -576,8 +566,6 @@ def test_openrouter_generation_captures_transport_errors(monkeypatch):
     assert result.error_info["reason"] == "provider_request_failed"
     assert "network down" in result.error_info["detail"]
 
-
-# ---- test_evolve_blocks.py ----
 
 from sigmaevolve.generation import build_baseline_train_script
 from sigmaevolve.generation import (

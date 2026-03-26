@@ -434,8 +434,6 @@ describe("DashboardShell", () => {
           provenanceJson: {
             backend: "openrouter",
             model: "x-ai/grok-4.1-fast",
-            generation_index: 4,
-            provider_response_id: "gen_1774284821",
             generation_config: {
               model: "x-ai/grok-4.1-fast",
               temperature: 0.2,
@@ -455,8 +453,6 @@ describe("DashboardShell", () => {
     );
     expect(subsectionLabels).toContain("Model");
     expect(subsectionLabels).not.toContain("Launcher");
-    expect(screen.getByText("Provider Response ID")).toBeTruthy();
-    expect(screen.getByText("gen_1774284821")).toBeTruthy();
     expect(screen.getByText("Config Temperature")).toBeTruthy();
     expect(screen.getByText("0.2")).toBeTruthy();
     expect(screen.getByText("trial_parent_a")).toBeTruthy();
@@ -472,7 +468,6 @@ describe("DashboardShell", () => {
             backend: "openrouter",
             model: "x-ai/grok-4.1-fast",
             launcher: {
-              kind: "modal",
               run_id: "fc-123",
               run_url: "https://modal.com/apps/test/runs/fc-123",
             },
@@ -486,8 +481,6 @@ describe("DashboardShell", () => {
       (element) => element.textContent,
     );
     expect(subsectionLabels).toContain("Launcher");
-    expect(screen.getByText("Launcher Kind")).toBeTruthy();
-    expect(screen.getByText("modal")).toBeTruthy();
     expect(screen.getByText("Launcher Run Id")).toBeTruthy();
     expect(screen.getByText("fc-123")).toBeTruthy();
     expect(screen.getByText("Launcher Run Url")).toBeTruthy();

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Format Code"
+  short_description: "Run Ruff first, then apply SigmaEvolve manual style and chunking rules"
+  default_prompt: "Format Python code in this repo by running Ruff fixers first, Ruff formatter second, then applying the remaining SigmaEvolve manual readability rules and parallel chunking guidance across disjoint file chunks."

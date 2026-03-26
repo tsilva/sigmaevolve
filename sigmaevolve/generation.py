@@ -11,9 +11,6 @@ def build_baseline_train_script() -> str:
     template_source = _BASELINE_TEMPLATE_PATH.read_text(encoding="utf-8")
     return normalize_source(template_source)
 
-
-# ---- evolve_blocks.py ----
-
 import os
 import re
 from dataclasses import dataclass
@@ -250,8 +247,6 @@ def assert_only_evolve_blocks_changed(parent_source: str, candidate_source: str)
     if len(parent_payloads) != len(candidate_payloads):
         raise EvolveBlockError("candidate changed the number of evolve blocks")
 
-
-# ---- generation.py ----
 
 import json
 import os
@@ -988,8 +983,6 @@ class OpenRouterGenerationBackend:
         )
 
 
-# ---- generation_coordinator.py ----
-
 import random
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
@@ -1022,7 +1015,7 @@ class GenerationCoordinator:
     def sample_successful_context_trials(
         self,
         track_id: str,
-        sampling_settings: dict[str, Any],
+        sampling_seed: int,
         generation_index: int,
     ) -> list[TrialSummary]:
         # Prefer finished strategy variants that already have scored metrics.
@@ -1036,8 +1029,7 @@ class GenerationCoordinator:
         if len(candidates) == 1:
             return [candidates[0]]
 
-        seed = int(sampling_settings.get("seed", 0))
-        rng = random.Random(seed + generation_index)
+        rng = random.Random(int(sampling_seed) + generation_index)
         remaining = list(candidates)
         remaining_weights = [max(float(trial.score), 0.0) for trial in remaining]
         sampled: list[TrialSummary] = []
@@ -1064,13 +1056,13 @@ class GenerationCoordinator:
     def sample_generation_context_trials(
         self,
         track_id: str,
-        sampling_settings: dict[str, Any],
+        sampling_seed: int,
         generation_index: int,
     ) -> list[TrialSummary]:
         # Use successful strategy trials first whenever any exist.
         successful_context = self.sample_successful_context_trials(
             track_id,
-            sampling_settings,
+            sampling_seed,
             generation_index,
         )
         if successful_context:
@@ -1092,7 +1084,6 @@ class GenerationCoordinator:
             return [
                 TrialSummary(
                     trial_id=trial.trial_id,
-                    score=float(trial.score or 0.0),
                     metrics_json=dict(trial.metrics_json) if trial.metrics_json else None,
                     source=trial.source,
                     provenance_json=provenance,
@@ -1252,7 +1243,7 @@ class GenerationCoordinator:
         executor: ThreadPoolExecutor,
         track,
         dataset_manifest,
-        sampling_settings: dict[str, Any],
+        sampling_seed: int,
         *,
         slot_index: int,
         generation_index: int,
@@ -1261,7 +1252,7 @@ class GenerationCoordinator:
         # Skip scheduling when there is no valid context to generate from.
         context_trials = self.sample_generation_context_trials(
             track.track_id,
-            sampling_settings,
+            sampling_seed,
             generation_index,
         )
         if not context_trials:
@@ -1358,8 +1349,6 @@ class GenerationCoordinator:
             "payload": {"existing_trial_id": trial.trial_id},
         }
 
-
-# ---- train_script_blocks.py ----
 
 from textwrap import indent
 

@@ -265,9 +265,17 @@ function getGenerationPayload(value: Record<string, unknown> | null): Record<str
 }
 
 function getGenerationPrompt(value: Record<string, unknown> | null, field: "system_prompt" | "user_prompt"): string | null {
-  const generation = getGenerationPayload(value);
-  const prompt = generation?.[field];
-  return typeof prompt === "string" && prompt.length > 0 ? prompt : null;
+    const generation = getGenerationPayload(value);
+    const prompt = generation?.[field];
+  if (typeof prompt === "string" && prompt.length > 0) {
+    return prompt;
+  }
+
+  const requestMessages = asPromptMessages(value);
+  if (field === "system_prompt") {
+    return requestMessages[0]?.content ?? null;
+  }
+  return requestMessages[1]?.content ?? null;
 }
 
 function normalizeSourceSnippet(content: string): string {
@@ -312,9 +320,6 @@ function getGenerationPropertyGroups(value: Record<string, unknown> | null): Pro
     backend,
     model,
     candidate_kind,
-    generation_index,
-    duplicate_retry_count,
-    provider_response_id,
     context_trial_ids,
     generation_config,
     launcher,
@@ -327,9 +332,6 @@ function getGenerationPropertyGroups(value: Record<string, unknown> | null): Pro
   appendPropertyEntries(modelEntries, "Backend", backend);
   appendPropertyEntries(modelEntries, "Model", model);
   appendPropertyEntries(modelEntries, "Candidate Kind", candidate_kind);
-  appendPropertyEntries(modelEntries, "Generation Index", generation_index);
-  appendPropertyEntries(modelEntries, "Duplicate Retry Count", duplicate_retry_count);
-  appendPropertyEntries(modelEntries, "Provider Response ID", provider_response_id, { mono: true });
   appendPropertyEntries(modelEntries, "Context Trials", context_trial_ids, { mono: true });
   appendPropertyEntries(modelEntries, "Config", generation_config);
 
@@ -425,7 +427,7 @@ function renderModalRunLink(trial: TrialListItem, label = "Modal run") {
 }
 
 function getTrackLabel(track: TrackListItem): string {
-  return track.name ?? track.trackId;
+  return track.trackId;
 }
 
 function getCompletedCount(track: TrackListItem): number {

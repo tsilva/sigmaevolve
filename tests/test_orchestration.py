@@ -15,6 +15,7 @@ from sigmaevolve.generation import (
     build_model_block,
 )
 from sigmaevolve.orchestration import EvolutionSystem, InlineRunnerLauncher
+from sigmaevolve.storage import classify_error_type
 from tests.support import RecordingLauncherDouble, make_llm_provenance
 
 
@@ -22,9 +23,10 @@ def _prepare_repo_dataset(
     repository, dataset_manager, dataset_id: str = "mnist:v1"
 ) -> None:
     dataset_manager.prepare(dataset_id)
-    repository.register_dataset(
-        dataset_id, str(dataset_manager.manifest_path_for(dataset_id))
-    )
+
+
+def _create_track(system, policy_json: dict | None = None, dataset_id: str = "mnist:v1"):
+    return system.create_track(dataset_id, policy_json or {})
 
 
 def _build_system(repository, dataset_manager, generator, launcher):
@@ -41,7 +43,6 @@ def _finalize_baseline_success(repository, track_id: str, score: float = 0.5):
         runner_id=None,
         outcome_reason="succeeded",
         metrics={"accuracy": score},
-        score=score,
         error_info=None,
     )
     return baseline
@@ -49,7 +50,7 @@ def _finalize_baseline_success(repository, track_id: str, score: float = 0.5):
 
 def test_create_track_seeds_one_baseline_candidate(system):
     system.prepare_dataset("mnist:v1")
-    track = system.create_track("baseline", "mnist:v1", {})
+    track = _create_track(system)
     trials = system.repository.list_trials(track.track_id)
     assert len(trials) == 1
     assert trials[0].status == "queued"
@@ -106,7 +107,7 @@ def forward(self, x):
     system, _ = _build_system(
         repository, dataset_manager, generator, RecordingLauncherDouble()
     )
-    track = system.create_track("cold-start", "mnist:v1", {})
+    track = _create_track(system)
 
     baseline = repository.list_trials(track.track_id)[0]
     result = system.reconcile_track(
@@ -124,8 +125,8 @@ def forward(self, x):
 
 def test_same_source_is_deduped_within_track_and_allowed_across_tracks(system):
     system.prepare_dataset("mnist:v1")
-    first = system.create_track("a", "mnist:v1", {})
-    second = system.create_track("b", "mnist:v1", {})
+    first = _create_track(system)
+    second = _create_track(system)
     duplicate_source = build_candidate_train_script(
         build_model_block(
             """
@@ -156,7 +157,7 @@ def forward(self, x):
 
 def test_two_orchestrators_cannot_reserve_same_trial(system):
     system.prepare_dataset("mnist:v1")
-    track = system.create_track("reserve", "mnist:v1", {})
+    track = _create_track(system)
     reserved_ids = []
     lock = threading.Lock()
 
@@ -178,7 +179,7 @@ def test_two_orchestrators_cannot_reserve_same_trial(system):
 
 def test_two_runners_cannot_both_claim_same_dispatch(system):
     system.prepare_dataset("mnist:v1")
-    track = system.create_track("claim", "mnist:v1", {})
+    track = _create_track(system)
     reserved = system.repository.reserve_trials(
         track.track_id, max_parallelism=1, dispatch_ttl_sec=60, limit=1
     )
@@ -215,14 +216,13 @@ def test_reconcile_generates_duplicates_without_dispatching_more_work(
     )
     system.launcher = InlineRunnerLauncher(runner)
     system.orchestrator.launcher = system.launcher
-    track = system.create_track("dup", "mnist:v1", {"dispatch_ttl_sec": 1, "epochs": 2})
+    track = _create_track(system, {"dispatch_ttl_sec": 1, "epochs": 2})
     baseline = system.repository.list_trials(track.track_id)[0]
     system.repository.finalize_trial(
         trial_id=baseline.trial_id,
         runner_id=None,
         outcome_reason="succeeded",
         metrics={"accuracy": 0.5},
-        score=0.5,
         error_info={"reason": "test_setup"},
     )
 
@@ -270,16 +270,13 @@ def test_reconcile_retries_duplicate_generation_with_incremented_retry_count(
     system, runner = _build_system(repository, dataset_manager, generator, None)
     system.launcher = InlineRunnerLauncher(runner)
     system.orchestrator.launcher = system.launcher
-    track = system.create_track(
-        "dup-retries", "mnist:v1", {"dispatch_ttl_sec": 1, "epochs": 2}
-    )
+    track = _create_track(system, {"dispatch_ttl_sec": 1, "epochs": 2})
     baseline = system.repository.list_trials(track.track_id)[0]
     system.repository.finalize_trial(
         trial_id=baseline.trial_id,
         runner_id=None,
         outcome_reason="succeeded",
         metrics={"accuracy": 0.5},
-        score=0.5,
         error_info={"reason": "test_setup"},
     )
 
@@ -352,16 +349,13 @@ def forward(self, x):
     system, _ = _build_system(
         repository, dataset_manager, generator, RecordingLauncherDouble()
     )
-    track = system.create_track(
-        "dup-success", "mnist:v1", {"dispatch_ttl_sec": 1, "epochs": 2}
-    )
+    track = _create_track(system, {"dispatch_ttl_sec": 1, "epochs": 2})
     baseline = system.repository.list_trials(track.track_id)[0]
     system.repository.finalize_trial(
         trial_id=baseline.trial_id,
         runner_id=None,
         outcome_reason="succeeded",
         metrics={"accuracy": 0.5},
-        score=0.5,
         error_info={"reason": "test_setup"},
     )
 
@@ -373,19 +367,17 @@ def forward(self, x):
     assert len(result.duplicate_hashes) == 1
     assert len(result.duplicate_trial_ids) == 1
     assert result.generated_trial_ids == [created_trial.trial_id]
-    assert created_trial.provenance_json["duplicate_retry_count"] == 1
-    assert created_trial.provenance_json["generation_index"] == 1
+    assert "duplicate_retry_count" not in created_trial.provenance_json
+    assert "generation_index" not in created_trial.provenance_json
     assert created_trial.provenance_json["generation_config"][
         "temperature"
     ] == pytest.approx(0.3)
-    assert created_trial.provenance_json["generation"]["assertions_passed"] is True
+    assert "generation" not in created_trial.provenance_json
 
 
 def test_expired_dispatch_is_marked_stale_when_retries_exhausted(system):
     system.prepare_dataset("mnist:v1")
-    track = system.create_track(
-        "stale", "mnist:v1", {"dispatch_ttl_sec": 0, "max_dispatch_retries": 1}
-    )
+    track = _create_track(system, {"dispatch_ttl_sec": 0, "max_dispatch_retries": 1})
     system.repository.reserve_trials(
         track.track_id, max_parallelism=1, dispatch_ttl_sec=0, limit=1
     )
@@ -396,7 +388,7 @@ def test_expired_dispatch_is_marked_stale_when_retries_exhausted(system):
 
 def test_stale_active_trial_is_finalized(system):
     system.prepare_dataset("mnist:v1")
-    track = system.create_track("active-stale", "mnist:v1", {"stale_ttl_sec": 0})
+    track = _create_track(system, {"stale_ttl_sec": 0})
     reserved = system.repository.reserve_trials(
         track.track_id, max_parallelism=1, dispatch_ttl_sec=60, limit=1
     )[0]
@@ -436,7 +428,7 @@ def test_stale_active_modal_trial_requests_run_cancellation(
         FixedGenerationBackend(source=build_baseline_train_script()),
         launcher,
     )
-    track = system.create_track("active-stale-modal", "mnist:v1", {"stale_ttl_sec": 0})
+    track = _create_track(system, {"stale_ttl_sec": 0})
     reserved = repository.reserve_trials(
         track.track_id, max_parallelism=1, dispatch_ttl_sec=60, limit=1
     )[0]
@@ -458,16 +450,16 @@ def test_stale_active_modal_trial_requests_run_cancellation(
     assert result.stale_trial_ids == [claimed.trial_id]
     assert launcher.cancelled == [
         {
-            "kind": "modal",
             "run_id": "fc-123",
             "run_url": "https://modal.com/apps/test/runs/fc-123",
         }
     ]
     assert trial is not None
     assert trial.outcome_reason == "stale"
-    assert trial.provenance_json["launcher"]["cancel_outcome"] == "requested"
-    assert trial.provenance_json["launcher"]["cancel_attempted_at"]
-    assert "cancel_error" not in trial.provenance_json["launcher"]
+    assert trial.provenance_json["launcher"] == {
+        "run_id": "fc-123",
+        "run_url": "https://modal.com/apps/test/runs/fc-123",
+    }
 
 
 def test_stale_active_modal_trial_records_missing_run_id_skip(
@@ -498,9 +490,7 @@ def test_stale_active_modal_trial_records_missing_run_id_skip(
         FixedGenerationBackend(source=build_baseline_train_script()),
         launcher,
     )
-    track = system.create_track(
-        "active-stale-missing-run", "mnist:v1", {"stale_ttl_sec": 0}
-    )
+    track = _create_track(system, {"stale_ttl_sec": 0})
     reserved = repository.reserve_trials(
         track.track_id, max_parallelism=1, dispatch_ttl_sec=60, limit=1
     )[0]
@@ -521,9 +511,9 @@ def test_stale_active_modal_trial_records_missing_run_id_skip(
     assert launcher.cancel_calls == 0
     assert trial is not None
     assert trial.outcome_reason == "stale"
-    assert trial.provenance_json["launcher"]["cancel_outcome"] == "skipped_no_run_id"
-    assert trial.provenance_json["launcher"]["cancel_attempted_at"]
-    assert "cancel_error" not in trial.provenance_json["launcher"]
+    assert trial.provenance_json["launcher"] == {
+        "run_url": "https://modal.com/apps/test/runs/fc-missing",
+    }
 
 
 def test_stale_active_modal_trial_records_cancellation_failure(
@@ -551,9 +541,7 @@ def test_stale_active_modal_trial_records_cancellation_failure(
         FixedGenerationBackend(source=build_baseline_train_script()),
         launcher,
     )
-    track = system.create_track(
-        "active-stale-failed-cancel", "mnist:v1", {"stale_ttl_sec": 0}
-    )
+    track = _create_track(system, {"stale_ttl_sec": 0})
     reserved = repository.reserve_trials(
         track.track_id, max_parallelism=1, dispatch_ttl_sec=60, limit=1
     )[0]
@@ -573,11 +561,11 @@ def test_stale_active_modal_trial_records_cancellation_failure(
 
     assert trial is not None
     assert trial.outcome_reason == "stale"
-    assert trial.provenance_json["launcher"]["cancel_outcome"] == "failed"
-    assert trial.provenance_json["launcher"]["cancel_attempted_at"]
-    assert (
-        trial.provenance_json["launcher"]["cancel_error"] == "modal cancellation failed"
-    )
+    assert trial.provenance_json["launcher"] == {"run_id": "fc-bad"}
+    assert trial.error_json == {
+        "reason": "heartbeat_stale",
+        "detail": "modal cancellation failed",
+    }
 
 
 def test_weighted_successful_sampling_favors_higher_scores(repository, dataset_manager):
@@ -590,9 +578,7 @@ def test_weighted_successful_sampling_favors_higher_scores(repository, dataset_m
     )
     system.launcher = InlineRunnerLauncher(runner)
     system.orchestrator.launcher = system.launcher
-    track = system.create_track(
-        "weighted", "mnist:v1", {"sampling_settings": {"seed": 7}}
-    )
+    track = _create_track(system, {"sampling_seed": 7})
 
     trials = repository.list_trials(track.track_id)
     baseline = trials[0]
@@ -627,7 +613,6 @@ def forward(self, x):
         runner_id=None,
         outcome_reason="succeeded",
         metrics={"accuracy": 0.9},
-        score=0.9,
         error_info=None,
     )
     repository.finalize_trial(
@@ -635,7 +620,6 @@ def forward(self, x):
         runner_id=None,
         outcome_reason="succeeded",
         metrics={"accuracy": 0.3},
-        score=0.3,
         error_info=None,
     )
     repository.finalize_trial(
@@ -643,7 +627,6 @@ def forward(self, x):
         runner_id=None,
         outcome_reason="succeeded",
         metrics={"accuracy": 0.1},
-        score=0.1,
         error_info=None,
     )
 
@@ -652,7 +635,7 @@ def forward(self, x):
     for generation_index in range(300):
         sampled = system.orchestrator._sample_successful_context_trials(
             track.track_id,
-            {"seed": 7},
+            7,
             generation_index,
         )
         assert len(sampled) == 2
@@ -718,7 +701,7 @@ def forward(self, x):
     system, _ = _build_system(
         repository, dataset_manager, generator, RecordingLauncherDouble()
     )
-    track = system.create_track("negatives", "mnist:v1", {})
+    track = _create_track(system)
 
     baseline = repository.list_trials(track.track_id)[0]
     repository.finalize_trial(
@@ -726,7 +709,6 @@ def forward(self, x):
         runner_id=None,
         outcome_reason="succeeded",
         metrics={"accuracy": 0.5},
-        score=0.5,
         error_info={"stdout": "", "stderr": ""},
     )
     failed, _ = repository.create_queued_trial_if_absent(
@@ -753,7 +735,6 @@ def forward(self, x):
         runner_id=None,
         outcome_reason="crashed",
         metrics=None,
-        score=0.0,
         error_info={
             "returncode": 1,
             "stderr": "RuntimeError: mat1 and mat2 shapes cannot be multiplied",
@@ -794,9 +775,6 @@ def test_reconcile_rejects_mutations_outside_evolve_blocks(repository, dataset_m
             )()
 
     dataset_manager.prepare("mnist:v1")
-    repository.register_dataset(
-        "mnist:v1", str(dataset_manager.manifest_path_for("mnist:v1"))
-    )
     runner = RunnerService(repository=repository, dataset_manager=dataset_manager)
     system = EvolutionSystem(
         repository,
@@ -805,7 +783,7 @@ def test_reconcile_rejects_mutations_outside_evolve_blocks(repository, dataset_m
         RecordingLauncherDouble(),
         runner,
     )
-    track = system.create_track("invalid-mutation", "mnist:v1", {})
+    track = _create_track(system)
 
     baseline = repository.list_trials(track.track_id)[0]
     repository.finalize_trial(
@@ -813,7 +791,6 @@ def test_reconcile_rejects_mutations_outside_evolve_blocks(repository, dataset_m
         runner_id=None,
         outcome_reason="succeeded",
         metrics={"accuracy": 0.5},
-        score=0.5,
         error_info=None,
     )
 
@@ -833,16 +810,7 @@ def test_reconcile_rejects_mutations_outside_evolve_blocks(repository, dataset_m
         for trial in failed_trials
         if trial is not None
     )
-    assert all(
-        trial.provenance_json["generation"]["assertions_passed"] is False
-        for trial in failed_trials
-        if trial is not None
-    )
-    assert all(
-        trial.provenance_json["generation"]["assertion_failures"]
-        for trial in failed_trials
-        if trial is not None
-    )
+    assert all(trial.error_json["reason"] == "candidate_materialization_failed" for trial in failed_trials if trial is not None)
 
 
 def test_reconcile_applies_search_replace_response_before_queueing(
@@ -877,14 +845,11 @@ def test_reconcile_applies_search_replace_response_before_queueing(
             )()
 
     dataset_manager.prepare("mnist:v1")
-    repository.register_dataset(
-        "mnist:v1", str(dataset_manager.manifest_path_for("mnist:v1"))
-    )
     runner = RunnerService(repository=repository, dataset_manager=dataset_manager)
     system = EvolutionSystem(
         repository, dataset_manager, PatchGenerator(), RecordingLauncherDouble(), runner
     )
-    track = system.create_track("patch-mutation", "mnist:v1", {})
+    track = _create_track(system)
 
     baseline = repository.list_trials(track.track_id)[0]
     repository.finalize_trial(
@@ -892,7 +857,6 @@ def test_reconcile_applies_search_replace_response_before_queueing(
         runner_id=None,
         outcome_reason="succeeded",
         metrics={"accuracy": 0.5},
-        score=0.5,
         error_info=None,
     )
 
@@ -936,9 +900,6 @@ IMMUTABLE_BREAK = True
             )()
 
     dataset_manager.prepare("mnist:v1")
-    repository.register_dataset(
-        "mnist:v1", str(dataset_manager.manifest_path_for("mnist:v1"))
-    )
     runner = RunnerService(repository=repository, dataset_manager=dataset_manager)
     system = EvolutionSystem(
         repository,
@@ -947,7 +908,7 @@ IMMUTABLE_BREAK = True
         RecordingLauncherDouble(),
         runner,
     )
-    track = system.create_track("invalid-patch-mutation", "mnist:v1", {})
+    track = _create_track(system)
 
     baseline = repository.list_trials(track.track_id)[0]
     repository.finalize_trial(
@@ -955,7 +916,6 @@ IMMUTABLE_BREAK = True
         runner_id=None,
         outcome_reason="succeeded",
         metrics={"accuracy": 0.5},
-        score=0.5,
         error_info=None,
     )
 
@@ -975,11 +935,7 @@ IMMUTABLE_BREAK = True
         for trial in failed_trials
         if trial is not None
     )
-    assert all(
-        trial.provenance_json["generation"]["assertions_passed"] is False
-        for trial in failed_trials
-        if trial is not None
-    )
+    assert all(trial.error_json["reason"] == "candidate_materialization_failed" for trial in failed_trials if trial is not None)
 
 
 def test_reconcile_persists_generation_failed_trial_when_backend_returns_error(
@@ -1005,9 +961,6 @@ def test_reconcile_persists_generation_failed_trial_when_backend_returns_error(
             )
 
     dataset_manager.prepare("mnist:v1")
-    repository.register_dataset(
-        "mnist:v1", str(dataset_manager.manifest_path_for("mnist:v1"))
-    )
     runner = RunnerService(repository=repository, dataset_manager=dataset_manager)
     system = EvolutionSystem(
         repository,
@@ -1016,7 +969,7 @@ def test_reconcile_persists_generation_failed_trial_when_backend_returns_error(
         RecordingLauncherDouble(),
         runner,
     )
-    track = system.create_track("provider-failure", "mnist:v1", {})
+    track = _create_track(system)
 
     baseline = repository.list_trials(track.track_id)[0]
     repository.finalize_trial(
@@ -1024,7 +977,6 @@ def test_reconcile_persists_generation_failed_trial_when_backend_returns_error(
         runner_id=None,
         outcome_reason="succeeded",
         metrics={"accuracy": 0.5},
-        score=0.5,
         error_info=None,
     )
 
@@ -1073,9 +1025,6 @@ def test_reconcile_persists_generation_failed_trial_when_response_cannot_materia
             )
 
     dataset_manager.prepare("mnist:v1")
-    repository.register_dataset(
-        "mnist:v1", str(dataset_manager.manifest_path_for("mnist:v1"))
-    )
     runner = RunnerService(repository=repository, dataset_manager=dataset_manager)
     system = EvolutionSystem(
         repository,
@@ -1084,7 +1033,7 @@ def test_reconcile_persists_generation_failed_trial_when_response_cannot_materia
         RecordingLauncherDouble(),
         runner,
     )
-    track = system.create_track("bad-response", "mnist:v1", {})
+    track = _create_track(system)
 
     baseline = repository.list_trials(track.track_id)[0]
     repository.finalize_trial(
@@ -1092,7 +1041,6 @@ def test_reconcile_persists_generation_failed_trial_when_response_cannot_materia
         runner_id=None,
         outcome_reason="succeeded",
         metrics={"accuracy": 0.5},
-        score=0.5,
         error_info=None,
     )
 
@@ -1143,9 +1091,6 @@ def test_reconcile_tags_length_limited_invalid_candidate_as_truncation(
             )
 
     dataset_manager.prepare("mnist:v1")
-    repository.register_dataset(
-        "mnist:v1", str(dataset_manager.manifest_path_for("mnist:v1"))
-    )
     runner = RunnerService(repository=repository, dataset_manager=dataset_manager)
     system = EvolutionSystem(
         repository,
@@ -1154,7 +1099,7 @@ def test_reconcile_tags_length_limited_invalid_candidate_as_truncation(
         RecordingLauncherDouble(),
         runner,
     )
-    track = system.create_track("truncated-response", "mnist:v1", {})
+    track = _create_track(system)
 
     baseline = repository.list_trials(track.track_id)[0]
     repository.finalize_trial(
@@ -1162,7 +1107,6 @@ def test_reconcile_tags_length_limited_invalid_candidate_as_truncation(
         runner_id=None,
         outcome_reason="succeeded",
         metrics={"accuracy": 0.5},
-        score=0.5,
         error_info=None,
     )
 
@@ -1191,7 +1135,8 @@ def test_reconcile_tags_length_limited_invalid_candidate_as_truncation(
         if trial is not None
     )
     assert all(
-        trial.error_json["error_type"] == "generation_output_truncated"
+        classify_error_type(trial.outcome_reason or "", trial.error_json)
+        == "generation_output_truncated"
         for trial in failed_trials
         if trial is not None
     )
@@ -1202,15 +1147,12 @@ def test_reconcile_persists_generation_failed_trial_when_api_key_missing(
 ):
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     dataset_manager.prepare("mnist:v1")
-    repository.register_dataset(
-        "mnist:v1", str(dataset_manager.manifest_path_for("mnist:v1"))
-    )
     runner = RunnerService(repository=repository, dataset_manager=dataset_manager)
     generator = OpenRouterGenerationBackend(api_key=None)
     system = EvolutionSystem(
         repository, dataset_manager, generator, RecordingLauncherDouble(), runner
     )
-    track = system.create_track("missing-api-key", "mnist:v1", {})
+    track = _create_track(system)
 
     baseline = repository.list_trials(track.track_id)[0]
     repository.finalize_trial(
@@ -1218,7 +1160,6 @@ def test_reconcile_persists_generation_failed_trial_when_api_key_missing(
         runner_id=None,
         outcome_reason="succeeded",
         metrics={"accuracy": 0.5},
-        score=0.5,
         error_info=None,
     )
 
@@ -1294,15 +1235,12 @@ def forward(self, x):
                     self.active -= 1
 
     dataset_manager.prepare("mnist:v1")
-    repository.register_dataset(
-        "mnist:v1", str(dataset_manager.manifest_path_for("mnist:v1"))
-    )
     generator = ParallelTrackingGenerator()
     runner = RunnerService(repository=repository, dataset_manager=dataset_manager)
     system = EvolutionSystem(
         repository, dataset_manager, generator, RecordingLauncherDouble(), runner
     )
-    track = system.create_track("parallel", "mnist:v1", {})
+    track = _create_track(system)
 
     baseline = repository.list_trials(track.track_id)[0]
     repository.finalize_trial(
@@ -1310,7 +1248,6 @@ def forward(self, x):
         runner_id=None,
         outcome_reason="succeeded",
         metrics={"accuracy": 0.5},
-        score=0.5,
         error_info=None,
     )
 
@@ -1393,7 +1330,7 @@ def forward(self, x):
     generator = StaggeredGenerator()
     launcher = TimedLauncher()
     system, _ = _build_system(repository, dataset_manager, generator, launcher)
-    track = system.create_track("early-dispatch", "mnist:v1", {})
+    track = _create_track(system)
     _finalize_baseline_success(repository, track.track_id)
 
     result = system.reconcile_track(
@@ -1473,9 +1410,7 @@ def forward(self, x):
     generator = BlockingGenerator()
     launcher = RelaunchRecordingLauncher()
     system, _ = _build_system(repository, dataset_manager, generator, launcher)
-    track = system.create_track(
-        "stale-relaunch", "mnist:v1", {"dispatch_ttl_sec": 0, "max_dispatch_retries": 2}
-    )
+    track = _create_track(system, {"dispatch_ttl_sec": 0, "max_dispatch_retries": 2})
     _finalize_baseline_success(repository, track.track_id)
 
     queued_trial, created = repository.create_queued_trial_if_absent(
@@ -1549,7 +1484,7 @@ def test_reconcile_uses_launch_executor_so_blocking_launches_do_not_block_other_
         FixedGenerationBackend(source=build_baseline_train_script()),
         launcher,
     )
-    track = system.create_track("blocking-launch", "mnist:v1", {})
+    track = _create_track(system)
     second_trial, created = repository.create_queued_trial_if_absent(
         track.track_id,
         build_candidate_train_script(
@@ -1606,9 +1541,6 @@ def test_reconcile_persists_launcher_metadata_for_launched_trials(
             }
 
     dataset_manager.prepare("mnist:v1")
-    repository.register_dataset(
-        "mnist:v1", str(dataset_manager.manifest_path_for("mnist:v1"))
-    )
     runner = RunnerService(repository=repository, dataset_manager=dataset_manager)
     system = EvolutionSystem(
         repository,
@@ -1617,7 +1549,7 @@ def test_reconcile_persists_launcher_metadata_for_launched_trials(
         MetadataLauncher(),
         runner,
     )
-    track = system.create_track("launch-metadata", "mnist:v1", {})
+    track = _create_track(system)
 
     queued_trial = repository.list_trials(track.track_id)[0]
     result = system.reconcile_track(
@@ -1628,7 +1560,6 @@ def test_reconcile_persists_launcher_metadata_for_launched_trials(
     assert result.launched_trial_ids == [queued_trial.trial_id]
     assert updated_trial is not None
     assert updated_trial.provenance_json["launcher"] == {
-        "kind": "modal",
         "run_id": f"fc-{queued_trial.trial_id}",
         "run_url": f"https://modal.com/apps/test/runs/{queued_trial.trial_id}",
     }

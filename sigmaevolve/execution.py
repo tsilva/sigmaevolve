@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-
-# ---- wandb_support.py ----
-
 import argparse
 import importlib
 import importlib.util
@@ -163,7 +160,6 @@ class WandbRunLogger:
             "sigmaevolve": {
                 "trial_id": trial.trial_id,
                 "track_id": track.track_id,
-                "track_name": track.name,
                 "dataset_id": track.dataset_id,
                 "runner_id": runner_id,
                 "script_hash": trial.script_hash,
@@ -210,14 +206,14 @@ class WandbRunLogger:
         *,
         outcome_reason: str,
         metrics: dict[str, Any] | None,
-        score: float,
         error_info: dict[str, Any] | None,
     ) -> None:
         # Build the terminal log entry in the same field order the dashboards expect.
+        score = float(compute_score(metrics))
         payload = {
             "trial_state": "terminal",
             "outcome_reason": outcome_reason,
-            "score": float(score),
+            "score": score,
         }
         if metrics:
             payload.update(_wandb_metric_aliases(metrics))
@@ -229,7 +225,7 @@ class WandbRunLogger:
         self.run.summary["dataset_id"] = self.track.dataset_id
         self.run.summary["runner_id"] = self.runner_id
         self.run.summary["outcome_reason"] = outcome_reason
-        self.run.summary["score"] = float(score)
+        self.run.summary["score"] = score
 
         # Copy metric fields into the summary so the final run page stays searchable.
         if metrics:
@@ -824,7 +820,6 @@ class RunnerService:
         runner_id: str | None,
         outcome_reason: str,
         metrics: dict[str, Any] | None,
-        score: float,
         error_info: dict[str, Any] | None,
         wandb_run_logger: WandbRunLogger | None,
     ) -> None:
@@ -833,7 +828,6 @@ class RunnerService:
             runner_id=runner_id,
             outcome_reason=outcome_reason,
             metrics=metrics,
-            score=score,
             error_info=error_info,
         )
         if wandb_run_logger is None:
@@ -842,7 +836,6 @@ class RunnerService:
             wandb_run_logger.finish(
                 outcome_reason=outcome_reason,
                 metrics=metrics,
-                score=score,
                 error_info=error_info,
             )
         except Exception:
@@ -893,7 +886,6 @@ class RunnerService:
                     outcome_reason: str,
                     *,
                     metrics: dict[str, Any] | None,
-                    score: float,
                     error_info: dict[str, Any] | None,
                 ) -> None:
                     self._finalize_trial(
@@ -901,7 +893,6 @@ class RunnerService:
                         runner_id=runner_id,
                         outcome_reason=outcome_reason,
                         metrics=metrics,
-                        score=score,
                         error_info=error_info,
                         wandb_run_logger=wandb_run_logger,
                     )
@@ -921,7 +912,6 @@ class RunnerService:
                         runner_id=runner_id,
                         outcome_reason=OUTCOME_CRASHED,
                         metrics=None,
-                        score=0.0,
                         error_info={
                             "reason": "wandb_init_failed",
                             "detail": str(exc),
@@ -990,7 +980,6 @@ class RunnerService:
                         finalize_outcome(
                             OUTCOME_EVAL_FAILED,
                             metrics=None,
-                            score=0.0,
                             error_info=error_info,
                         )
                         return
@@ -1004,7 +993,6 @@ class RunnerService:
                     finalize_outcome(
                         OUTCOME_CRASHED,
                         metrics=None,
-                        score=0.0,
                         error_info=error_info,
                     )
                     return
@@ -1026,7 +1014,6 @@ class RunnerService:
                     finalize_outcome(
                         OUTCOME_EVAL_FAILED,
                         metrics=None,
-                        score=0.0,
                         error_info=error_info,
                     )
                     return
@@ -1045,7 +1032,6 @@ class RunnerService:
                     finalize_outcome(
                         outcome_reason,
                         metrics=None,
-                        score=0.0,
                         error_info=error_info,
                     )
                     return
@@ -1058,7 +1044,6 @@ class RunnerService:
                     debug_payload=debug_payload,
                 )
                 outcome_reason = OUTCOME_TIMEOUT if timed_out else OUTCOME_SUCCEEDED
-                score = compute_score(metrics, policy["scorer_settings"])
                 error_info = {
                     "stdout": stdout,
                     "stderr": stderr,
@@ -1075,7 +1060,6 @@ class RunnerService:
                     runner_id=runner_id,
                     outcome_reason=outcome_reason,
                     metrics=metrics,
-                    score=score,
                     error_info=error_info,
                     wandb_run_logger=wandb_run_logger,
                 )
@@ -1083,7 +1067,7 @@ class RunnerService:
                     "Finalized trial %s with outcome=%s score=%.6f accuracy=%s.",
                     trial.trial_id,
                     outcome_reason,
-                    score,
+                    compute_score(metrics),
                     metrics.get("accuracy"),
                 )
         finally:
