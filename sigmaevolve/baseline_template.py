@@ -12,6 +12,115 @@ import torch
 
 logger = logging.getLogger(__name__)
 
+# EVOLVE-BLOCK-START
+
+CONFIG = {
+    "normalization_std_floor": 1e-6,
+    "binary_probability_threshold": 0.5,
+    "binary_logit_threshold": 0.0,
+    "initial_best_accuracy": -1.0,
+    "accuracy_improvement_tol": 1e-9,
+    "model": {
+        "hidden_dims": (256, 128),
+    },
+    "data": {
+        "max_batch_size": 512,
+        "shuffle_train": True,
+        "shuffle_validation": False,
+    },
+    "optimization": {
+        "learning_rate": 0.002,
+        "weight_decay": 1e-4,
+        "label_smoothing": 0.0,
+        "grad_clip_norm": 1.0,
+    },
+    "training_policy": {
+        "early_stopping_patience": 2,
+    },
+}
+
+
+class EvolvedModel(torch.nn.Module):
+    def __init__(self, input_shape, num_classes):
+        super().__init__()
+        model_config = CONFIG["model"]
+        flat_dim = int(np.prod(input_shape))
+        hidden_dim_1, hidden_dim_2 = model_config["hidden_dims"]
+
+        # Build the baseline MLP in a single sequential stack.
+        self.network = torch.nn.Sequential(
+            torch.nn.Linear(flat_dim, hidden_dim_1),
+            torch.nn.ReLU(),
+            torch.nn.Linear(hidden_dim_1, hidden_dim_2),
+            torch.nn.ReLU(),
+            torch.nn.Linear(hidden_dim_2, num_classes),
+        )
+
+    def forward(self, x):
+        return self.network(x)
+
+
+def build_model(*, input_shape, num_classes):
+    return EvolvedModel(input_shape=input_shape, num_classes=num_classes)
+
+
+def configure_data(*, train_x, train_y, validation_x, random_seed):
+    del random_seed
+    data_config = CONFIG["data"]
+    batch_size = max(1, min(data_config["max_batch_size"], int(train_x.shape[0])))
+
+    # Build train and validation loaders with the configured batching policy.
+    return {
+        "batch_size": batch_size,
+        "train_loader": torch.utils.data.DataLoader(
+            torch.utils.data.TensorDataset(train_x, train_y),
+            batch_size=batch_size,
+            shuffle=data_config["shuffle_train"],
+        ),
+        "validation_loader": torch.utils.data.DataLoader(
+            torch.utils.data.TensorDataset(validation_x),
+            batch_size=batch_size,
+            shuffle=data_config["shuffle_validation"],
+        ),
+    }
+
+
+def configure_optimization(*, model, train_loader, num_epochs, num_classes):
+    del train_loader
+    del num_epochs
+    del num_classes
+    optimization_config = CONFIG["optimization"]
+    trainable_parameters = [
+        parameter for parameter in model.parameters() if parameter.requires_grad
+    ]
+    optimizer = None
+
+    # Instantiate AdamW only when the model exposes trainable parameters.
+    if trainable_parameters:
+        optimizer = torch.optim.AdamW(
+            trainable_parameters,
+            lr=optimization_config["learning_rate"],
+            weight_decay=optimization_config["weight_decay"],
+        )
+
+    # Return the optimizer setup in a reviewable payload.
+    return {
+        "trainable_parameters": trainable_parameters,
+        "optimizer": optimizer,
+        "scheduler": None,
+        "label_smoothing": optimization_config["label_smoothing"],
+        "grad_clip_norm": optimization_config["grad_clip_norm"],
+    }
+
+
+def configure_training_policy(*, num_epochs):
+    del num_epochs
+    training_policy = CONFIG["training_policy"]
+    return {
+        "early_stopping_patience": training_policy["early_stopping_patience"],
+    }
+
+# EVOLVE-BLOCK-END
 
 class TrainScriptContractError(RuntimeError):
     pass
@@ -77,136 +186,6 @@ def prepare_feature_tensor(features, *, input_shape=None):
     flat_features = features.reshape(int(features.shape[0]), -1)
     tensor = torch.from_numpy(flat_features)
     return (int(flat_features.shape[1]),), tensor.contiguous()
-
-
-# EVOLVE-BLOCK-START
-
-# EVOLVE-SECTION-START: CONFIG
-CONFIG = {
-    "normalization_std_floor": 1e-6,
-    "binary_probability_threshold": 0.5,
-    "binary_logit_threshold": 0.0,
-    "initial_best_accuracy": -1.0,
-    "accuracy_improvement_tol": 1e-9,
-    "model": {
-        "hidden_dims": (256, 128),
-    },
-    "data": {
-        "max_batch_size": 512,
-        "shuffle_train": True,
-        "shuffle_validation": False,
-    },
-    "optimization": {
-        "learning_rate": 0.002,
-        "weight_decay": 1e-4,
-        "label_smoothing": 0.0,
-        "grad_clip_norm": 1.0,
-    },
-    "training_policy": {
-        "early_stopping_patience": 2,
-    },
-}
-# EVOLVE-SECTION-END: CONFIG
-
-
-# EVOLVE-SECTION-START: MODEL
-class EvolvedModel(torch.nn.Module):
-    def __init__(self, input_shape, num_classes):
-        super().__init__()
-        model_config = CONFIG["model"]
-        flat_dim = int(np.prod(input_shape))
-        hidden_dim_1, hidden_dim_2 = model_config["hidden_dims"]
-
-        # Build the baseline MLP in a single sequential stack.
-        self.network = torch.nn.Sequential(
-            torch.nn.Linear(flat_dim, hidden_dim_1),
-            torch.nn.ReLU(),
-            torch.nn.Linear(hidden_dim_1, hidden_dim_2),
-            torch.nn.ReLU(),
-            torch.nn.Linear(hidden_dim_2, num_classes),
-        )
-
-    def forward(self, x):
-        return self.network(x)
-
-
-def build_model(*, input_shape, num_classes):
-    return EvolvedModel(input_shape=input_shape, num_classes=num_classes)
-
-
-# EVOLVE-SECTION-END: MODEL
-
-
-# EVOLVE-SECTION-START: DATA
-def configure_data(*, train_x, train_y, validation_x, random_seed):
-    del random_seed
-    data_config = CONFIG["data"]
-    batch_size = max(1, min(data_config["max_batch_size"], int(train_x.shape[0])))
-
-    # Build train and validation loaders with the configured batching policy.
-    return {
-        "batch_size": batch_size,
-        "train_loader": torch.utils.data.DataLoader(
-            torch.utils.data.TensorDataset(train_x, train_y),
-            batch_size=batch_size,
-            shuffle=data_config["shuffle_train"],
-        ),
-        "validation_loader": torch.utils.data.DataLoader(
-            torch.utils.data.TensorDataset(validation_x),
-            batch_size=batch_size,
-            shuffle=data_config["shuffle_validation"],
-        ),
-    }
-
-
-# EVOLVE-SECTION-END: DATA
-
-
-# EVOLVE-SECTION-START: OPTIMIZATION
-def configure_optimization(*, model, train_loader, num_epochs, num_classes):
-    del train_loader
-    del num_epochs
-    del num_classes
-    optimization_config = CONFIG["optimization"]
-    trainable_parameters = [
-        parameter for parameter in model.parameters() if parameter.requires_grad
-    ]
-    optimizer = None
-
-    # Instantiate AdamW only when the model exposes trainable parameters.
-    if trainable_parameters:
-        optimizer = torch.optim.AdamW(
-            trainable_parameters,
-            lr=optimization_config["learning_rate"],
-            weight_decay=optimization_config["weight_decay"],
-        )
-
-    # Return the optimizer setup in a reviewable payload.
-    return {
-        "trainable_parameters": trainable_parameters,
-        "optimizer": optimizer,
-        "scheduler": None,
-        "label_smoothing": optimization_config["label_smoothing"],
-        "grad_clip_norm": optimization_config["grad_clip_norm"],
-    }
-
-
-# EVOLVE-SECTION-END: OPTIMIZATION
-
-
-# EVOLVE-SECTION-START: TRAINING_POLICY
-def configure_training_policy(*, num_epochs):
-    del num_epochs
-    training_policy = CONFIG["training_policy"]
-    return {
-        "early_stopping_patience": training_policy["early_stopping_patience"],
-    }
-
-
-# EVOLVE-SECTION-END: TRAINING_POLICY
-
-# EVOLVE-BLOCK-END
-
 
 def normalize_feature_tensors(train_x, validation_x):
     # Reject tensors that were not flattened into feature matrices.
