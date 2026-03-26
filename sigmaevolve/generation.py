@@ -807,7 +807,6 @@ class OpenRouterGenerationBackend:
                     error_info["reasoning_tokens"] = reasoning_tokens
 
         # Detect whether the provider consumed its budget on hidden reasoning.
-        # Detect whether the provider consumed its budget on hidden reasoning.
         reasoning_present = False
         if isinstance(message, dict):
             reasoning = message.get("reasoning")
@@ -1390,9 +1389,9 @@ def build_candidate_train_script(
 
     replacements: dict[int, str | None] = {
         CONFIG_BLOCK_INDEX: config_block_payload,
-            MODEL_BLOCK_INDEX: (
-                model_block_payload if model_block_payload is not None else block_payload
-            ),
+        MODEL_BLOCK_INDEX: (
+            model_block_payload if model_block_payload is not None else block_payload
+        ),
         DATA_BLOCK_INDEX: data_block_payload,
         OPTIMIZATION_BLOCK_INDEX: optimization_block_payload,
         TRAINING_POLICY_BLOCK_INDEX: training_policy_block_payload,

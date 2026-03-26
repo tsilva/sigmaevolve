@@ -145,8 +145,8 @@ def deploy_modal_app(
     )
     if not is_default_deployment:
         raise ValueError(
-            "Custom Modal app/function/volume names are not yet supported by the deployed app module. "
-            "Use the defaults for now."
+            "Custom Modal app/function/volume names are not yet supported by the "
+            "deployed app module. Use the defaults for now."
         )
 
     # Import the deployed app object only after the configuration has been validated.
