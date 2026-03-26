@@ -130,13 +130,13 @@ def deploy_modal_app(
 ) -> dict[str, Any]:
     # Reject unsupported deployment names until the deployed module supports them.
     modal = require_modal()
-    is_default_deployment = (
+    uses_custom_names = (
         app_name != DEFAULT_MODAL_APP_NAME
         or function_name != DEFAULT_MODAL_FUNCTION_NAME
         or dataset_volume_name != DEFAULT_MODAL_DATASET_VOLUME
         or dataset_mount_path != DEFAULT_MODAL_DATASET_MOUNT
     )
-    if not is_default_deployment:
+    if uses_custom_names:
         raise ValueError(
             "Custom Modal app/function/volume names are not yet supported by the "
             "deployed app module. Use the defaults for now."
