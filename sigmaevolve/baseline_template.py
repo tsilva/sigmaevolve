@@ -81,6 +81,7 @@ def prepare_feature_tensor(features, *, input_shape=None):
 
 # EVOLVE-BLOCK-START
 
+# EVOLVE-SECTION-START: CONFIG
 CONFIG = {
     "normalization_std_floor": 1e-6,
     "binary_probability_threshold": 0.5,
@@ -105,6 +106,104 @@ CONFIG = {
         "early_stopping_patience": 2,
     },
 }
+# EVOLVE-SECTION-END: CONFIG
+
+
+# EVOLVE-SECTION-START: MODEL
+class EvolvedModel(torch.nn.Module):
+    def __init__(self, input_shape, num_classes):
+        super().__init__()
+        model_config = CONFIG["model"]
+        flat_dim = int(np.prod(input_shape))
+        hidden_dim_1, hidden_dim_2 = model_config["hidden_dims"]
+
+        # Build the baseline MLP in a single sequential stack.
+        self.network = torch.nn.Sequential(
+            torch.nn.Linear(flat_dim, hidden_dim_1),
+            torch.nn.ReLU(),
+            torch.nn.Linear(hidden_dim_1, hidden_dim_2),
+            torch.nn.ReLU(),
+            torch.nn.Linear(hidden_dim_2, num_classes),
+        )
+
+    def forward(self, x):
+        return self.network(x)
+
+
+def build_model(*, input_shape, num_classes):
+    return EvolvedModel(input_shape=input_shape, num_classes=num_classes)
+
+
+# EVOLVE-SECTION-END: MODEL
+
+
+# EVOLVE-SECTION-START: DATA
+def configure_data(*, train_x, train_y, validation_x, random_seed):
+    del random_seed
+    data_config = CONFIG["data"]
+    batch_size = max(1, min(data_config["max_batch_size"], int(train_x.shape[0])))
+
+    # Build train and validation loaders with the configured batching policy.
+    return {
+        "batch_size": batch_size,
+        "train_loader": torch.utils.data.DataLoader(
+            torch.utils.data.TensorDataset(train_x, train_y),
+            batch_size=batch_size,
+            shuffle=data_config["shuffle_train"],
+        ),
+        "validation_loader": torch.utils.data.DataLoader(
+            torch.utils.data.TensorDataset(validation_x),
+            batch_size=batch_size,
+            shuffle=data_config["shuffle_validation"],
+        ),
+    }
+
+
+# EVOLVE-SECTION-END: DATA
+
+
+# EVOLVE-SECTION-START: OPTIMIZATION
+def configure_optimization(*, model, train_loader, num_epochs, num_classes):
+    del train_loader
+    del num_epochs
+    del num_classes
+    optimization_config = CONFIG["optimization"]
+    trainable_parameters = [
+        parameter for parameter in model.parameters() if parameter.requires_grad
+    ]
+    optimizer = None
+
+    # Instantiate AdamW only when the model exposes trainable parameters.
+    if trainable_parameters:
+        optimizer = torch.optim.AdamW(
+            trainable_parameters,
+            lr=optimization_config["learning_rate"],
+            weight_decay=optimization_config["weight_decay"],
+        )
+
+    # Return the optimizer setup in a reviewable payload.
+    return {
+        "trainable_parameters": trainable_parameters,
+        "optimizer": optimizer,
+        "scheduler": None,
+        "label_smoothing": optimization_config["label_smoothing"],
+        "grad_clip_norm": optimization_config["grad_clip_norm"],
+    }
+
+
+# EVOLVE-SECTION-END: OPTIMIZATION
+
+
+# EVOLVE-SECTION-START: TRAINING_POLICY
+def configure_training_policy(*, num_epochs):
+    del num_epochs
+    training_policy = CONFIG["training_policy"]
+    return {
+        "early_stopping_patience": training_policy["early_stopping_patience"],
+    }
+
+
+# EVOLVE-SECTION-END: TRAINING_POLICY
 
 # EVOLVE-BLOCK-END
 
@@ -206,36 +305,6 @@ def require_callable(name):
     return value
 
 
-# EVOLVE-BLOCK-START
-
-
-class EvolvedModel(torch.nn.Module):
-    def __init__(self, input_shape, num_classes):
-        super().__init__()
-        model_config = CONFIG["model"]
-        flat_dim = int(np.prod(input_shape))
-        hidden_dim_1, hidden_dim_2 = model_config["hidden_dims"]
-
-        # Build the baseline MLP in a single sequential stack.
-        self.network = torch.nn.Sequential(
-            torch.nn.Linear(flat_dim, hidden_dim_1),
-            torch.nn.ReLU(),
-            torch.nn.Linear(hidden_dim_1, hidden_dim_2),
-            torch.nn.ReLU(),
-            torch.nn.Linear(hidden_dim_2, num_classes),
-        )
-
-    def forward(self, x):
-        return self.network(x)
-
-
-def build_model(*, input_shape, num_classes):
-    return EvolvedModel(input_shape=input_shape, num_classes=num_classes)
-
-
-# EVOLVE-BLOCK-END
-
-
 def run_validation(model, validation_loader, *, num_classes):
     model.eval()
     predictions = []
@@ -257,79 +326,6 @@ def run_validation(model, validation_loader, *, num_classes):
             "validation loader must yield at least one batch"
         )
     return torch.cat(predictions, dim=0)
-
-
-# EVOLVE-BLOCK-START
-
-
-def configure_data(*, train_x, train_y, validation_x, random_seed):
-    del random_seed
-    data_config = CONFIG["data"]
-    batch_size = max(1, min(data_config["max_batch_size"], int(train_x.shape[0])))
-
-    # Build train and validation loaders with the configured batching policy.
-    return {
-        "batch_size": batch_size,
-        "train_loader": torch.utils.data.DataLoader(
-            torch.utils.data.TensorDataset(train_x, train_y),
-            batch_size=batch_size,
-            shuffle=data_config["shuffle_train"],
-        ),
-        "validation_loader": torch.utils.data.DataLoader(
-            torch.utils.data.TensorDataset(validation_x),
-            batch_size=batch_size,
-            shuffle=data_config["shuffle_validation"],
-        ),
-    }
-
-
-# EVOLVE-BLOCK-END
-
-# EVOLVE-BLOCK-START
-
-
-def configure_optimization(*, model, train_loader, num_epochs, num_classes):
-    del train_loader
-    del num_epochs
-    del num_classes
-    optimization_config = CONFIG["optimization"]
-    trainable_parameters = [
-        parameter for parameter in model.parameters() if parameter.requires_grad
-    ]
-    optimizer = None
-
-    # Instantiate AdamW only when the model exposes trainable parameters.
-    if trainable_parameters:
-        optimizer = torch.optim.AdamW(
-            trainable_parameters,
-            lr=optimization_config["learning_rate"],
-            weight_decay=optimization_config["weight_decay"],
-        )
-
-    # Return the optimizer setup in a reviewable payload.
-    return {
-        "trainable_parameters": trainable_parameters,
-        "optimizer": optimizer,
-        "scheduler": None,
-        "label_smoothing": optimization_config["label_smoothing"],
-        "grad_clip_norm": optimization_config["grad_clip_norm"],
-    }
-
-
-# EVOLVE-BLOCK-END
-
-# EVOLVE-BLOCK-START
-
-
-def configure_training_policy(*, num_epochs):
-    del num_epochs
-    training_policy = CONFIG["training_policy"]
-    return {
-        "early_stopping_patience": training_policy["early_stopping_patience"],
-    }
-
-
-# EVOLVE-BLOCK-END
 
 
 def load_run_config(argv=None):
@@ -387,6 +383,7 @@ def build_debug_payload():
         "epochs_completed": 0,
     }
 
+
 def call_required_mapping(name, **kwargs):
     value = require_callable(name)(**kwargs)
 
@@ -439,7 +436,9 @@ def prepare_training_runtime(
 ):
     seed_everything(random_seed)
     input_shape, train_x = prepare_feature_tensor(train_features)
-    _, validation_x = prepare_feature_tensor(validation_features, input_shape=input_shape)
+    _, validation_x = prepare_feature_tensor(
+        validation_features, input_shape=input_shape
+    )
     train_x, validation_x = normalize_feature_tensors(train_x, validation_x)
     train_y = torch.from_numpy(train_labels)
     validation_y = torch.from_numpy(validation_labels.astype(np.int64))
@@ -474,7 +473,9 @@ def prepare_training_runtime(
         "validation_labels": validation_labels,
         "validation_y": validation_y,
         "num_validation_examples": int(validation_features.shape[0]),
-        "trainable_parameters": resolve_trainable_parameters(optimization_config, model),
+        "trainable_parameters": resolve_trainable_parameters(
+            optimization_config, model
+        ),
         "optimizer": optimization_config.get("optimizer"),
         "scheduler": optimization_config.get("scheduler"),
         "label_smoothing": float(optimization_config.get("label_smoothing", 0.0)),
@@ -745,7 +746,11 @@ def run_training_loop(config, runtime, debug_payload):
         )
 
         # Stop early once the configured patience budget is exhausted.
-        if patience and stale_epochs >= patience and epochs_completed < config["num_epochs"]:
+        if (
+            patience
+            and stale_epochs >= patience
+            and epochs_completed < config["num_epochs"]
+        ):
             debug_payload["early_stopped"] = True
             debug_payload["early_stop_epoch"] = epochs_completed
             break
