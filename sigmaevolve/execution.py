@@ -3,10 +3,35 @@ from __future__ import annotations
 
 # ---- wandb_support.py ----
 
+import argparse
 import importlib
+import importlib.util
+import json
+import logging
 import os
+import random
+import subprocess
+import sys
+import tempfile
+import threading
+import time
 from dataclasses import dataclass
+from pathlib import Path
+from types import ModuleType
 from typing import Any
+
+import numpy as np
+
+from sigmaevolve.core import (
+    DEFAULT_TRIAL_HARD_TIMEOUT_SEC,
+    OUTCOME_CRASHED,
+    OUTCOME_EVAL_FAILED,
+    OUTCOME_SUCCEEDED,
+    OUTCOME_TIMEOUT,
+    compute_classification_metrics,
+    compute_score,
+)
+from sigmaevolve.env import load_env_file
 
 
 WANDB_ENV_KEYS = (
@@ -222,16 +247,6 @@ class WandbRunLogger:
 
         exit_code = 0 if outcome_reason in {"succeeded", "timeout"} else 1
         self.run.finish(exit_code=exit_code)
-
-
-# ---- runner_metrics.py ----
-
-from pathlib import Path
-from typing import Any
-
-import numpy as np
-
-from sigmaevolve.core import compute_classification_metrics
 
 
 DEBUG_METRIC_KEYS = (
@@ -478,30 +493,6 @@ def build_active_metrics_payload(
     apply_debug_metrics(metrics, debug_payload)
     return metrics if metrics else None
 
-
-# ---- runner.py ----
-
-import json
-import logging
-import os
-import subprocess
-import sys
-import tempfile
-import threading
-import time
-from dataclasses import dataclass
-from pathlib import Path
-from typing import Any
-
-from sigmaevolve.core import (
-    DEFAULT_TRIAL_HARD_TIMEOUT_SEC,
-    OUTCOME_CRASHED,
-    OUTCOME_EVAL_FAILED,
-    OUTCOME_SUCCEEDED,
-    OUTCOME_TIMEOUT,
-    compute_score,
-)
-from sigmaevolve.env import load_env_file
 
 logger = logging.getLogger(__name__)
 ACTIVE_METRICS_INTERVAL_SEC = 1.0
@@ -1105,23 +1096,6 @@ class RunnerService:
             if "heartbeat_thread" in locals():
                 heartbeat_thread.join(timeout=1.0)
             time.sleep(0.01)
-
-
-# ---- strategy_runtime.py ----
-
-import argparse
-import importlib.util
-import json
-import logging
-import random
-import sys
-import time
-from dataclasses import dataclass
-from pathlib import Path
-from types import ModuleType
-from typing import Any
-
-import numpy as np
 
 
 logger = logging.getLogger(__name__)

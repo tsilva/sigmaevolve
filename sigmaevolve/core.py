@@ -36,6 +36,8 @@ def compute_classification_metrics(
     num_examples = len(labels)
     if len(predictions) != num_examples:
         raise ValueError("Predictions and labels must have the same length.")
+
+    # Reject empty evaluation sets before computing any aggregate metrics.
     if num_examples == 0:
         raise ValueError("Cannot score an empty validation split.")
 

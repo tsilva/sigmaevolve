@@ -1,29 +1,33 @@
 # Code Style Guide
 
-This guide is optimized for agent compliance first and human review second. Prefer code that is easy to scan, easy to change, and explicit about intent over dense one-liners or clever compression.
+This guide is optimized for agent compliance first and human review second. Prefer code that is easy to scan, easy to change, and explicit about intent over dense one-liners or clever compression. Use spacing to reveal logical blocks, not to mechanically maximize comment count.
 
 ## Hard Rules
 
 - Structure non-trivial functions in a readable order: validate inputs, run the main logic, then build the return value.
 - Keep imports at the top of the file unless there is a clear reason to lazy load them.
 - Prefer early returns over nested conditionals when a failed condition means the function should stop.
-- Add a short intent comment immediately above every `if`, `elif`, and `else` branch explaining what that branch does.
+- Use blank lines to separate logical blocks, and keep a comment directly attached to the block it introduces.
+- Add a short intent comment for non-trivial logical blocks and business-rule branches when the purpose is not obvious from the code alone.
+- Keep coercion, validation, and closely related state changes in the same block when they implement one idea.
 - Introduce named intermediate variables for non-trivial expressions, boolean conditions, and transformed values before combining them.
 - Split signatures, calls, and returned dicts across multiple lines once the one-line form becomes visually dense.
 - Extract a helper when one block mixes iteration, filtering, transformation, and ordering.
-- Add a short intent comment before each contiguous logical block inside non-trivial functions.
+- Add a short intent comment before a contiguous logical block inside a non-trivial function when the block's role would otherwise require inference.
 
 ## Soft Preferences
 
 - Prefer positive predicates over negated compound boolean expressions.
 - Prefer staged construction for nested payloads when the payload shape carries meaning.
+- Prefer a small number of clear block comments over comment-per-line annotation.
 - Keep long formatted strings visually segmented by field instead of compressing them into one hard-to-edit line.
 
 ## Comments
 
-- Comments are required for contiguous logical blocks in non-trivial functions.
-- Leave one empty line above every standalone line comment.
-- Add a short intent comment immediately above every `if`, `elif`, and `else` branch.
+- Comments are for non-obvious intent, policy, or block purpose in non-trivial functions.
+- A comment should sit immediately above the block it describes; do not insert a blank line between the comment and that block.
+- Use one blank line to separate logical blocks from each other.
+- Comment a branch when the branch carries business meaning that is not already obvious from the condition itself.
 - Comments should explain intent or purpose, not restate the line below them.
 - Keep comments short and use domain language where possible.
 - Trivial one- or two-line helpers are the only exception.
@@ -31,6 +35,9 @@ This guide is optimized for agent compliance first and human review second. Pref
 ## Do Not Over-Apply
 
 - Do not force multiline formatting for tiny helpers that are already easy to read.
+- Do not add a comment above every individual statement or every obvious branch.
+- Do not stack repeated one-line comment/code pairs when those lines belong to one logical block.
+- Do not split coercion from its paired validation when both lines express the same check.
 - Do not use filler comments such as "Set variable" or "Return result".
 - Do not satisfy the branch-comment rule with empty boilerplate such as "Check condition" or "Else case".
 - Do not extract helpers unless the original block is carrying multiple responsibilities.
@@ -46,9 +53,6 @@ def compute_classification_metrics(
     predictions: list[int],
     labels: list[int],
 ) -> dict[str, int | float]:
-
-    # Validate the scoring inputs before computing aggregates.
-
     # Reject empty evaluation sets.
     if not labels:
         raise ValueError("Cannot score an empty validation split.")
@@ -73,7 +77,6 @@ def compute_classification_metrics(
 
 ```python
 def should_retry_dispatch(trial: TrialRecord, now: datetime) -> bool:
-
     # Name each policy requirement before composing the final decision.
     is_dispatching = trial.status == "dispatching"
     has_deadline = trial.dispatch_deadline_at is not None
@@ -86,43 +89,68 @@ def should_retry_dispatch(trial: TrialRecord, now: datetime) -> bool:
 
 ## Additional Examples
 
-### Comment every branch and separate comments with blank lines
+### Use comments to introduce blocks, not to narrate every line
 
 Bad:
 
 ```python
-def classify_score(score: float) -> str:
-    if score >= 0.9:
-        return "excellent"
-    elif score >= 0.75:
-        return "good"
-    else:
-        return "retry"
+def reconcile_track(
+    self,
+    track_id: str,
+    reporter: Callable[[str, dict[str, Any]], None] | None = None,
+    *,
+    ready_queue_threshold: int = 1,
+    max_parallelism: int = 1,
+):
+    # Resolve and validate the track before running the one-shot controller.
+    track = self.repository.get_track(track_id)
+    # Reject unknown tracks before starting reconcile work.
+    if track is None:
+        raise KeyError(f"Track not found: {track_id}")
+    ready_queue_threshold = int(ready_queue_threshold)
+    max_parallelism = int(max_parallelism)
+    # Reject negative queue targets before the controller starts.
+    if ready_queue_threshold < 0:
+        raise ValueError("ready_queue_threshold must be >= 0")
+    # Reject negative parallelism before the controller starts.
+    if max_parallelism < 0:
+        raise ValueError("max_parallelism must be >= 0")
 ```
 
 Good:
 
 ```python
-def classify_score(score: float) -> str:
+def reconcile_track(
+    self,
+    track_id: str,
+    reporter: Callable[[str, dict[str, Any]], None] | None = None,
+    *,
+    ready_queue_threshold: int = 1,
+    max_parallelism: int = 1,
+):
+    # Resolve and validate the track before running the one-shot controller.
+    track = self.repository.get_track(track_id)
 
-    # Return the top bucket for clearly strong scores.
-    if score >= 0.9:
-        return "excellent"
+    # Reject unknown tracks before starting reconcile work.
+    if track is None:
+        raise KeyError(f"Track not found: {track_id}")
 
-    # Return the middle bucket for acceptable scores.
-    elif score >= 0.75:
-        return "good"
+    # Reject negative queue targets before the controller starts.
+    ready_queue_threshold = int(ready_queue_threshold)
+    if ready_queue_threshold < 0:
+        raise ValueError("ready_queue_threshold must be >= 0")
 
-    # Fall back to the retry bucket for everything else.
-    else:
-        return "retry"
+    # Reject negative parallelism before the controller starts.
+    max_parallelism = int(max_parallelism)
+    if max_parallelism < 0:
+        raise ValueError("max_parallelism must be >= 0")
 ```
 
 Why this version is preferred:
 
-- Each branch documents intent before the reader parses branch mechanics.
-- The blank line above each comment keeps comments visually distinct from code.
-- Reviewers can scan branch structure without reverse-engineering why each branch exists.
+- Blank lines separate ideas, not every comment from the line below it.
+- Each comment introduces a meaningful block instead of narrating isolated statements.
+- Coercion and its related validation stay together, which makes the control flow easier to scan.
 
 ### Keep imports at file scope unless lazy loading is intentional
 
@@ -202,7 +230,6 @@ Good:
 
 ```python
 def build_trial_summary(trial: TrialRecord) -> str:
-
     # Derive the summary fields before assembling the final string.
     eval_count = int(trial.metrics_json.get("eval_count", 0)) if trial.metrics_json else 0
     outcome_reason = trial.outcome_reason or "n/a"
@@ -246,7 +273,6 @@ Good:
 
 ```python
 def load_track_candidates(rows: list[dict[str, object]]) -> list[dict[str, object]]:
-
     # Collect only rows that produce a valid finished candidate.
     candidates: list[dict[str, object]] = []
     for row in rows:
@@ -309,7 +335,6 @@ Good:
 
 ```python
 def should_retry_dispatch(trial: TrialRecord, now: datetime) -> bool:
-
     # Name each policy requirement before composing the final decision.
     is_dispatching = trial.status == "dispatching"
     has_deadline = trial.dispatch_deadline_at is not None

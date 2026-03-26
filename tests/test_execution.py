@@ -548,6 +548,8 @@ def test_collect_active_metrics_payload_uses_eval_artifacts(repository, dataset_
     assert metrics["eval_count"] == 1
     assert metrics["last_phase"] == "eval"
     assert "timed_out" not in metrics
+
+
 def test_seed_everything_returns_cpu_when_cuda_unavailable(monkeypatch):
     class FakeTorch:
         class cuda:
@@ -590,6 +592,7 @@ def test_seed_everything_returns_cuda_when_available(monkeypatch):
     assert strategy_runtime._seed_everything(7) == "cuda"
     assert state == {"manual_seed": [7], "manual_seed_all": [7]}
 
+
 def test_collect_wandb_env_uses_standard_wandb_keys(monkeypatch):
     monkeypatch.setenv("WANDB_API_KEY", "key")
     monkeypatch.setenv("WANDB_PROJECT", "proj")
@@ -623,6 +626,7 @@ def test_resolve_wandb_settings_requires_wandb_api_key(monkeypatch):
 
     with pytest.raises(RuntimeError, match="WANDB_API_KEY is required"):
         resolve_wandb_settings()
+
 
 def test_modal_launcher_spawns_named_method_without_gpu_override(monkeypatch):
     captured = {}

@@ -430,7 +430,7 @@ class CliReconcileReporter:
 
     def _handle_generation_failed(self, payload: dict[str, Any]) -> None:
         # Inline any provider detail so generation failures stay actionable.
-        has_detail = payload.get("detail")
+        has_detail = bool(payload.get("detail"))
         detail = f": {payload['detail']}" if has_detail else ""
         self._handle_generation_progress(
             payload,
@@ -443,7 +443,7 @@ class CliReconcileReporter:
         # Surface the Modal run URL when the launcher returned one.
         launch_metadata = payload.get("launch_metadata") or {}
         run_url = launch_metadata.get("run_url")
-        has_run_url = isinstance(run_url, str) and run_url
+        has_run_url = isinstance(run_url, str) and bool(run_url)
         suffix = f" ({run_url})" if has_run_url else ""
         self._log(f"Launched trial {payload['trial_id']}{suffix}.")
 

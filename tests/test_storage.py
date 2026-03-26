@@ -17,6 +17,14 @@ class _RecordingConnection:
         self.calls.append((str(statement), params))
 
 
+def _capture_dashboard_notifications(repository):
+    notifications: list[tuple[str, str]] = []
+    repository._notify_dashboard = (  # type: ignore[method-assign]
+        lambda conn, track_id, reason: notifications.append((track_id, reason))
+    )
+    return notifications
+
+
 def test_dashboard_notify_is_postgres_only(repository):
     conn = _RecordingConnection()
 
@@ -39,8 +47,7 @@ def test_dashboard_notify_is_postgres_only(repository):
 def test_track_and_trial_mutations_publish_dashboard_notifications(repository):
     repository.register_dataset("mnist:v1", "/tmp/manifest.json")
 
-    notifications: list[tuple[str, str]] = []
-    repository._notify_dashboard = lambda conn, track_id, reason: notifications.append((track_id, reason))  # type: ignore[method-assign]
+    notifications = _capture_dashboard_notifications(repository)
 
     track = repository.create_track(
         name="dashboard", dataset_id="mnist:v1", policy_json={}
@@ -84,8 +91,7 @@ def test_update_active_trial_metrics_updates_only_matching_active_runner_and_not
 ):
     repository.register_dataset("mnist:v1", "/tmp/manifest.json")
 
-    notifications: list[tuple[str, str]] = []
-    repository._notify_dashboard = lambda conn, track_id, reason: notifications.append((track_id, reason))  # type: ignore[method-assign]
+    notifications = _capture_dashboard_notifications(repository)
 
     track = repository.create_track(
         name="live-metrics", dataset_id="mnist:v1", policy_json={}
@@ -304,8 +310,7 @@ def test_generation_attempt_trial_classifies_length_limited_invalid_candidate_as
 def test_record_trial_launcher_metadata_merges_into_provenance_and_notifies(repository):
     repository.register_dataset("mnist:v1", "/tmp/manifest.json")
 
-    notifications: list[tuple[str, str]] = []
-    repository._notify_dashboard = lambda conn, track_id, reason: notifications.append((track_id, reason))  # type: ignore[method-assign]
+    notifications = _capture_dashboard_notifications(repository)
 
     track = repository.create_track(
         name="launcher", dataset_id="mnist:v1", policy_json={}
@@ -359,8 +364,7 @@ def test_record_trial_launcher_metadata_merges_into_provenance_and_notifies(repo
 def test_record_trial_wandb_metadata_merges_into_provenance_and_notifies(repository):
     repository.register_dataset("mnist:v1", "/tmp/manifest.json")
 
-    notifications: list[tuple[str, str]] = []
-    repository._notify_dashboard = lambda conn, track_id, reason: notifications.append((track_id, reason))  # type: ignore[method-assign]
+    notifications = _capture_dashboard_notifications(repository)
 
     track = repository.create_track(name="wandb", dataset_id="mnist:v1", policy_json={})
     trial, created = repository.create_queued_trial_if_absent(
