@@ -37,6 +37,7 @@ class EvolutionSystem:
         self.orchestrator = Orchestrator(repository, dataset_manager, generator, launcher)
 
     def prepare_dataset(self, dataset_id: str) -> DatasetRecord:
+        # Prepare the dataset locally before registering its manifest path.
         manifest = self.dataset_manager.prepare(dataset_id)
         manifest_path = Path(manifest.root_dir) / "manifest.json"
 
@@ -46,9 +47,11 @@ class EvolutionSystem:
         )
 
     def create_track(self, name: str | None, dataset_id: str, policy_json: dict) -> TrackRecord:
+        # Refuse to create tracks against datasets that were never prepared.
         if self.repository.get_dataset(dataset_id) is None:
             raise KeyError(f"Dataset must be prepared before track creation: {dataset_id}")
 
+        # Persist the normalized track policy before seeding the baseline trial.
         policy = TrackPolicy.from_dict(policy_json)
         track = self.repository.create_track(
             name=name,
@@ -57,6 +60,7 @@ class EvolutionSystem:
         )
         baseline_source = build_baseline_train_script()
 
+        # Seed the track with the fixed baseline candidate exactly once.
         self.repository.create_queued_trial_if_absent(
             track_id=track.track_id,
             source=baseline_source,
@@ -141,6 +145,7 @@ def build_system(
     providers: dict | None = None,
     launcher=None,
 ) -> EvolutionSystem:
+    # Resolve default providers before wiring the runtime services together.
     dataset_root = Path(dataset_root)
     default_providers = {
         "mnist:v1": TorchvisionClassificationProvider("mnist"),
@@ -148,6 +153,7 @@ def build_system(
     }
     effective_providers = providers or default_providers
 
+    # Construct the core repository, dataset, generation, and runner services.
     repository = SQLAlchemyRepository(database_url)
     dataset_manager = DatasetManager(
         dataset_root=dataset_root,
@@ -157,6 +163,7 @@ def build_system(
     runner_service = RunnerService(repository=repository, dataset_manager=dataset_manager)
     launcher = launcher or RecordingLauncher()
 
+    # Return the fully wired orchestration facade.
     return EvolutionSystem(
         repository=repository,
         dataset_manager=dataset_manager,

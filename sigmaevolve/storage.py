@@ -83,6 +83,7 @@ def _row_to_trial(row: sa.Row[Any]) -> TrialRecord:
 
 
 def _trial_summary_sort_key(summary: TrialSummary) -> tuple[float, float, float]:
+    # Rank by accuracy first, then faster time-to-best, then final score.
     metrics = summary.metrics_json or {}
     accuracy = float(metrics.get("accuracy") or 0.0)
     time_to_best = metrics.get("time_to_best_eval_sec")
@@ -106,17 +107,20 @@ def _row_to_trial_summary(row: sa.Row[Any]) -> TrialSummary:
 
 class SQLAlchemyRepository:
     def __init__(self, database_url: str) -> None:
+        # Normalize the database URL before configuring the SQLAlchemy engine.
         database_url = normalize_database_url(database_url)
         connect_args = {"check_same_thread": False} if database_url.startswith("sqlite") else {}
         engine_kwargs: dict[str, Any] = {"future": True, "connect_args": connect_args}
         if not database_url.startswith("sqlite"):
             engine_kwargs["pool_pre_ping"] = True
 
+        # Create the engine and ensure the schema exists for the current process.
         self.engine: Engine = sa.create_engine(database_url, **engine_kwargs)
         metadata.create_all(self.engine)
 
     @contextmanager
     def transaction(self) -> Iterable[Connection]:
+        # Use BEGIN IMMEDIATE on SQLite so concurrent workers serialize writes cleanly.
         if self.engine.dialect.name == "sqlite":
             with self.engine.connect() as conn:
                 conn.exec_driver_sql("BEGIN IMMEDIATE")
@@ -128,10 +132,12 @@ class SQLAlchemyRepository:
                 else:
                     conn.commit()
         else:
+            # Use the dialect-native transaction helper everywhere else.
             with self.engine.begin() as conn:
                 yield conn
 
     def _notify_dashboard(self, conn: Connection, track_id: str, reason: str) -> None:
+        # Skip dashboard notifications when the backend does not support LISTEN/NOTIFY.
         if self.engine.dialect.name not in {"postgresql", "postgres"}:
             return
         payload = {"trackId": track_id, "reason": reason}
@@ -149,10 +155,13 @@ class SQLAlchemyRepository:
         where: list[Any] | None = None,
         notify: bool = True,
     ) -> int:
+        # Start from the target trial id and extend the filter for state-sensitive updates.
         conditions = [trials_table.c.trial_id == trial_id]
         if where:
             conditions.extend(where)
         result = conn.execute(sa.update(trials_table).where(sa.and_(*conditions)).values(**values))
+
+        # Notify the dashboard only when the trial row was actually changed.
         if notify and result.rowcount:
             track_id = conn.execute(
                 sa.select(trials_table.c.track_id).where(trials_table.c.trial_id == trial_id)
@@ -162,6 +171,7 @@ class SQLAlchemyRepository:
         return int(result.rowcount)
 
     def register_dataset(self, dataset_id: str, manifest_path: str | None) -> DatasetRecord:
+        # Upsert the dataset manifest path while preserving the latest registration time.
         created_at = now_utc()
         with self.transaction() as conn:
             if self.engine.dialect.name == "sqlite":
@@ -192,6 +202,8 @@ class SQLAlchemyRepository:
                             created_at=created_at,
                         )
                     )
+
+            # Reload the canonical row shape before returning the record.
             row = conn.execute(
                 sa.select(datasets_table).where(datasets_table.c.dataset_id == dataset_id)
             ).one()
@@ -205,6 +217,7 @@ class SQLAlchemyRepository:
         return _row_to_dataset(row) if row else None
 
     def create_track(self, name: str | None, dataset_id: str, policy_json: dict[str, Any]) -> TrackRecord:
+        # Create a fresh track id and persist the track metadata in one transaction.
         track_id = make_id("track")
         created_at = now_utc()
         with self.transaction() as conn:
@@ -234,12 +247,14 @@ class SQLAlchemyRepository:
         source: str,
         provenance_json: dict[str, Any],
     ) -> tuple[TrialRecord | None, bool]:
+        # Normalize provenance and source before checking for duplicate scripts.
         validated_provenance = validate_trial_provenance(provenance_json)
         normalized_source = normalize_source(source)
         script_hash = compute_script_hash(normalized_source)
         created_at = now_utc()
         trial_id = make_id("trial")
         with self.transaction() as conn:
+            # Reuse the existing trial when the track already has this script hash.
             existing = conn.execute(
                 sa.select(trials_table).where(
                     sa.and_(
@@ -250,6 +265,8 @@ class SQLAlchemyRepository:
             ).fetchone()
             if existing:
                 return _row_to_trial(existing), False
+
+            # Insert the queued trial in its initial unclaimed state.
             conn.execute(
                 sa.insert(trials_table).values(
                     trial_id=trial_id,
@@ -284,14 +301,18 @@ class SQLAlchemyRepository:
         outcome_reason: str,
         error_json: dict[str, Any] | None,
     ) -> TrialRecord:
+        # Restrict generation-attempt rows to duplicate and generation-failure outcomes.
         if outcome_reason not in {OUTCOME_DUPLICATE, OUTCOME_GENERATION_FAILED}:
             raise ValueError(f"Unsupported generation attempt outcome_reason: {outcome_reason}")
+
+        # Materialize the diagnostic source and terminal row payload once up front.
         validated_provenance = validate_trial_provenance(provenance_json)
         trial_id = make_id("trial")
         source = build_generation_attempt_source(trial_id, outcome_reason)
         script_hash = compute_script_hash(source)
         created_at = now_utc()
         with self.transaction() as conn:
+            # Persist the diagnostic row as a terminal non-runnable trial record.
             conn.execute(
                 sa.insert(trials_table).values(
                     trial_id=trial_id,
@@ -330,6 +351,7 @@ class SQLAlchemyRepository:
         self._record_trial_provenance_section(trial_id, "wandb", wandb_metadata)
 
     def _record_trial_provenance_section(self, trial_id: str, section: str, payload: dict[str, Any]) -> None:
+        # Merge the section payload into the stored provenance document.
         payload = dict(payload)
         with self.transaction() as conn:
             row = conn.execute(
@@ -340,6 +362,7 @@ class SQLAlchemyRepository:
             if row is None:
                 raise KeyError(f"Trial not found: {trial_id}")
 
+            # Preserve any existing section fields when extending the payload.
             provenance_json = dict(row.provenance_json or {})
             updated_provenance_json = dict(provenance_json)
             existing_section = updated_provenance_json.get(section)
@@ -351,6 +374,8 @@ class SQLAlchemyRepository:
                 updated_provenance_json[section] = payload
             if updated_provenance_json == provenance_json:
                 return
+
+            # Write the merged provenance back only when the payload changed.
             conn.execute(
                 sa.update(trials_table)
                 .where(trials_table.c.trial_id == trial_id)
@@ -359,6 +384,7 @@ class SQLAlchemyRepository:
             self._notify_dashboard(conn, track_id=row.track_id, reason="trial_changed")
 
     def list_trials(self, track_id: str, statuses: set[str] | None = None) -> list[TrialRecord]:
+        # Apply the optional status filter before loading trials in creation order.
         stmt = sa.select(trials_table).where(trials_table.c.track_id == track_id).order_by(trials_table.c.created_at)
         if statuses:
             stmt = stmt.where(trials_table.c.status.in_(sorted(statuses)))
@@ -367,6 +393,7 @@ class SQLAlchemyRepository:
         return [_row_to_trial(row) for row in rows]
 
     def sample_trial_context(self, track_id: str, limit: int, candidate_kind: str | None = None) -> list[TrialSummary]:
+        # Start from recent finished successful trials that include metrics payloads.
         stmt = (
             sa.select(trials_table)
             .where(
@@ -381,6 +408,8 @@ class SQLAlchemyRepository:
         )
         with self.engine.connect() as conn:
             rows = conn.execute(stmt).fetchall()
+
+        # Apply candidate-kind filtering in Python after the rows are materialized.
         summaries = [
             _row_to_trial_summary(row)
             for row in rows
@@ -396,6 +425,7 @@ class SQLAlchemyRepository:
         require_metrics: bool | None = None,
         limit: int = 5,
     ) -> list[TrialSummary]:
+        # Start from terminal trials on the requested track and add optional filters.
         terminal_statuses = sorted(TERMINAL_STATUSES)
         stmt = sa.select(trials_table).where(
             sa.and_(
@@ -410,6 +440,8 @@ class SQLAlchemyRepository:
         elif require_metrics is False:
             stmt = stmt.where(trials_table.c.metrics_json.is_(None))
         stmt = stmt.order_by(trials_table.c.finished_at.desc(), trials_table.c.created_at.desc()).limit(limit)
+
+        # Return lightweight summaries for the filtered result set.
         with self.engine.connect() as conn:
             rows = conn.execute(stmt).fetchall()
         return [_row_to_trial_summary(row) for row in rows]
@@ -428,6 +460,7 @@ class SQLAlchemyRepository:
         dispatch_ttl_sec: int,
         limit: int | None = None,
     ) -> list[TrialRecord]:
+        # Reserve at most the remaining dispatch capacity for this track.
         reserved: list[TrialRecord] = []
         limit = limit or max_parallelism
         with self.transaction() as conn:
@@ -444,6 +477,8 @@ class SQLAlchemyRepository:
                 ).scalar_one()
             )
             available = max(0, max_parallelism - active_count)
+
+            # Claim queued trials one by one so each reservation gets a fresh token.
             for _ in range(min(limit, available)):
                 stmt = (
                     sa.select(trials_table)
@@ -461,6 +496,8 @@ class SQLAlchemyRepository:
                 row = conn.execute(stmt).fetchone()
                 if not row:
                     break
+
+                # Move the trial into dispatching state with a deadline and token.
                 dispatch_token = make_id("dispatch")
                 deadline = now_utc() + timedelta(seconds=dispatch_ttl_sec)
                 conn.execute(
@@ -482,11 +519,14 @@ class SQLAlchemyRepository:
                     sa.select(trials_table).where(trials_table.c.trial_id == row.trial_id)
                 ).one()
                 reserved.append(_row_to_trial(updated))
+
+            # Emit one dashboard notification for the whole reserved batch.
             if reserved:
                 self._notify_dashboard(conn, track_id=track_id, reason="trial_changed")
         return reserved
 
     def claim_trial(self, trial_id: str, dispatch_token: str, runner_id: str) -> TrialRecord | None:
+        # Claim only trials that are still dispatching with the expected token.
         with self.transaction() as conn:
             now = now_utc()
             updated = self._update_trial_state(
@@ -509,6 +549,7 @@ class SQLAlchemyRepository:
         return _row_to_trial(row)
 
     def heartbeat_trial(self, trial_id: str, runner_id: str, meta: dict[str, Any] | None = None) -> None:
+        # Refresh the heartbeat and persist only error-bearing metadata payloads.
         payload = dict(meta or {})
         with self.transaction() as conn:
             conn.execute(
@@ -524,6 +565,7 @@ class SQLAlchemyRepository:
             )
 
     def update_active_trial_metrics(self, trial_id: str, runner_id: str, metrics: dict[str, Any]) -> None:
+        # Skip writes when the active trial already has the same metrics payload.
         payload = dict(metrics or {})
         with self.transaction() as conn:
             row = conn.execute(
@@ -540,6 +582,8 @@ class SQLAlchemyRepository:
             existing = dict(row.metrics_json) if row.metrics_json else None
             if existing == payload:
                 return
+
+            # Persist the updated metrics and notify the dashboard once.
             result = conn.execute(
                 sa.update(trials_table)
                 .where(
@@ -563,21 +607,25 @@ class SQLAlchemyRepository:
         score: float,
         error_info: dict[str, Any] | None,
     ) -> None:
+        # Reject outcome reasons that do not map to terminal storage states.
         if outcome_reason not in TERMINAL_OUTCOMES:
             raise ValueError(f"Unsupported outcome_reason: {outcome_reason}")
         if metrics is None:
             score = 0.0
 
+        # Drop empty error payloads for successful trials so dashboards stay clean.
         persisted_error_info = dict(error_info) if error_info else None
         if outcome_reason in SUCCESS_OUTCOMES and not has_error_signal(persisted_error_info):
             persisted_error_info = None
 
         with self.transaction() as conn:
+            # Require the expected active runner state when finalizing from a worker.
             state_filters: list[Any] = []
             if runner_id is not None:
                 state_filters.append(trials_table.c.runner_id == runner_id)
                 state_filters.append(trials_table.c.status == TRIAL_STATUS_ACTIVE)
 
+            # Clear dispatch state and persist terminal metrics in one update.
             now = now_utc()
             updated = self._update_trial_state(
                 conn,
@@ -599,6 +647,7 @@ class SQLAlchemyRepository:
                 return
 
     def sweep_expired_dispatches(self, track_id: str, max_dispatch_retries: int) -> tuple[list[str], list[str]]:
+        # Requeue expired dispatches until the retry budget is exhausted.
         requeued: list[str] = []
         stale: list[str] = []
         now = now_utc()
@@ -616,6 +665,7 @@ class SQLAlchemyRepository:
             ).fetchall()
             for row in rows:
                 if int(row.dispatch_attempts) < max_dispatch_retries:
+                    # Return retryable trials to the queued state.
                     conn.execute(
                         sa.update(trials_table)
                         .where(trials_table.c.trial_id == row.trial_id)
@@ -628,6 +678,7 @@ class SQLAlchemyRepository:
                     )
                     requeued.append(row.trial_id)
                 else:
+                    # Mark exhausted dispatch attempts as stale terminal failures.
                     conn.execute(
                         sa.update(trials_table)
                         .where(trials_table.c.trial_id == row.trial_id)
@@ -650,6 +701,7 @@ class SQLAlchemyRepository:
         return requeued, stale
 
     def sweep_stale_active_trials(self, track_id: str, stale_ttl_sec: int) -> list[str]:
+        # Find active trials whose heartbeat or start time has gone stale.
         stale: list[str] = []
         cutoff = now_utc() - timedelta(seconds=stale_ttl_sec)
         with self.transaction() as conn:
@@ -670,6 +722,7 @@ class SQLAlchemyRepository:
                 )
             ).fetchall()
             for row in rows:
+                # Convert stale active trials into terminal stale failures.
                 conn.execute(
                     sa.update(trials_table)
                     .where(trials_table.c.trial_id == row.trial_id)
@@ -690,6 +743,7 @@ class SQLAlchemyRepository:
         return stale
 
     def rescore(self, track_id: str | None, scorer_config: dict[str, Any]) -> MigrationResult:
+        # Recompute scores for all terminal trials in the requested scope.
         updated = 0
         touched_track_ids: set[str] = set()
         with self.transaction() as conn:
@@ -698,6 +752,7 @@ class SQLAlchemyRepository:
                 stmt = stmt.where(trials_table.c.track_id == track_id)
             rows = conn.execute(stmt).fetchall()
             for row in rows:
+                # Persist the rescored value and remember which tracks changed.
                 new_score = compute_score(row.metrics_json, row.outcome_reason, scorer_config)
                 conn.execute(
                     sa.update(trials_table)
@@ -706,6 +761,8 @@ class SQLAlchemyRepository:
                 )
                 updated += 1
                 touched_track_ids.add(row.track_id)
+
+            # Emit one dashboard notification per changed track.
             for touched_track_id in sorted(touched_track_ids):
                 self._notify_dashboard(conn, track_id=touched_track_id, reason="trial_changed")
         return MigrationResult(updated_trials=updated, scorer_config=dict(scorer_config))

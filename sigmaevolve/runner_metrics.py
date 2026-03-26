@@ -26,6 +26,7 @@ EVAL_ARTIFACT_METRIC_KEYS = (
 
 
 def coerce_optional_scalar(value: Any, cast) -> Any | None:
+    # Treat missing and empty array payloads as absent scalar values.
     if value is None:
         return None
     array = np.asarray(value)
@@ -34,6 +35,8 @@ def coerce_optional_scalar(value: Any, cast) -> Any | None:
     scalar = array.reshape(-1)[0]
     if isinstance(scalar, np.generic):
         scalar = scalar.item()
+
+    # Coerce only the first scalar-like value and ignore invalid payloads.
     try:
         return cast(scalar)
     except (TypeError, ValueError):
@@ -45,15 +48,18 @@ def load_eval_artifacts(
     eval_dir: Path,
     labels_path: str,
 ) -> list[dict[str, Any]]:
+    # Load the fixed validation labels once and reuse them for every artifact.
     labels = np.load(labels_path)
     label_list = labels.astype(int).tolist()
     artifacts: list[dict[str, Any]] = []
 
+    # Build a normalized metrics payload for each completed evaluation artifact.
     for eval_path in sorted(eval_dir.glob("*.npz")):
         with np.load(eval_path) as payload:
             if "predictions" not in payload:
                 continue
 
+            # Normalize predictions before computing the canonical metrics.
             predictions = payload["predictions"]
             if predictions.ndim > 1:
                 predictions = predictions.argmax(axis=1)
@@ -70,6 +76,7 @@ def load_eval_artifacts(
                 if value is not None:
                     metrics[key] = value
 
+            # Preserve the artifact metadata alongside the derived metrics.
             metrics.setdefault("val_acc", metrics.get("accuracy"))
             eval_index = (
                 coerce_optional_scalar(payload["eval_index"], int)
@@ -122,6 +129,7 @@ def select_last_completed_eval(artifacts: list[dict[str, Any]]) -> dict[str, Any
 
 
 def apply_debug_metrics(metrics: dict[str, Any], debug_payload: dict[str, Any] | None) -> None:
+    # Copy through the debug-only metrics that the runner reported explicitly.
     if not debug_payload:
         return
     for key in DEBUG_METRIC_KEYS:
@@ -137,6 +145,7 @@ def build_final_metrics_payload(
     timed_out: bool,
     debug_payload: dict[str, Any] | None,
 ) -> dict[str, Any]:
+    # Derive the best and latest evaluations before composing the final payload.
     best_artifact = select_best_eval(artifacts)
     last_artifact = select_last_completed_eval(artifacts)
 
@@ -153,6 +162,7 @@ def build_final_metrics_payload(
     if progress_payload:
         last_phase = progress_payload.get("phase") or progress_payload.get("current_phase")
 
+    # Flag timeouts that ended with a measurable amount of unevaluated work.
     had_unscored_work_at_timeout = bool(
         timed_out
         and time_since_last_eval_sec is not None
@@ -160,6 +170,7 @@ def build_final_metrics_payload(
         and (last_phase in {None, "train"})
     )
 
+    # Merge the best evaluation metrics with run-level diagnostic fields.
     metrics = dict(best_artifact["metrics"])
     metrics.update(
         {
@@ -190,6 +201,7 @@ def build_active_metrics_payload(
     process_elapsed_sec: float,
     debug_payload: dict[str, Any] | None,
 ) -> dict[str, Any] | None:
+    # Start from the process-level progress fields that are always available.
     progress = dict(progress_payload or {})
     metrics: dict[str, Any] = {"process_elapsed_sec": float(process_elapsed_sec)}
 
@@ -202,6 +214,7 @@ def build_active_metrics_payload(
     eval_count = max(len(artifacts), progress_eval_index or 0, debug_eval_count or 0)
     metrics["eval_count"] = eval_count
 
+    # Reconcile runner progress with the most recent persisted evaluation artifact.
     last_completed_eval_sec = coerce_optional_scalar(progress.get("last_completed_eval_sec"), float)
     last_completed_eval_index = progress_eval_index
 
@@ -223,6 +236,7 @@ def build_active_metrics_payload(
             }
         )
 
+    # Keep the last completed evaluation metadata in scalar form for the dashboard.
     if last_completed_eval_sec is not None:
         metrics["last_completed_eval_sec"] = float(last_completed_eval_sec)
     if last_completed_eval_index is not None:

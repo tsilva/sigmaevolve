@@ -23,6 +23,7 @@ class LaunchSummary:
 
 
 def result_payload(result) -> dict[str, Any]:
+    # Normalize reconcile results into the payload shape used by the CLI.
     return {
         "generated_trial_ids": result.generated_trial_ids,
         "launched_trial_ids": result.launched_trial_ids,
@@ -73,9 +74,11 @@ class CliReconcileReporter:
         max_failures: int,
         in_flight: int,
     ) -> str:
+        # Short-circuit empty fill cycles before drawing a progress bar.
         if requested <= 0:
             return "Queue fill: nothing to generate."
 
+        # Render the accepted-slot progress bar and failure counters together.
         width = 20
         filled = int(width * completed / requested)
         bar = "#" * filled + "-" * (width - filled)
@@ -87,6 +90,7 @@ class CliReconcileReporter:
         )
 
     def _log_progress(self, payload: dict[str, Any]) -> None:
+        # Reuse the standard progress-line formatter for all fill-cycle updates.
         self._log(
             self._progress_line(
                 int(payload["completed"]),
@@ -120,6 +124,7 @@ class CliReconcileReporter:
         self._log(f"Sweep complete: requeued={payload['requeued_count']}, stale={payload['stale_count']}.")
 
     def _handle_queue_fill_started(self, payload: dict[str, Any]) -> None:
+        # Cache the fill-cycle budget before logging the initial progress line.
         self.requested = int(payload["requested_generations"])
         self.max_failures = int(payload["max_failures"])
         self._log(
@@ -154,6 +159,7 @@ class CliReconcileReporter:
         self._log_progress(payload)
 
     def _handle_generation_failed(self, payload: dict[str, Any]) -> None:
+        # Inline any provider detail so generation failures stay actionable.
         detail = f": {payload['detail']}" if payload.get("detail") else ""
         self._log(
             "Generation failed for slot "
@@ -184,6 +190,7 @@ class CliReconcileReporter:
         self._log(f"Launching trial {payload['trial_id']}...")
 
     def _handle_trial_launched(self, payload: dict[str, Any]) -> None:
+        # Surface the Modal run URL when the launcher returned one.
         launch_metadata = payload.get("launch_metadata") or {}
         run_url = launch_metadata.get("run_url")
         suffix = f" ({run_url})" if isinstance(run_url, str) and run_url else ""
@@ -203,6 +210,7 @@ class CliReconcileReporter:
         )
 
     def __call__(self, event: str, payload: dict[str, Any]) -> None:
+        # Dispatch only the events that this CLI reporter knows how to print.
         handler = self._handlers.get(event)
         if handler is not None:
             handler(payload)

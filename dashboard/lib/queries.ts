@@ -29,9 +29,12 @@ function encodeCursor(value: TrialCursor): string {
 }
 
 function decodeCursor(value: string | null): TrialCursor | null {
+  // Treat empty cursors as an unpaginated request.
   if (!value) {
     return null;
   }
+
+  // Reject malformed cursors instead of throwing from the route handler.
   try {
     const parsed = JSON.parse(Buffer.from(value, "base64url").toString("utf8")) as Partial<TrialCursor>;
     if (typeof parsed.createdAt !== "string" || typeof parsed.trialId !== "string") {
@@ -44,6 +47,7 @@ function decodeCursor(value: string | null): TrialCursor | null {
 }
 
 export function parseStatusFilter(value: string | null): TrialStatusFilter {
+  // Accept only the known status values that the API can query directly.
   if (value && KNOWN_TRIAL_STATUSES.has(value as TrialStatusFilter)) {
     return value;
   }
@@ -52,9 +56,12 @@ export function parseStatusFilter(value: string | null): TrialStatusFilter {
 }
 
 export function parseLimit(value: string | null): number {
+  // Fall back to the default limit when the request omits a value.
   if (!value) {
     return DEFAULT_TRIAL_LIMIT;
   }
+
+  // Clamp invalid or oversized limits into the supported range.
   const parsed = Number.parseInt(value, 10);
   if (!Number.isFinite(parsed) || parsed <= 0) {
     return DEFAULT_TRIAL_LIMIT;
@@ -63,10 +70,12 @@ export function parseLimit(value: string | null): number {
 }
 
 export async function listTrackSummaries(): Promise<TrackListItem[]> {
+  // Refuse dashboard queries when the database URL is not configured.
   if (!hasDatabaseUrl()) {
     throw new Error("DATABASE_URL is required for the dashboard.");
   }
 
+  // Load tracks together with aggregate trial stats and current best score.
   const pool = getPool();
   const result = await pool.query(
     `
@@ -120,14 +129,17 @@ export async function listTrackSummaries(): Promise<TrackListItem[]> {
     `,
   );
 
+  // Map raw rows into the shared dashboard response type.
   return result.rows.map(mapTrackListItem);
 }
 
 export async function getNewestTrackId(): Promise<string | null> {
+  // Refuse dashboard queries when the database URL is not configured.
   if (!hasDatabaseUrl()) {
     throw new Error("DATABASE_URL is required for the dashboard.");
   }
 
+  // Return the newest track id so the UI can redirect to the latest run.
   const pool = getPool();
   const result = await pool.query<{ track_id: string }>(
     `select track_id from tracks order by created_at desc limit 1`,
@@ -136,6 +148,7 @@ export async function getNewestTrackId(): Promise<string | null> {
 }
 
 export async function getTrackSummary(trackId: string): Promise<TrackListItem | null> {
+  // Reuse the list query so summary formatting stays consistent.
   const tracks = await listTrackSummaries();
   return tracks.find((track) => track.trackId === trackId) ?? null;
 }
@@ -148,12 +161,14 @@ export async function listTrials(
     limit?: number;
   } = {},
 ): Promise<PaginatedTrialsResponse> {
+  // Normalize request options before building the SQL query.
   const status = options.status ?? "all";
   const limit = Math.min(options.limit ?? DEFAULT_TRIAL_LIMIT, MAX_TRIAL_LIMIT);
   if (!hasDatabaseUrl()) {
     throw new Error("DATABASE_URL is required for the dashboard.");
   }
 
+  // Build the WHERE clause incrementally from the optional filters.
   const pool = getPool();
   const values: Array<string | number> = [trackId];
   const whereClauses = [`track_id = $1`];
@@ -170,13 +185,16 @@ export async function listTrials(
     const createdAtIndex = values.length - 1;
     const trialIdIndex = values.length;
 
+    // Page strictly before the last seen trial tuple.
     whereClauses.push(
       `(created_at, trial_id) < ($${createdAtIndex}::timestamptz, $${trialIdIndex})`,
     );
   }
 
+  // Request one extra row so the API can detect whether another page exists.
   values.push(limit + 1);
 
+  // Load the filtered trials together with the fields used by the detail view.
   const result = await pool.query(
     `
       select
@@ -217,6 +235,7 @@ export async function listTrials(
     values,
   );
 
+  // Slice to the requested page size and derive the next cursor from the last row.
   const rows = result.rows.map(mapTrialListItem);
   const page = rows.slice(0, limit);
   const nextCursor =
