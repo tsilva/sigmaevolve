@@ -95,7 +95,6 @@ def _manifest():
         metadata={"num_classes": 10},
     )
 
-
 def _context():
     return [
         TrialSummary(
@@ -229,8 +228,6 @@ def test_openrouter_generation_uses_model_pool_round_robin(monkeypatch):
     first_prompt = payloads[0]["messages"][1]["content"]
     assert "# EVOLVE-BLOCK-START" in system_prompt
     assert "# EVOLVE-BLOCK-END" in system_prompt
-    assert "# EVOLVE-SECTION-START:" in system_prompt
-    assert "# EVOLVE-SECTION-END:" in system_prompt
     assert (
         "Never wrap the response in triple backticks or fenced code blocks"
         in system_prompt
@@ -249,7 +246,6 @@ def test_openrouter_generation_uses_model_pool_round_robin(monkeypatch):
     assert (
         "SEARCH must match exactly one location in the CURRENT PROGRAM" in system_prompt
     )
-    assert "Never modify the EVOLVE-SECTION marker lines themselves" in system_prompt
     assert not first_prompt.lstrip().startswith("{")
     assert "OBJECTIVE:" in first_prompt
     assert "TASK CONTEXT:" in first_prompt
@@ -341,8 +337,6 @@ def test_openrouter_generation_prompt_includes_expected_sections(monkeypatch):
     prompt = payloads[0]["messages"][1]["content"]
     assert "# EVOLVE-BLOCK-START" in system_prompt
     assert "# EVOLVE-BLOCK-END" in system_prompt
-    assert "# EVOLVE-SECTION-START:" in system_prompt
-    assert "# EVOLVE-SECTION-END:" in system_prompt
     assert "OBJECTIVE:" in prompt
     assert "TASK CONTEXT:" in prompt
     assert "REFERENCE PROGRAMS:" in prompt
@@ -621,13 +615,13 @@ def forward(self, x):
     assert_only_evolve_blocks_changed(source, updated)
 
 
-def test_baseline_template_uses_one_outer_evolve_block_with_tagged_sections():
+def test_baseline_template_uses_one_outer_evolve_block():
     source = build_baseline_train_script()
 
     assert source.count("# EVOLVE-BLOCK-START") == 1
     assert source.count("# EVOLVE-BLOCK-END") == 1
-    assert source.count("# EVOLVE-SECTION-START:") == 5
-    assert source.count("# EVOLVE-SECTION-END:") == 5
+    assert "# EVOLVE-SECTION-START:" not in source
+    assert "# EVOLVE-SECTION-END:" not in source
 
 
 def test_build_candidate_train_script_replaces_only_data_block():
@@ -716,18 +710,6 @@ def test_assert_only_evolve_blocks_changed_rejects_immutable_changes():
         assert_only_evolve_blocks_changed(source, invalid)
 
 
-def test_assert_only_evolve_blocks_changed_rejects_section_layout_changes():
-    source = build_baseline_train_script()
-    invalid = source.replace(
-        "# EVOLVE-SECTION-START: MODEL",
-        "# EVOLVE-SECTION-START: BROKEN",
-        1,
-    )
-
-    with pytest.raises(EvolveBlockError, match="tagged evolve section layout"):
-        assert_only_evolve_blocks_changed(source, invalid)
-
-
 def test_materialize_candidate_source_applies_search_replace_blocks():
     source = build_baseline_train_script()
     response = """<<<<<<< SEARCH
@@ -764,6 +746,25 @@ def test_materialize_candidate_source_matches_search_blocks_without_outer_indent
 
     assert '"learning_rate": 0.001' in updated
     assert '        "learning_rate": 0.001,' in updated
+    assert_only_evolve_blocks_changed(source, updated)
+
+
+def test_assert_only_evolve_blocks_changed_accepts_outer_block_only_patch_layout():
+    source = build_baseline_train_script()
+    response = """<<<<<<< SEARCH
+"model": {
+    "hidden_dims": (256, 128),
+},
+=======
+"model": {
+    "hidden_dims": (512, 256),
+},
+>>>>>>> REPLACE
+"""
+
+    updated = materialize_candidate_source(source, response)
+
+    assert '"hidden_dims": (512, 256)' in updated
     assert_only_evolve_blocks_changed(source, updated)
 
 
