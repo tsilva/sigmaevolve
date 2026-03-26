@@ -1644,7 +1644,7 @@ export function DashboardShell({
                       <h3>Raw LLM response</h3>
                     </div>
                     <HighlightedCode
-                      code={selectedResponseText ?? "No response received."}
+                      code={selectedResponseText ?? "No raw response recorded."}
                       language={detectPromptLanguage(selectedResponseText ?? "")}
                       wrap
                     />

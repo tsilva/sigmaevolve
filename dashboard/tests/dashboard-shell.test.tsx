@@ -377,13 +377,30 @@ describe("DashboardShell", () => {
 
     expect(screen.getByText("system prompt text")).toBeTruthy();
     expect(screen.getByText("user prompt text")).toBeTruthy();
-    expect(screen.getByText("No response received.")).toBeTruthy();
+    expect(screen.getByText("No raw response recorded.")).toBeTruthy();
     expect(screen.getByText("Generation attempt")).toBeTruthy();
     expect(screen.queryByText("Generated program")).toBeNull();
     expect(screen.queryByText("Mixed vs generated diff")).toBeNull();
     expect(screen.getByText("print('attempted candidate')")).toBeTruthy();
     expect(screen.getByText("candidate modified immutable text outside evolve blocks")).toBeTruthy();
     expect(screen.getByText(/stored row source is diagnostic-only/i)).toBeTruthy();
+  });
+
+  it("shows the persisted raw LLM response for successful trials", () => {
+    renderShell({
+      detail: createDetail([
+        createTrial({
+          trialId: "trial_success_raw_response",
+          responseText:
+            "<<<<<<< SEARCH\nprint('hello')\n=======\nprint('hello world')\n>>>>>>> REPLACE",
+        }),
+      ]),
+      initialSelectedTrialId: "trial_success_raw_response",
+    });
+
+    expect(screen.getByText("Raw LLM response")).toBeTruthy();
+    expect(screen.getByText(/<<<<<<< SEARCH/)).toBeTruthy();
+    expect(screen.queryByText("No raw response recorded.")).toBeNull();
   });
 
   it("shows the error payload card at the front of the inspector card stack", () => {

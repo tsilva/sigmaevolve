@@ -296,6 +296,27 @@ def test_generation_attempt_trial_persists_slim_failure_provenance(repository):
     }
 
 
+def test_queued_trial_persists_raw_llm_response_text(repository):
+    track = _create_track(repository)
+
+    trial, created = repository.create_queued_trial_if_absent(
+        track_id=track.track_id,
+        source="print('candidate')\n",
+        provenance_json=make_llm_provenance(
+            model="worker",
+            generation={
+                "response_text": "<<<<<<< SEARCH\nprint('parent')\n=======\nprint('candidate')\n>>>>>>> REPLACE"
+            },
+        ),
+    )
+
+    assert created is True
+    assert trial is not None
+    assert trial.provenance_json["generation"] == {
+        "response_text": "<<<<<<< SEARCH\nprint('parent')\n=======\nprint('candidate')\n>>>>>>> REPLACE"
+    }
+
+
 def test_record_trial_launcher_metadata_merges_filtered_keys_and_notifies(repository):
     notifications = _capture_dashboard_notifications(repository)
     track = _create_track(repository)
@@ -338,6 +359,36 @@ def test_record_trial_launcher_metadata_merges_filtered_keys_and_notifies(reposi
         "run_id": "fc-123",
         "run_url": "https://modal.com/apps/test/runs/fc-123",
     }
+
+
+def test_record_trial_launcher_metadata_preserves_raw_llm_response_text(repository):
+    track = _create_track(repository)
+    raw_response = (
+        "<<<<<<< SEARCH\nprint('parent')\n=======\nprint('candidate')\n>>>>>>> REPLACE"
+    )
+    trial, created = repository.create_queued_trial_if_absent(
+        track_id=track.track_id,
+        source="print('candidate')\n",
+        provenance_json=make_llm_provenance(
+            model="worker",
+            generation={"response_text": raw_response},
+        ),
+    )
+    assert created is True
+    assert trial is not None
+
+    repository.record_trial_launcher_metadata(
+        trial.trial_id,
+        {
+            "kind": "modal",
+            "run_id": "fc-123",
+            "run_url": "https://modal.com/apps/test/runs/fc-123",
+        },
+    )
+    updated = repository.get_trial(trial.trial_id)
+
+    assert updated is not None
+    assert updated.provenance_json["generation"] == {"response_text": raw_response}
 
 
 def test_record_trial_wandb_metadata_merges_filtered_keys_and_notifies(repository):

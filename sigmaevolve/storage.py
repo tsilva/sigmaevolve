@@ -362,15 +362,15 @@ def slim_provenance_payload(
     generation = payload.get("generation")
     has_generation = isinstance(generation, dict)
     response_text = generation.get("response_text") if has_generation else None
-    should_persist_response_text = (
-        outcome_reason == OUTCOME_GENERATION_FAILED
-        and isinstance(response_text, str)
-        and bool(response_text.strip())
+    should_persist_response_text = isinstance(response_text, str) and bool(
+        response_text.strip()
     )
     if should_persist_response_text:
         slimmed["generation"] = {"response_text": response_text}
 
     return slimmed
+
+
 def coerce_timestamp(value: Any) -> Any:
     # Rebuild ISO8601 timestamps into datetime objects for the reduced schema inserts.
     if isinstance(value, str):
