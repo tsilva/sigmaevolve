@@ -607,7 +607,7 @@ def _trial_diagnostics(metrics_json: dict[str, Any] | None) -> dict[str, Any]:
 
 
 def _suggest_launch_command(args, track_id: str, *, count: int = 1) -> str:
-    command = [sys.executable, "-m", "sigmaevolve.cli"]
+    command = ["sigmaevolve"]
 
     # Include the launcher flag only when the caller picked a non-default runtime.
     if args.launcher != "modal":
@@ -618,18 +618,16 @@ def _suggest_launch_command(args, track_id: str, *, count: int = 1) -> str:
 
 def cmd_create_track(args) -> int:
     system = _make_system(args)
-    logger.info("Loading track definition from %s.", args.track_file)
+    logger.info("Loading track definition.")
     dataset_id, policy = load_track_definition(args.track_file)
     logger.info("Ensuring dataset %s is prepared.", dataset_id)
     dataset, prepared_now = _ensure_dataset_prepared(system, dataset_id)
 
     # Report whether this command had to prepare the dataset itself.
     if prepared_now:
-        logger.info("Prepared dataset %s at %s.", dataset_id, dataset.manifest_path)
+        logger.info("Prepared dataset %s.", dataset_id)
     else:
-        logger.info(
-            "Reusing prepared dataset %s at %s.", dataset_id, dataset.manifest_path
-        )
+        logger.info("Reusing prepared dataset %s.", dataset_id)
 
     logger.info(
         "Creating track for dataset %s and seeding the baseline trial.", dataset_id
@@ -637,14 +635,6 @@ def cmd_create_track(args) -> int:
     track = system.create_track(dataset_id, policy)
     logger.info("Created track %s.", track.track_id)
     logger.info("Run it with:\n%s", _suggest_launch_command(args, track.track_id))
-    _print_json(
-        {
-            "track_id": track.track_id,
-            "dataset_id": track.dataset_id,
-            "policy_json": track.policy_json,
-            "created_at": track.created_at,
-        }
-    )
     return 0
 
 

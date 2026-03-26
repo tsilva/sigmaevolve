@@ -292,12 +292,20 @@ def test_generation_attempt_trial_persists_slim_failure_provenance(repository):
         },
         "request_messages": make_llm_provenance(model="worker")["request_messages"],
         "context_trial_ids": ["trial_parent"],
-        "generation": {"response_text": "partial response"},
+        "generation": {
+            "response_text": "partial response",
+            "generated_source": "print('x')\n",
+            "assertions_passed": False,
+            "assertion_failures": ["bad patch"],
+        },
     }
 
 
-def test_queued_trial_persists_raw_llm_response_text(repository):
+def test_queued_trial_persists_generation_trace(repository):
     track = _create_track(repository)
+    raw_response = (
+        "<<<<<<< SEARCH\nprint('parent')\n=======\nprint('candidate')\n>>>>>>> REPLACE"
+    )
 
     trial, created = repository.create_queued_trial_if_absent(
         track_id=track.track_id,
@@ -305,7 +313,11 @@ def test_queued_trial_persists_raw_llm_response_text(repository):
         provenance_json=make_llm_provenance(
             model="worker",
             generation={
-                "response_text": "<<<<<<< SEARCH\nprint('parent')\n=======\nprint('candidate')\n>>>>>>> REPLACE"
+                "response_text": raw_response,
+                "generated_source": "print('candidate')\n",
+                "assertions_passed": True,
+                "assertion_failures": [],
+                "candidate_hash": "sha256:candidate",
             },
         ),
     )
@@ -313,7 +325,11 @@ def test_queued_trial_persists_raw_llm_response_text(repository):
     assert created is True
     assert trial is not None
     assert trial.provenance_json["generation"] == {
-        "response_text": "<<<<<<< SEARCH\nprint('parent')\n=======\nprint('candidate')\n>>>>>>> REPLACE"
+        "response_text": raw_response,
+        "generated_source": "print('candidate')\n",
+        "assertions_passed": True,
+        "assertion_failures": [],
+        "candidate_hash": "sha256:candidate",
     }
 
 
@@ -361,7 +377,7 @@ def test_record_trial_launcher_metadata_merges_filtered_keys_and_notifies(reposi
     }
 
 
-def test_record_trial_launcher_metadata_preserves_raw_llm_response_text(repository):
+def test_record_trial_launcher_metadata_preserves_generation_trace(repository):
     track = _create_track(repository)
     raw_response = (
         "<<<<<<< SEARCH\nprint('parent')\n=======\nprint('candidate')\n>>>>>>> REPLACE"
@@ -371,7 +387,13 @@ def test_record_trial_launcher_metadata_preserves_raw_llm_response_text(reposito
         source="print('candidate')\n",
         provenance_json=make_llm_provenance(
             model="worker",
-            generation={"response_text": raw_response},
+            generation={
+                "response_text": raw_response,
+                "generated_source": "print('candidate')\n",
+                "assertions_passed": True,
+                "assertion_failures": [],
+                "candidate_hash": "sha256:candidate",
+            },
         ),
     )
     assert created is True
@@ -388,7 +410,13 @@ def test_record_trial_launcher_metadata_preserves_raw_llm_response_text(reposito
     updated = repository.get_trial(trial.trial_id)
 
     assert updated is not None
-    assert updated.provenance_json["generation"] == {"response_text": raw_response}
+    assert updated.provenance_json["generation"] == {
+        "response_text": raw_response,
+        "generated_source": "print('candidate')\n",
+        "assertions_passed": True,
+        "assertion_failures": [],
+        "candidate_hash": "sha256:candidate",
+    }
 
 
 def test_record_trial_wandb_metadata_merges_filtered_keys_and_notifies(repository):

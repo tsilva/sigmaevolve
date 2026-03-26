@@ -257,7 +257,7 @@ def test_openrouter_generation_uses_model_pool_round_robin(monkeypatch):
     assert "- num_classes: 10" in first_prompt
     assert "REFERENCE PROGRAMS:" in first_prompt
     assert "CURRENT PROGRAM:" in first_prompt
-    assert "Optimize for higher score / val_acc." in first_prompt
+    assert "Optimize for higher val_acc." in first_prompt
     assert "Use REFERENCE PROGRAMS as inspiration only." in first_prompt
     assert (
         "Patch this program. SEARCH blocks must match text from CURRENT PROGRAM"

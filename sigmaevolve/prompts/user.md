@@ -1,6 +1,6 @@
 OBJECTIVE:
 - Propose a safe improvement to CURRENT PROGRAM.
-- Optimize for higher score / val_acc.
+- Optimize for higher val_acc.
 - Use lower val_loss as a secondary signal when comparing similar edits.
 - Prefer the smallest coherent change likely to improve results.
 - Use REFERENCE PROGRAMS as inspiration only.
