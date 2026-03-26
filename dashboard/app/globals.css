@@ -912,6 +912,12 @@ button {
   font-family: var(--font-mono), monospace;
 }
 
+.trial-summary-link {
+  color: #1d4f9a;
+  text-decoration: underline;
+  text-underline-offset: 0.14em;
+}
+
 .property-chip-list {
   display: flex;
   flex-wrap: wrap;
