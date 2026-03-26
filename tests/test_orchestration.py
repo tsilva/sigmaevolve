@@ -5,13 +5,13 @@ import time
 
 import pytest
 
-from sigmaevolve.baseline import build_baseline_linear_classifier
+from sigmaevolve.generation import build_baseline_linear_classifier
 from sigmaevolve.generation import FixedGenerationBackend, OpenRouterGenerationBackend
-from sigmaevolve.models import CANDIDATE_KIND_STRATEGY_V1, GenerationResult
-from sigmaevolve.orchestrator import InlineRunnerLauncher, RecordingLauncher
-from sigmaevolve.runner import RunnerService
-from sigmaevolve.system import EvolutionSystem
-from sigmaevolve.train_script_blocks import build_candidate_train_script, build_model_block
+from sigmaevolve.core import CANDIDATE_KIND_STRATEGY_V1, GenerationResult
+from sigmaevolve.orchestration import InlineRunnerLauncher, RecordingLauncher
+from sigmaevolve.execution import RunnerService
+from sigmaevolve.orchestration import EvolutionSystem
+from sigmaevolve.generation import build_candidate_train_script, build_model_block
 from tests.support import make_llm_provenance
 
 

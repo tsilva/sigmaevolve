@@ -1,7 +1,7 @@
 from sigmaevolve.datasets import ArrayDatasetProvider, DatasetManager, TorchvisionClassificationProvider
-from sigmaevolve.env import load_env_file
+from sigmaevolve.core import load_env_file
 from sigmaevolve.generation import FixedGenerationBackend, OpenRouterGenerationBackend
-from sigmaevolve.models import (
+from sigmaevolve.core import (
     CANDIDATE_KIND_STRATEGY_V1,
     DatasetManifest,
     DatasetRecord,
@@ -13,9 +13,9 @@ from sigmaevolve.models import (
     TrialRecord,
     TrialSummary,
 )
-from sigmaevolve.orchestrator import InlineRunnerLauncher, ModalRemoteLauncher, RecordingLauncher
+from sigmaevolve.orchestration import InlineRunnerLauncher, ModalRemoteLauncher, RecordingLauncher
 from sigmaevolve.storage import SQLAlchemyRepository
-from sigmaevolve.system import EvolutionSystem, build_system
+from sigmaevolve.orchestration import EvolutionSystem, build_system
 
 __all__ = [
     "ArrayDatasetProvider",

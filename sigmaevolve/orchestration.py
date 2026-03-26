@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+
+# ---- controller.py ----
+
 import threading
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from sigmaevolve.models import ACTIVE_STATUSES, ReconcileResult, now_utc
+from sigmaevolve.core import ACTIVE_STATUSES, ReconcileResult, now_utc
 
 
 def _emit(reporter: Callable[[str, dict[str, Any]], None] | None, event: str, **payload: Any) -> None:
@@ -723,3 +726,435 @@ class TrackController:
             with self._condition:
                 self._launch_callbacks_in_progress -= 1
                 self._condition.notify_all()
+
+
+# ---- launchers.py ----
+
+from typing import Any, Protocol
+
+
+class RunnerLauncher(Protocol):
+    def launch_trial(
+        self,
+        trial_id: str,
+        dispatch_token: str,
+        launch_policy: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        ...
+
+    def cancel_run(self, launcher_metadata: dict[str, Any]) -> None:
+        ...
+
+
+class RecordingLauncher:
+    def __init__(self) -> None:
+        self.launched: list[tuple[str, str]] = []
+
+    def launch_trial(
+        self,
+        trial_id: str,
+        dispatch_token: str,
+        launch_policy: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        del launch_policy
+        self.launched.append((trial_id, dispatch_token))
+        return None
+
+    def cancel_run(self, launcher_metadata: dict[str, Any]) -> None:
+        del launcher_metadata
+
+
+class InlineRunnerLauncher:
+    def __init__(self, runner_service, runner_id_prefix: str = "inline") -> None:
+        self.runner_service = runner_service
+        self.runner_id_prefix = runner_id_prefix
+        self.launch_count = 0
+
+    def launch_trial(
+        self,
+        trial_id: str,
+        dispatch_token: str,
+        launch_policy: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        del launch_policy
+        self.launch_count += 1
+        runner_id = f"{self.runner_id_prefix}_{self.launch_count}"
+        self.runner_service.run_reserved_trial(trial_id, dispatch_token, runner_id)
+        return None
+
+    def cancel_run(self, launcher_metadata: dict[str, Any]) -> None:
+        del launcher_metadata
+
+
+class ModalRemoteLauncher:
+    def __init__(self, modal_function) -> None:
+        self.modal_function = modal_function
+
+    def launch_trial(
+        self,
+        trial_id: str,
+        dispatch_token: str,
+        launch_policy: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        requested_gpus = (launch_policy or {}).get("modal_gpu_preferences")
+        if requested_gpus is None:
+            attempts: list[str | None] = [None]
+        elif isinstance(requested_gpus, list) and requested_gpus:
+            attempts = [str(gpu) for gpu in requested_gpus]
+        else:
+            raise ValueError("Track launch policy modal_gpu_preferences must be null or a non-empty list.")
+
+        failures: list[str] = []
+        attempted_gpus: list[str] = []
+        for gpu in attempts:
+            if gpu is not None:
+                attempted_gpus.append(gpu)
+            try:
+                spawn_result = self.modal_function.spawn(
+                    trial_id=trial_id,
+                    dispatch_token=dispatch_token,
+                    gpu=gpu,
+                )
+            except Exception as exc:
+                failures.append(f"{gpu or 'cpu'}: {exc}")
+                continue
+            function_call = getattr(spawn_result, "function_call", spawn_result)
+            effective_gpu = getattr(spawn_result, "effective_gpu", gpu)
+
+            metadata: dict[str, Any] = {
+                "kind": "modal",
+                "gpu_attempts": list(attempted_gpus),
+            }
+            if effective_gpu is not None:
+                metadata["gpu_selected"] = effective_gpu
+            object_id = getattr(function_call, "object_id", None)
+            if isinstance(object_id, str) and object_id:
+                metadata["run_id"] = object_id
+            get_dashboard_url = getattr(function_call, "get_dashboard_url", None)
+            if callable(get_dashboard_url):
+                try:
+                    run_url = get_dashboard_url()
+                except Exception:
+                    run_url = None
+                if isinstance(run_url, str) and run_url:
+                    metadata["run_url"] = run_url
+            return metadata
+
+        raise RuntimeError("Modal launch failed for all configured resources: " + "; ".join(failures))
+
+    def cancel_run(self, launcher_metadata: dict[str, Any]) -> None:
+        run_id = launcher_metadata.get("run_id")
+        if not isinstance(run_id, str) or not run_id:
+            raise ValueError("Modal cancellation requires launcher_metadata.run_id.")
+        self.modal_function.cancel(run_id)
+
+
+# ---- orchestrator.py ----
+
+from typing import Any, Callable
+
+from sigmaevolve.generation import GenerationCoordinator
+
+def emit_report_event(
+    reporter: Callable[[str, dict[str, Any]], None] | None,
+    event: str,
+    **payload: Any,
+) -> None:
+    if reporter is not None:
+        reporter(event, payload)
+
+
+class Orchestrator:
+    GENERATION_FAILURE_LIMIT_MULTIPLIER = 2
+
+    def __init__(self, repository, dataset_manager, generator, launcher) -> None:
+        self.repository = repository
+        self.dataset_manager = dataset_manager
+        self.generator = generator
+        self.launcher = launcher
+        self.generation = GenerationCoordinator(repository=repository, generator=generator)
+
+    def _sample_successful_context_trials(
+        self,
+        track_id: str,
+        sampling_settings: dict[str, Any],
+        generation_index: int,
+    ):
+        return self.generation.sample_successful_context_trials(
+            track_id,
+            sampling_settings,
+            generation_index,
+        )
+
+    def _sample_generation_context_trials(
+        self,
+        track_id: str,
+        sampling_settings: dict[str, Any],
+        generation_index: int,
+    ):
+        return self.generation.sample_generation_context_trials(
+            track_id,
+            sampling_settings,
+            generation_index,
+        )
+
+    def start_track_controller(
+        self,
+        track_id: str,
+        reporter: Callable[[str, dict[str, Any]], None] | None = None,
+        *,
+        max_parallelism: int,
+        ready_queue_threshold: int = 0,
+    ) -> TrackController:
+        track = self.repository.get_track(track_id)
+        if track is None:
+            raise KeyError(f"Track not found: {track_id}")
+        if max_parallelism < 0:
+            raise ValueError("max_parallelism must be >= 0")
+        controller = TrackController(
+            repository=self.repository,
+            dataset_manager=self.dataset_manager,
+            generation=self.generation,
+            launcher=self.launcher,
+            generation_failure_limit_multiplier=self.GENERATION_FAILURE_LIMIT_MULTIPLIER,
+            track=track,
+            reporter=reporter,
+            ready_queue_threshold=int(ready_queue_threshold),
+            max_parallelism=int(max_parallelism),
+            continuous=True,
+        )
+        controller.start()
+        return controller
+
+    def reconcile_track(
+        self,
+        track_id: str,
+        reporter: Callable[[str, dict[str, Any]], None] | None = None,
+        *,
+        ready_queue_threshold: int = 1,
+        max_parallelism: int = 1,
+    ):
+        track = self.repository.get_track(track_id)
+        if track is None:
+            raise KeyError(f"Track not found: {track_id}")
+        ready_queue_threshold = int(ready_queue_threshold)
+        max_parallelism = int(max_parallelism)
+        if ready_queue_threshold < 0:
+            raise ValueError("ready_queue_threshold must be >= 0")
+        if max_parallelism < 0:
+            raise ValueError("max_parallelism must be >= 0")
+        emit_report_event(
+            reporter,
+            "reconcile_started",
+            track_id=track_id,
+            launcher=self.launcher.__class__.__name__,
+        )
+        initial_queue_count = self.repository.count_trials(track_id, statuses={"queued"})
+        if initial_queue_count >= ready_queue_threshold:
+            emit_report_event(
+                reporter,
+                "queue_fill_skipped",
+                queued_count=initial_queue_count,
+                target_queue_count=ready_queue_threshold,
+            )
+        controller = TrackController(
+            repository=self.repository,
+            dataset_manager=self.dataset_manager,
+            generation=self.generation,
+            launcher=self.launcher,
+            generation_failure_limit_multiplier=self.GENERATION_FAILURE_LIMIT_MULTIPLIER,
+            track=track,
+            reporter=reporter,
+            ready_queue_threshold=ready_queue_threshold,
+            max_parallelism=max_parallelism,
+            continuous=False,
+        )
+        controller.start()
+        try:
+            result = controller.wait_until_one_shot_complete()
+        finally:
+            controller.stop()
+        emit_report_event(
+            reporter,
+            "reconcile_finished",
+            generated_count=len(result.generated_trial_ids),
+            launched_count=len(result.launched_trial_ids),
+            duplicate_count=len(result.duplicate_trial_ids),
+            failed_generation_count=len(result.failed_generation_trial_ids),
+            error_count=len(result.errors),
+        )
+        return result
+
+
+# ---- system.py ----
+
+from pathlib import Path
+
+from sigmaevolve.generation import build_baseline_train_script
+from sigmaevolve.datasets import DatasetManager, TorchvisionClassificationProvider
+from sigmaevolve.generation import OpenRouterGenerationBackend
+from sigmaevolve.core import (
+    CANDIDATE_KIND_STRATEGY_V1,
+    DatasetRecord,
+    MigrationResult,
+    TrackPolicy,
+    TrackRecord,
+    TrialRecord,
+    TrialSummary,
+)
+from sigmaevolve.execution import RunnerService
+from sigmaevolve.core import compute_score
+from sigmaevolve.storage import SQLAlchemyRepository
+
+
+class EvolutionSystem:
+    def __init__(
+        self,
+        repository: SQLAlchemyRepository,
+        dataset_manager: DatasetManager,
+        generator,
+        launcher,
+        runner_service: RunnerService,
+    ) -> None:
+        self.repository = repository
+        self.dataset_manager = dataset_manager
+        self.generator = generator
+        self.launcher = launcher
+        self.runner_service = runner_service
+        self.orchestrator = Orchestrator(repository, dataset_manager, generator, launcher)
+
+    def prepare_dataset(self, dataset_id: str) -> DatasetRecord:
+        # Prepare the dataset locally before registering its manifest path.
+        manifest = self.dataset_manager.prepare(dataset_id)
+        manifest_path = Path(manifest.root_dir) / "manifest.json"
+
+        return self.repository.register_dataset(
+            dataset_id=dataset_id,
+            manifest_path=str(manifest_path),
+        )
+
+    def create_track(self, name: str | None, dataset_id: str, policy_json: dict) -> TrackRecord:
+        # Refuse to create tracks against datasets that were never prepared.
+        if self.repository.get_dataset(dataset_id) is None:
+            raise KeyError(f"Dataset must be prepared before track creation: {dataset_id}")
+
+        # Persist the normalized track policy before seeding the baseline trial.
+        policy = TrackPolicy.from_dict(policy_json)
+        track = self.repository.create_track(
+            name=name,
+            dataset_id=dataset_id,
+            policy_json=policy.to_dict(),
+        )
+        baseline_source = build_baseline_train_script()
+
+        # Seed the track with the fixed baseline candidate exactly once.
+        self.repository.create_queued_trial_if_absent(
+            track_id=track.track_id,
+            source=baseline_source,
+            provenance_json={
+                "backend": "baseline",
+                "model": "compact-fixed-trainer",
+                "candidate_kind": CANDIDATE_KIND_STRATEGY_V1,
+                "parent_trial_ids": [],
+            },
+        )
+        return track
+
+    def reconcile_track(
+        self,
+        track_id: str,
+        reporter=None,
+        *,
+        ready_queue_threshold: int = 1,
+        max_parallelism: int = 1,
+    ):
+        return self.orchestrator.reconcile_track(
+            track_id,
+            reporter=reporter,
+            ready_queue_threshold=ready_queue_threshold,
+            max_parallelism=max_parallelism,
+        )
+
+    def start_track_controller(
+        self,
+        track_id: str,
+        reporter=None,
+        *,
+        max_parallelism: int,
+        ready_queue_threshold: int = 0,
+    ):
+        return self.orchestrator.start_track_controller(
+            track_id,
+            reporter=reporter,
+            max_parallelism=max_parallelism,
+            ready_queue_threshold=ready_queue_threshold,
+        )
+
+    def sample_trial_context(self, track_id: str, limit: int) -> list[TrialSummary]:
+        return self.repository.sample_trial_context(track_id=track_id, limit=limit)
+
+    def claim_trial(self, trial_id: str, dispatch_token: str, runner_id: str) -> TrialRecord | None:
+        return self.repository.claim_trial(trial_id=trial_id, dispatch_token=dispatch_token, runner_id=runner_id)
+
+    def heartbeat_trial(self, trial_id: str, runner_id: str, meta: dict) -> None:
+        self.repository.heartbeat_trial(trial_id=trial_id, runner_id=runner_id, meta=meta)
+
+    def update_active_trial_metrics(self, trial_id: str, runner_id: str, metrics: dict) -> None:
+        self.repository.update_active_trial_metrics(trial_id=trial_id, runner_id=runner_id, metrics=metrics)
+
+    def finalize_trial(
+        self,
+        trial_id: str,
+        runner_id: str,
+        outcome_reason: str,
+        metrics: dict | None,
+        score: float,
+        error_info: dict | None,
+    ) -> None:
+        self.repository.finalize_trial(
+            trial_id=trial_id,
+            runner_id=runner_id,
+            outcome_reason=outcome_reason,
+            metrics=metrics,
+            score=score,
+            error_info=error_info,
+        )
+
+    def rescore(self, track_or_all, scorer_config: dict) -> MigrationResult:
+        track_id = None if track_or_all == "all" else track_or_all
+        return self.repository.rescore(track_id=track_id, scorer_config=scorer_config)
+
+
+def build_system(
+    database_url: str,
+    dataset_root: str | Path,
+    openrouter_api_key: str | None = None,
+    providers: dict | None = None,
+    launcher=None,
+) -> EvolutionSystem:
+    # Resolve default providers before wiring the runtime services together.
+    dataset_root = Path(dataset_root)
+    default_providers = {
+        "mnist:v1": TorchvisionClassificationProvider("mnist"),
+        "fashion_mnist:v1": TorchvisionClassificationProvider("fashion_mnist"),
+    }
+    effective_providers = providers or default_providers
+
+    # Construct the core repository, dataset, generation, and runner services.
+    repository = SQLAlchemyRepository(database_url)
+    dataset_manager = DatasetManager(
+        dataset_root=dataset_root,
+        providers=effective_providers,
+    )
+    generator = OpenRouterGenerationBackend(api_key=openrouter_api_key)
+    runner_service = RunnerService(repository=repository, dataset_manager=dataset_manager)
+    launcher = launcher or RecordingLauncher()
+
+    # Return the fully wired orchestration facade.
+    return EvolutionSystem(
+        repository=repository,
+        dataset_manager=dataset_manager,
+        generator=generator,
+        launcher=launcher,
+        runner_service=runner_service,
+    )

@@ -1,5 +1,109 @@
 from __future__ import annotations
 
+
+# ---- env.py ----
+
+import os
+from pathlib import Path
+
+
+DEFAULT_ENV_PATH = Path.home() / ".config" / "sigmaevolve" / ".env"
+
+
+def load_env_file(path: str | Path | None = None, *, override: bool = False) -> None:
+    env_path = Path(path) if path is not None else DEFAULT_ENV_PATH
+    if not env_path.exists():
+        return
+    for raw_line in env_path.read_text().splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export ") :].strip()
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if not key:
+            continue
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+            value = value[1:-1]
+        if override or key not in os.environ:
+            os.environ[key] = value
+
+
+# ---- hashing.py ----
+
+import hashlib
+
+
+def normalize_source(source: str) -> str:
+    normalized = source.encode("utf-8", errors="strict").decode("utf-8")
+    normalized = normalized.replace("\r\n", "\n").replace("\r", "\n")
+    normalized = normalized.rstrip("\n") + "\n"
+    return normalized
+
+
+def compute_script_hash(source: str) -> str:
+    normalized = normalize_source(source)
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+# ---- scoring.py ----
+
+from typing import Any
+
+
+def compute_classification_metrics(
+    predictions: list[int],
+    labels: list[int],
+) -> dict[str, Any]:
+    # Validate the scoring inputs before computing aggregates.
+    if len(predictions) != len(labels):
+        raise ValueError("Predictions and labels must have the same length.")
+    if not labels:
+        raise ValueError("Cannot score an empty validation split.")
+
+    # Derive the aggregate metrics from the aligned predictions and labels.
+    correct = sum(int(pred == label) for pred, label in zip(predictions, labels))
+    accuracy = correct / len(labels)
+
+    # Return the metrics payload in a reviewable shape.
+    return {
+        "accuracy": accuracy,
+        "correct": correct,
+        "num_examples": len(labels),
+    }
+
+
+def compute_score(
+    metrics: dict[str, Any] | None,
+    outcome_reason: str | None,
+    scorer_config: dict[str, Any],
+) -> float:
+    del outcome_reason
+
+    # Fall back to zero when the trial never produced metrics.
+    if not metrics:
+        return 0.0
+
+    # Resolve the configured metric before converting it to a float score.
+    primary_metric = scorer_config.get("primary_metric", "accuracy")
+    value = metrics.get(primary_metric)
+    if value is None:
+        raise ValueError(f"Primary metric {primary_metric!r} not present in metrics.")
+
+    return float(value)
+
+
+# ---- runtime_config.py ----
+
+DEFAULT_TRIAL_HARD_TIMEOUT_SEC = 60 * 60
+
+
+# ---- models.py ----
+
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any

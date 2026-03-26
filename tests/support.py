@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sigmaevolve.models import CANDIDATE_KIND_STRATEGY_V1
+from sigmaevolve.core import CANDIDATE_KIND_STRATEGY_V1
 
 
 def make_llm_provenance(

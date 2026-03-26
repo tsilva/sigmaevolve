@@ -64,8 +64,8 @@ def prepare_feature_tensor(features, *, input_shape=None):
         tensor = tensor.unsqueeze(1)
     return input_shape, tensor.contiguous()
 
-
 # EVOLVE-BLOCK-START
+
 CONFIG = {
     "normalization_std_floor": 1e-6,
     "binary_probability_threshold": 0.5,
@@ -102,8 +102,8 @@ CONFIG = {
         "short_run_patience": 0,
     },
 }
-# EVOLVE-BLOCK-END
 
+# EVOLVE-BLOCK-END
 
 def normalize_feature_tensors(train_x, validation_x):
     if train_x.ndim <= 1:
@@ -183,8 +183,8 @@ def require_mapping(name, value):
         raise TrainScriptContractError(f"{name} must return a dict.")
     return value
 
-
 # EVOLVE-BLOCK-START
+
 class EvolvedModel(torch.nn.Module):
     def __init__(self, input_shape, num_classes):
         super().__init__()
@@ -230,8 +230,8 @@ class EvolvedModel(torch.nn.Module):
 
 def build_model(*, input_shape, num_classes):
     return EvolvedModel(input_shape=input_shape, num_classes=num_classes)
-# EVOLVE-BLOCK-END
 
+# EVOLVE-BLOCK-END
 
 def run_validation(model, validation_loader, *, num_classes):
     model.eval()
@@ -249,8 +249,8 @@ def run_validation(model, validation_loader, *, num_classes):
         raise TrainScriptContractError("validation loader must yield at least one batch")
     return torch.cat(predictions, dim=0)
 
-
 # EVOLVE-BLOCK-START
+
 def configure_data(*, train_x, train_y, validation_x, random_seed):
     del random_seed
     data_config = CONFIG["data"]
@@ -270,8 +270,8 @@ def configure_data(*, train_x, train_y, validation_x, random_seed):
     }
 # EVOLVE-BLOCK-END
 
-
 # EVOLVE-BLOCK-START
+
 def configure_optimization(*, model, train_loader, num_epochs, num_classes):
     optimization_config = CONFIG["optimization"]
     trainable_parameters = [parameter for parameter in model.parameters() if parameter.requires_grad]
@@ -299,10 +299,11 @@ def configure_optimization(*, model, train_loader, num_epochs, num_classes):
         ),
         "grad_clip_norm": optimization_config["grad_clip_norm"],
     }
+
 # EVOLVE-BLOCK-END
 
-
 # EVOLVE-BLOCK-START
+
 def configure_training_policy(*, num_epochs):
     training_policy = CONFIG["training_policy"]
     patience = (
@@ -313,8 +314,8 @@ def configure_training_policy(*, num_epochs):
     return {
         "early_stopping_patience": patience,
     }
-# EVOLVE-BLOCK-END
 
+# EVOLVE-BLOCK-END
 
 def main(argv=None):
     parser = argparse.ArgumentParser()
