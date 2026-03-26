@@ -1,4 +1,215 @@
 from __future__ import annotations
+from pathlib import Path
+
+from sigmaevolve.core import normalize_source
+
+_BASELINE_TEMPLATE_PATH = Path(__file__).with_name("baseline_template.py")
+
+def build_baseline_train_script() -> str:
+    template_source = _BASELINE_TEMPLATE_PATH.read_text(encoding="utf-8")
+    return normalize_source(template_source)
+
+def build_baseline_linear_classifier() -> str:
+    return build_baseline_train_script()
+
+
+# ---- evolve_blocks.py ----
+
+import os
+import re
+from dataclasses import dataclass
+
+from sigmaevolve.core import normalize_source
+
+
+EVOLVE_BLOCK_START = "# EVOLVE-BLOCK-START"
+EVOLVE_BLOCK_END = "# EVOLVE-BLOCK-END"
+
+_EVOLVE_BLOCK_PATTERN = re.compile(
+    rf"(?ms)^{re.escape(EVOLVE_BLOCK_START)}\n(.*?)^{re.escape(EVOLVE_BLOCK_END)}\n?"
+)
+
+
+class EvolveBlockError(ValueError):
+    pass
+
+
+@dataclass(frozen=True)
+class SearchReplaceBlock:
+    search: str
+    replace: str
+
+
+def _contains_evolve_block_marker_line(text: str) -> bool:
+    for line in text.splitlines():
+        if line.strip() in {EVOLVE_BLOCK_START, EVOLVE_BLOCK_END}:
+            return True
+    return False
+
+
+def _line_indent(line: str) -> str:
+    prefix_length = len(line) - len(line.lstrip(" \t"))
+    return line[:prefix_length]
+
+
+def _common_indent(lines: list[str]) -> str:
+    indents = [_line_indent(line) for line in lines if line.strip()]
+    if not indents:
+        return ""
+    return os.path.commonprefix(indents)
+
+
+def _dedent_lines(lines: list[str]) -> tuple[list[str], str]:
+    indent = _common_indent(lines)
+    if not indent:
+        return list(lines), ""
+    dedented = [line[len(indent) :] if line.startswith(indent) and line.strip() else line for line in lines]
+    return dedented, indent
+
+
+def _canonicalize_patch_text(text: str) -> tuple[list[str], str]:
+    lines = normalize_source(text).splitlines(keepends=True)
+    return _dedent_lines(lines)
+
+
+def _reindent_lines(lines: list[str], indent: str) -> list[str]:
+    if not indent:
+        return list(lines)
+    return [f"{indent}{line}" if line.strip() else line for line in lines]
+
+
+def _find_matching_line_ranges(source_lines: list[str], search_lines: list[str]) -> list[tuple[int, int, str]]:
+    if not search_lines:
+        return []
+    canonical_search_lines, _ = _dedent_lines(search_lines)
+    search_length = len(search_lines)
+    matches: list[tuple[int, int, str]] = []
+    for start in range(len(source_lines) - search_length + 1):
+        candidate_lines = source_lines[start : start + search_length]
+        canonical_candidate_lines, candidate_indent = _dedent_lines(candidate_lines)
+        if canonical_candidate_lines == canonical_search_lines:
+            matches.append((start, start + search_length, candidate_indent))
+    return matches
+
+
+def split_evolve_blocks(source: str) -> tuple[list[str], list[str]]:
+    normalized = normalize_source(source)
+    matches = list(_EVOLVE_BLOCK_PATTERN.finditer(normalized))
+    if not matches:
+        raise EvolveBlockError("source must contain at least one evolve block")
+
+    immutable_parts: list[str] = []
+    block_payloads: list[str] = []
+    cursor = 0
+    for match in matches:
+        block_start, block_end = match.span(1)
+        immutable_parts.append(normalized[cursor:block_start])
+        block_payloads.append(match.group(1))
+        cursor = block_end
+    immutable_parts.append(normalized[cursor:])
+    return immutable_parts, block_payloads
+
+
+def extract_evolve_block_payloads(source: str) -> list[str]:
+    _, block_payloads = split_evolve_blocks(source)
+    return block_payloads
+
+
+def replace_evolve_block_payloads(template_source: str, block_payloads: list[str]) -> str:
+    immutable_parts, current_payloads = split_evolve_blocks(template_source)
+    if len(block_payloads) != len(current_payloads):
+        raise EvolveBlockError(
+            f"expected {len(current_payloads)} evolve block payloads, received {len(block_payloads)}"
+        )
+    merged: list[str] = []
+    for immutable_part, block_payload in zip(immutable_parts, block_payloads):
+        merged.append(immutable_part)
+        merged.append(block_payload)
+    merged.append(immutable_parts[-1])
+    return normalize_source("".join(merged))
+
+
+def parse_search_replace_blocks(response_text: str) -> list[SearchReplaceBlock]:
+    normalized = normalize_source(response_text)
+    if normalized.strip() == "NO_CHANGES":
+        return []
+
+    lines = normalized.splitlines(keepends=True)
+    blocks: list[SearchReplaceBlock] = []
+    cursor = 0
+
+    while cursor < len(lines):
+        if lines[cursor].strip() == "":
+            cursor += 1
+            continue
+        if lines[cursor] != "<<<<<<< SEARCH\n":
+            raise EvolveBlockError("generated response must contain SEARCH/REPLACE blocks or NO_CHANGES")
+        cursor += 1
+
+        search_lines: list[str] = []
+        while cursor < len(lines) and lines[cursor] != "=======\n":
+            search_lines.append(lines[cursor])
+            cursor += 1
+        if cursor >= len(lines):
+            raise EvolveBlockError("SEARCH/REPLACE block is missing ======= separator")
+        cursor += 1
+
+        replace_lines: list[str] = []
+        while cursor < len(lines) and lines[cursor] != ">>>>>>> REPLACE\n":
+            replace_lines.append(lines[cursor])
+            cursor += 1
+        if cursor >= len(lines):
+            raise EvolveBlockError("SEARCH/REPLACE block is missing >>>>>>> REPLACE terminator")
+        cursor += 1
+
+        search = "".join(search_lines)
+        if not search:
+            raise EvolveBlockError("SEARCH/REPLACE block must include non-empty SEARCH text")
+        replace = "".join(replace_lines)
+        if _contains_evolve_block_marker_line(search) or _contains_evolve_block_marker_line(replace):
+            raise EvolveBlockError("SEARCH/REPLACE blocks may not include evolve block marker lines")
+        blocks.append(SearchReplaceBlock(search=search, replace=replace))
+
+    if not blocks:
+        raise EvolveBlockError("generated response must contain SEARCH/REPLACE blocks or NO_CHANGES")
+    return blocks
+
+
+def apply_search_replace_blocks(current_source: str, blocks: list[SearchReplaceBlock]) -> str:
+    updated_lines = normalize_source(current_source).splitlines(keepends=True)
+    for index, block in enumerate(blocks, start=1):
+        search_lines = normalize_source(block.search).splitlines(keepends=True)
+        replace_lines, _ = _canonicalize_patch_text(block.replace)
+        matches = _find_matching_line_ranges(updated_lines, search_lines)
+        if not matches:
+            raise EvolveBlockError(f"SEARCH block {index} did not match the current program")
+        if len(matches) > 1:
+            raise EvolveBlockError(f"SEARCH block {index} matched multiple locations in the current program")
+        start, end, indent = matches[0]
+        updated_lines[start:end] = _reindent_lines(replace_lines, indent)
+    return normalize_source("".join(updated_lines))
+
+
+def materialize_candidate_source(current_source: str, generated_source: str) -> str:
+    normalized_generated = normalize_source(generated_source)
+    stripped_generated = normalized_generated.strip()
+    if stripped_generated == "NO_CHANGES" or stripped_generated.startswith("<<<<<<< SEARCH"):
+        return apply_search_replace_blocks(current_source, parse_search_replace_blocks(normalized_generated))
+    if EVOLVE_BLOCK_START in normalized_generated and EVOLVE_BLOCK_END in normalized_generated:
+        return normalized_generated
+    raise EvolveBlockError("generated response must be SEARCH/REPLACE blocks, NO_CHANGES, or a full program")
+
+
+def assert_only_evolve_blocks_changed(parent_source: str, candidate_source: str) -> None:
+    parent_parts, parent_payloads = split_evolve_blocks(parent_source)
+    candidate_parts, candidate_payloads = split_evolve_blocks(candidate_source)
+    if parent_parts != candidate_parts:
+        raise EvolveBlockError("candidate modified immutable text outside evolve blocks")
+    if len(parent_payloads) != len(candidate_payloads):
+        raise EvolveBlockError("candidate changed the number of evolve blocks")
+
+
+# ---- generation.py ----
 
 import json
 import os
@@ -12,8 +223,7 @@ from typing import Protocol
 from urllib import request
 from urllib.error import HTTPError, URLError
 
-from sigmaevolve.evolve_blocks import EVOLVE_BLOCK_END, EVOLVE_BLOCK_START
-from sigmaevolve.models import CANDIDATE_KIND_STRATEGY_V1, DatasetManifest, GenerationResult, TrackRecord, TrialSummary
+from sigmaevolve.core import CANDIDATE_KIND_STRATEGY_V1, DatasetManifest, GenerationResult, TrackRecord, TrialSummary
 
 
 class GenerationBackend(Protocol):
@@ -686,3 +896,478 @@ class OpenRouterGenerationBackend:
                 response_metadata=response_metadata,
             ),
         )
+
+
+# ---- generation_coordinator.py ----
+
+import random
+from concurrent.futures import Future, ThreadPoolExecutor
+from dataclasses import dataclass
+from typing import Any
+
+from sigmaevolve.core import compute_script_hash
+from sigmaevolve.core import (
+    CANDIDATE_KIND_STRATEGY_V1,
+    GenerationResult,
+    OUTCOME_DUPLICATE,
+    OUTCOME_GENERATION_FAILED,
+    ReconcileResult,
+    TrialSummary,
+)
+
+
+@dataclass(frozen=True)
+class GenerationAttempt:
+    slot_index: int
+    generation_index: int
+    duplicate_retry_count: int
+    context_trials: list[TrialSummary]
+
+
+class GenerationCoordinator:
+    def __init__(self, repository, generator) -> None:
+        self.repository = repository
+        self.generator = generator
+
+    def sample_successful_context_trials(
+        self,
+        track_id: str,
+        sampling_settings: dict[str, Any],
+        generation_index: int,
+    ) -> list[TrialSummary]:
+        # Prefer finished strategy variants that already have scored metrics.
+        candidates = self.repository.sample_trial_context(
+            track_id,
+            limit=self.repository.count_trials(track_id),
+            candidate_kind=CANDIDATE_KIND_STRATEGY_V1,
+        )
+        if not candidates:
+            return []
+        if len(candidates) == 1:
+            return [candidates[0]]
+
+        seed = int(sampling_settings.get("seed", 0))
+        rng = random.Random(seed + generation_index)
+        remaining = list(candidates)
+        remaining_weights = [max(float(trial.score), 0.0) for trial in remaining]
+        sampled: list[TrialSummary] = []
+
+        # Sample up to two trials without replacement, falling back to uniform draws.
+        for _ in range(min(2, len(remaining))):
+            total_weight = sum(remaining_weights)
+            if total_weight <= 0.0:
+                selected_index = rng.randrange(len(remaining))
+            else:
+                selected_index = rng.choices(range(len(remaining)), weights=remaining_weights, k=1)[0]
+            sampled.append(remaining.pop(selected_index))
+            remaining_weights.pop(selected_index)
+
+        # Return the sampled trials in a stable best-first order.
+        candidate_ranks = {trial.trial_id: index for index, trial in enumerate(candidates)}
+        sampled.sort(key=lambda trial: (-float(trial.score), candidate_ranks[trial.trial_id]))
+        return sampled
+
+    def sample_generation_context_trials(
+        self,
+        track_id: str,
+        sampling_settings: dict[str, Any],
+        generation_index: int,
+    ) -> list[TrialSummary]:
+        # Use successful strategy trials first whenever any exist.
+        successful_context = self.sample_successful_context_trials(track_id, sampling_settings, generation_index)
+        if successful_context:
+            return successful_context
+
+        # Avoid mixing in unfinished or failed context once scored trials exist.
+        if self.repository.sample_trial_context(track_id, limit=self.repository.count_trials(track_id)):
+            return []
+
+        # Fall back to the seeded baseline when the track has no scored history yet.
+        for trial in self.repository.list_trials(track_id):
+            provenance = dict(trial.provenance_json or {})
+            if provenance.get("backend") != "baseline":
+                continue
+            return [
+                TrialSummary(
+                    trial_id=trial.trial_id,
+                    score=float(trial.score or 0.0),
+                    metrics_json=dict(trial.metrics_json) if trial.metrics_json else None,
+                    source=trial.source,
+                    provenance_json=provenance,
+                    outcome_reason=trial.outcome_reason,
+                    error_json=dict(trial.error_json) if trial.error_json else None,
+                )
+            ]
+        return []
+
+    def with_generation_trace(
+        self,
+        provenance_json: dict[str, Any],
+        *,
+        generated_source: str | None,
+        assertions_passed: bool,
+        assertion_failures: list[str],
+        candidate_hash: str | None,
+    ) -> dict[str, Any]:
+        # Start from the recorded provenance so retries preserve prior metadata.
+        payload = dict(provenance_json or {})
+        generation_payload = dict(payload.get("generation") or {})
+        request_messages = payload.get("request_messages")
+
+        # Backfill prompt text when older payloads only stored request messages.
+        if isinstance(request_messages, list):
+            if "system_prompt" not in generation_payload and request_messages:
+                first = request_messages[0]
+                if isinstance(first, dict) and isinstance(first.get("content"), str):
+                    generation_payload["system_prompt"] = first["content"]
+
+            if "user_prompt" not in generation_payload and len(request_messages) > 1:
+                second = request_messages[1]
+                if isinstance(second, dict) and isinstance(second.get("content"), str):
+                    generation_payload["user_prompt"] = second["content"]
+
+        # Record the generated candidate trace in one normalized generation block.
+        generation_payload.setdefault("response_text", None)
+        generation_payload["generated_source"] = generated_source
+        generation_payload["assertions_passed"] = assertions_passed
+        generation_payload["assertion_failures"] = list(assertion_failures)
+        generation_payload["candidate_hash"] = candidate_hash
+        payload["generation"] = generation_payload
+
+        return payload
+
+    def normalize_generation_result(self, generated: Any) -> GenerationResult:
+        if isinstance(generated, GenerationResult):
+            return generated
+        return GenerationResult(
+            source=getattr(generated, "source", None),
+            provenance_json=dict(getattr(generated, "provenance_json", {}) or {}),
+            error_info=dict(getattr(generated, "error_info", {}) or {}) or None,
+        )
+
+    def fallback_generation_provenance(
+        self,
+        track,
+        context_trials: list[TrialSummary],
+        *,
+        generation_index: int,
+        duplicate_retry_count: int,
+    ) -> dict[str, Any]:
+        # Recover the configured model name when the provider failed before logging prompts.
+        generation_backend = dict(track.policy_json.get("generation_backend", {}))
+        model = generation_backend.get("model")
+        if not isinstance(model, str) or not model:
+            model_pool = generation_backend.get("model_pool")
+            if isinstance(model_pool, list) and model_pool and isinstance(model_pool[0], dict):
+                pool_model = model_pool[0].get("model")
+                model = str(pool_model) if pool_model else "unknown"
+            else:
+                model = "unknown"
+
+        system_prompt = "Generation backend failed before prompts could be fully recorded."
+        user_prompt = "No user prompt was captured because generation aborted before the provider call completed."
+
+        # Emit a synthetic but schema-valid generation payload for failure records.
+        generation_payload = {
+            "system_prompt": system_prompt,
+            "user_prompt": user_prompt,
+            "response_text": None,
+            "generated_source": None,
+            "assertions_passed": False,
+            "assertion_failures": [],
+            "candidate_hash": None,
+        }
+
+        return {
+            "backend": "openrouter",
+            "model": model,
+            "candidate_kind": CANDIDATE_KIND_STRATEGY_V1,
+            "generation_config": generation_backend,
+            "generation_index": generation_index,
+            "duplicate_retry_count": duplicate_retry_count,
+            "request_messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            "context_trial_ids": [trial.trial_id for trial in context_trials],
+            "generation": generation_payload,
+        }
+
+    def record_generation_attempt_failure(
+        self,
+        track_id: str,
+        result: ReconcileResult,
+        provenance_json: dict[str, Any],
+        *,
+        reason: str,
+        detail: str | None = None,
+        generated_source: str | None = None,
+        candidate_hash: str | None = None,
+        extra_error_json: dict[str, Any] | None = None,
+        result_error: str | None = None,
+    ) -> ReconcileResult:
+        # Turn the failure into a persisted generation-attempt trial with trace data.
+        assertion_failures = [detail] if detail else [reason]
+        final_provenance = self.with_generation_trace(
+            provenance_json,
+            generated_source=generated_source,
+            assertions_passed=False,
+            assertion_failures=assertion_failures,
+            candidate_hash=candidate_hash,
+        )
+        error_payload: dict[str, Any] = {"reason": reason}
+        generation_payload = dict(final_provenance.get("generation") or {})
+        if detail:
+            error_payload["detail"] = detail
+
+        finish_reason = generation_payload.get("finish_reason")
+        if isinstance(finish_reason, str) and finish_reason:
+            error_payload["finish_reason"] = finish_reason
+
+        native_finish_reason = generation_payload.get("native_finish_reason")
+        if isinstance(native_finish_reason, str) and native_finish_reason:
+            error_payload["native_finish_reason"] = native_finish_reason
+
+        if extra_error_json:
+            error_payload.update(extra_error_json)
+
+        # Record the failure in both storage and the in-memory reconcile result.
+        trial = self.repository.create_generation_attempt_trial(
+            track_id=track_id,
+            provenance_json=final_provenance,
+            outcome_reason=OUTCOME_GENERATION_FAILED,
+            error_json=error_payload,
+        )
+        result.failed_generation_trial_ids.append(trial.trial_id)
+        result.errors.append(result_error or f"generation_failed:{reason}")
+        return result
+
+    def schedule_generation_attempt(
+        self,
+        executor: ThreadPoolExecutor,
+        track,
+        dataset_manifest,
+        sampling_settings: dict[str, Any],
+        *,
+        slot_index: int,
+        generation_index: int,
+        duplicate_retry_count: int,
+    ) -> tuple[Future[Any], GenerationAttempt] | None:
+        # Skip scheduling when there is no valid context to generate from.
+        context_trials = self.sample_generation_context_trials(
+            track.track_id,
+            sampling_settings,
+            generation_index,
+        )
+        if not context_trials:
+            return None
+
+        # Submit the provider request together with the bookkeeping metadata.
+        attempt = GenerationAttempt(
+            slot_index=slot_index,
+            generation_index=generation_index,
+            duplicate_retry_count=duplicate_retry_count,
+            context_trials=context_trials,
+        )
+        future = executor.submit(
+            self.generator.generate,
+            track,
+            dataset_manifest,
+            context_trials,
+            [],
+            generation_index,
+            duplicate_retry_count,
+        )
+        return future, attempt
+
+    def record_duplicate_generation_attempt(
+        self,
+        track_id: str,
+        result: ReconcileResult,
+        provenance_json: dict[str, Any],
+        *,
+        candidate_hash: str,
+        trial_id: str,
+    ) -> ReconcileResult:
+        duplicate_trial = self.repository.create_generation_attempt_trial(
+            track_id=track_id,
+            provenance_json=provenance_json,
+            outcome_reason=OUTCOME_DUPLICATE,
+            error_json={
+                "reason": "duplicate_candidate",
+                "detail": f"Candidate source already exists as {trial_id}.",
+                "candidate_hash": candidate_hash,
+                "existing_trial_id": trial_id,
+            },
+        )
+        result.duplicate_hashes.append(candidate_hash)
+        result.duplicate_trial_ids.append(duplicate_trial.trial_id)
+        return result
+
+    def materialize_candidate_source(self, parent_source: str, generated_source: str) -> str:
+        candidate_source = materialize_candidate_source(parent_source, generated_source)
+        assert_only_evolve_blocks_changed(parent_source, candidate_source)
+        return candidate_source
+
+    def accept_generated_candidate(
+        self,
+        *,
+        track_id: str,
+        result: ReconcileResult,
+        generated: GenerationResult,
+        attempt: GenerationAttempt,
+        candidate_source: str,
+    ) -> dict[str, Any]:
+        candidate_hash = compute_script_hash(candidate_source)
+        final_provenance = self.with_generation_trace(
+            generated.provenance_json,
+            generated_source=candidate_source,
+            assertions_passed=True,
+            assertion_failures=[],
+            candidate_hash=candidate_hash,
+        )
+        trial, created = self.repository.create_queued_trial_if_absent(
+            track_id=track_id,
+            source=candidate_source,
+            provenance_json=final_provenance,
+        )
+        if created and trial is not None:
+            result.generated_trial_ids.append(trial.trial_id)
+            return {
+                "event": "generation_accepted",
+                "payload": {"trial_id": trial.trial_id},
+            }
+
+        if trial is None:
+            raise RuntimeError("Queued trial creation returned no trial record.")
+
+        self.record_duplicate_generation_attempt(
+            track_id=track_id,
+            result=result,
+            provenance_json=final_provenance,
+            candidate_hash=candidate_hash,
+            trial_id=trial.trial_id,
+        )
+        return {
+            "event": "generation_duplicate",
+            "payload": {"existing_trial_id": trial.trial_id},
+        }
+
+
+# ---- train_script_blocks.py ----
+
+from textwrap import indent
+
+
+CONFIG_BLOCK_INDEX = 0
+MODEL_BLOCK_INDEX = 1
+DATA_BLOCK_INDEX = 2
+OPTIMIZATION_BLOCK_INDEX = 3
+TRAINING_POLICY_BLOCK_INDEX = 4
+
+
+def _normalize_payload(payload: str) -> str:
+    return payload.strip("\n") + "\n"
+
+
+def build_candidate_train_script(
+    block_payload: str | None = None,
+    *,
+    config_block_payload: str | None = None,
+    model_block_payload: str | None = None,
+    data_block_payload: str | None = None,
+    optimization_block_payload: str | None = None,
+    training_policy_block_payload: str | None = None,
+) -> str:
+    template_source = build_baseline_train_script()
+    payloads = extract_evolve_block_payloads(template_source)
+
+    replacements: dict[int, str | None] = {
+        CONFIG_BLOCK_INDEX: config_block_payload,
+        MODEL_BLOCK_INDEX: model_block_payload if model_block_payload is not None else block_payload,
+        DATA_BLOCK_INDEX: data_block_payload,
+        OPTIMIZATION_BLOCK_INDEX: optimization_block_payload,
+        TRAINING_POLICY_BLOCK_INDEX: training_policy_block_payload,
+    }
+    for index, payload in replacements.items():
+        if payload is not None:
+            payloads[index] = _normalize_payload(payload)
+
+    return replace_evolve_block_payloads(template_source, payloads)
+
+
+def build_config_block(body: str) -> str:
+    return _normalize_payload(body)
+
+
+def build_model_block(
+    body: str,
+    *,
+    imports: str = "import torch",
+    build_body: str = "return EvolvedModel()",
+) -> str:
+    parts: list[str] = []
+    imports = imports.strip()
+    if imports:
+        parts.append(imports)
+        parts.append("")
+    parts.append("class EvolvedModel(torch.nn.Module):")
+    parts.append(indent(body.strip("\n"), "    "))
+    parts.append("")
+    parts.append("")
+    parts.append("def build_model(*, input_shape, num_classes):")
+    parts.append(indent(build_body.strip("\n"), "    "))
+    parts.append("")
+    return "\n".join(parts)
+
+
+def _build_function_block(
+    body: str,
+    *,
+    function_name: str,
+    signature: str,
+    imports: str = "",
+) -> str:
+    parts: list[str] = []
+    imports = imports.strip()
+    if imports:
+        parts.append(imports)
+        parts.append("")
+    parts.append(f"def {function_name}({signature}):")
+    parts.append(indent(body.strip("\n"), "    "))
+    parts.append("")
+    return "\n".join(parts)
+
+
+def build_data_block(
+    body: str,
+    *,
+    imports: str = "import torch",
+) -> str:
+    return _build_function_block(
+        body,
+        function_name="configure_data",
+        signature="*, train_x, train_y, validation_x, random_seed",
+        imports=imports,
+    )
+
+
+def build_optimization_block(
+    body: str,
+    *,
+    imports: str = "import torch",
+) -> str:
+    return _build_function_block(
+        body,
+        function_name="configure_optimization",
+        signature="*, model, train_loader, num_epochs, num_classes",
+        imports=imports,
+    )
+
+
+def build_training_policy_block(body: str) -> str:
+    return _build_function_block(
+        body,
+        function_name="configure_training_policy",
+        signature="*, num_epochs",
+    )

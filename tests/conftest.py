@@ -13,11 +13,11 @@ if str(ROOT) not in sys.path:
 
 from sigmaevolve.datasets import ArrayDatasetProvider, DatasetManager
 from sigmaevolve.generation import FixedGenerationBackend
-from sigmaevolve.orchestrator import RecordingLauncher
-from sigmaevolve.runner import RunnerService
+from sigmaevolve.orchestration import RecordingLauncher
+from sigmaevolve.execution import RunnerService
 from sigmaevolve.storage import SQLAlchemyRepository
-from sigmaevolve.system import EvolutionSystem
-from sigmaevolve.train_script_blocks import build_candidate_train_script, build_model_block
+from sigmaevolve.orchestration import EvolutionSystem
+from sigmaevolve.generation import build_candidate_train_script, build_model_block
 
 
 @pytest.fixture

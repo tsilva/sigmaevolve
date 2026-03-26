@@ -1,4 +1,5 @@
-from __future__ import annotations
+# ---- test_runner.py ----
+
 
 import json
 import logging
@@ -8,11 +9,11 @@ import time
 import numpy as np
 import pytest
 
-from sigmaevolve.models import CANDIDATE_KIND_STRATEGY_V1
-from sigmaevolve.orchestrator import InlineRunnerLauncher
-from sigmaevolve.runner import RunnerService
-from sigmaevolve.system import EvolutionSystem
-from sigmaevolve.train_script_blocks import (
+from sigmaevolve.core import CANDIDATE_KIND_STRATEGY_V1
+from sigmaevolve.orchestration import InlineRunnerLauncher
+from sigmaevolve.execution import RunnerService
+from sigmaevolve.orchestration import EvolutionSystem
+from sigmaevolve.generation import (
     build_candidate_train_script,
     build_data_block,
     build_model_block,
@@ -393,7 +394,7 @@ def test_run_emits_lifecycle_logs(repository, dataset_manager, caplog):
     system.prepare_dataset("mnist:v1")
     track = system.create_track("lifecycle-logging", "mnist:v1", {"epochs": 1})
     finalize_baseline(system, track.track_id)
-    with caplog.at_level(logging.INFO, logger="sigmaevolve.runner"):
+    with caplog.at_level(logging.INFO, logger="sigmaevolve.execution"):
         finished = _run_trial(system, track.track_id, SUCCESS_BLOCK)
     messages = [record.getMessage() for record in caplog.records]
     assert finished.outcome_reason == "succeeded"
@@ -429,7 +430,7 @@ def test_run_uses_unbuffered_python_for_child_process(repository, dataset_manage
             {"returncode": 0, "stdout": "", "stderr": "", "timed_out": False},
         )()
 
-    monkeypatch.setattr("sigmaevolve.runner._run_streamed_subprocess", fake_run_streamed_subprocess)
+    monkeypatch.setattr("sigmaevolve.execution._run_streamed_subprocess", fake_run_streamed_subprocess)
 
     system.runner_service.run_reserved_trial(reserved.trial_id, reserved.dispatch_token, "runner-unbuffered")
 
@@ -560,3 +561,400 @@ def test_rescore_updates_only_derived_score(repository, dataset_manager):
     assert after is not None
     assert after.metrics_json == metrics
     assert after.score == metrics["accuracy"]
+
+
+# ---- test_strategy_runtime.py ----
+
+
+from sigmaevolve import execution as strategy_runtime
+
+
+def test_seed_everything_returns_cpu_when_cuda_unavailable(monkeypatch):
+    class FakeTorch:
+        class cuda:
+            @staticmethod
+            def is_available():
+                return False
+
+            @staticmethod
+            def manual_seed_all(seed):
+                raise AssertionError(f"manual_seed_all should not be called: {seed}")
+
+        @staticmethod
+        def manual_seed(seed):
+            return None
+
+    monkeypatch.setitem(strategy_runtime.sys.modules, "torch", FakeTorch)
+
+    assert strategy_runtime._seed_everything(1234) == "cpu"
+
+
+def test_seed_everything_returns_cuda_when_available(monkeypatch):
+    state = {"manual_seed": [], "manual_seed_all": []}
+
+    class FakeTorch:
+        class cuda:
+            @staticmethod
+            def is_available():
+                return True
+
+            @staticmethod
+            def manual_seed_all(seed):
+                state["manual_seed_all"].append(seed)
+
+        @staticmethod
+        def manual_seed(seed):
+            state["manual_seed"].append(seed)
+
+    monkeypatch.setitem(strategy_runtime.sys.modules, "torch", FakeTorch)
+
+    assert strategy_runtime._seed_everything(7) == "cuda"
+    assert state == {"manual_seed": [7], "manual_seed_all": [7]}
+
+
+# ---- test_wandb_support.py ----
+
+
+import pytest
+
+from sigmaevolve.execution import collect_wandb_env, resolve_wandb_settings
+
+
+def test_collect_wandb_env_uses_standard_wandb_keys(monkeypatch):
+    monkeypatch.setenv("WANDB_API_KEY", "key")
+    monkeypatch.setenv("WANDB_PROJECT", "proj")
+    monkeypatch.setenv("WANDB_ENTITY", "team")
+    monkeypatch.setenv("WANDB_BASE_URL", "https://wandb.example")
+
+    assert collect_wandb_env() == {
+        "WANDB_API_KEY": "key",
+        "WANDB_PROJECT": "proj",
+        "WANDB_ENTITY": "team",
+        "WANDB_BASE_URL": "https://wandb.example",
+    }
+
+
+def test_resolve_wandb_settings_reads_standard_wandb_keys(monkeypatch):
+    monkeypatch.setenv("WANDB_API_KEY", "key")
+    monkeypatch.setenv("WANDB_PROJECT", "proj")
+    monkeypatch.setenv("WANDB_ENTITY", "team")
+    monkeypatch.setenv("WANDB_BASE_URL", "https://wandb.example")
+
+    settings = resolve_wandb_settings()
+
+    assert settings.api_key == "key"
+    assert settings.project == "proj"
+    assert settings.entity == "team"
+    assert settings.base_url == "https://wandb.example"
+
+
+def test_resolve_wandb_settings_requires_wandb_api_key(monkeypatch):
+    monkeypatch.delenv("WANDB_API_KEY", raising=False)
+
+    with pytest.raises(RuntimeError, match="WANDB_API_KEY is required"):
+        resolve_wandb_settings()
+
+
+# ---- test_modal_support.py ----
+
+
+import pytest
+
+from sigmaevolve.modal import create_modal_launcher
+
+
+def test_modal_launcher_spawns_named_method_without_gpu_override(monkeypatch):
+    captured = {}
+
+    class FakeFunctionCall:
+        object_id = "fc-123"
+
+        def get_dashboard_url(self):
+            return "https://modal.com/apps/test/runs/fc-123"
+
+    class FakeMethodHandle:
+        def __init__(self, gpu=None):
+            self.gpu = gpu
+
+        def spawn(self, **kwargs):
+            captured["spawn"] = {"gpu": self.gpu, **kwargs}
+            return FakeFunctionCall()
+
+    class FakeObjectHandle:
+        def __init__(self, gpu=None):
+            self.run_trial = FakeMethodHandle(gpu=gpu)
+
+    class FakeClassHandle:
+        def __init__(self, gpu=None):
+            self.gpu = gpu
+
+        def with_options(self, *, gpu=None, secrets=None, **_kwargs):
+            captured.setdefault("with_options", []).append({"gpu": gpu, "secrets": secrets})
+            return FakeClassHandle(gpu=gpu)
+
+        def __call__(self):
+            captured["instantiated_gpu"] = self.gpu
+            return FakeObjectHandle(gpu=self.gpu)
+
+    class FakeCls:
+        @staticmethod
+        def from_name(app_name, name, environment_name=None):
+            captured["lookup"] = {
+                "app_name": app_name,
+                "name": name,
+                "environment_name": environment_name,
+            }
+            return FakeClassHandle()
+
+    class FakeSecret:
+        @staticmethod
+        def from_dict(payload):
+            captured["secret_payload"] = dict(payload)
+            return {"secret_payload": dict(payload)}
+
+    class FakeModal:
+        Cls = FakeCls
+        Secret = FakeSecret
+
+    monkeypatch.setattr("sigmaevolve.modal.require_modal", lambda: FakeModal)
+
+    launcher = create_modal_launcher(
+        app_name="sigmaevolve-runner",
+        function_name="run_trial",
+        database_url="postgresql://example/db",
+        dataset_root="/mnt/datasets",
+        environment_name="main",
+        wandb_env={"WANDB_API_KEY": "wandb-test-key", "WANDB_PROJECT": "sigmaevolve"},
+    )
+    metadata = launcher.launch_trial("trial_1", "dispatch_1")
+
+    assert captured["lookup"]["app_name"] == "sigmaevolve-runner"
+    assert captured["lookup"]["name"] == "TrialRunner"
+    assert captured["spawn"]["trial_id"] == "trial_1"
+    assert captured["spawn"]["dispatch_token"] == "dispatch_1"
+    assert captured["spawn"]["database_url"] == "postgresql://example/db"
+    assert captured["spawn"]["dataset_root"] == "/mnt/datasets"
+    assert captured["secret_payload"] == {"WANDB_API_KEY": "wandb-test-key", "WANDB_PROJECT": "sigmaevolve"}
+    assert captured["spawn"]["gpu"] is None
+    assert captured["with_options"] == [
+        {
+            "gpu": None,
+            "secrets": [{"secret_payload": {"WANDB_API_KEY": "wandb-test-key", "WANDB_PROJECT": "sigmaevolve"}}],
+        }
+    ]
+    assert metadata == {
+        "kind": "modal",
+        "run_id": "fc-123",
+        "run_url": "https://modal.com/apps/test/runs/fc-123",
+        "gpu_attempts": [],
+    }
+
+
+def test_modal_launcher_retries_gpu_preferences_in_order(monkeypatch):
+    captured = {"spawn_attempts": []}
+
+    class FakeFunctionCall:
+        object_id = "fc-456"
+
+        def get_dashboard_url(self):
+            return "https://modal.com/apps/test/runs/fc-456"
+
+    class FakeMethodHandle:
+        def __init__(self, gpu=None):
+            self.gpu = gpu
+
+        def spawn(self, **kwargs):
+            captured["spawn_attempts"].append({"gpu": self.gpu, **kwargs})
+            if self.gpu == "T4":
+                raise RuntimeError("T4 capacity unavailable")
+            return FakeFunctionCall()
+
+    class FakeObjectHandle:
+        def __init__(self, gpu=None):
+            self.run_trial = FakeMethodHandle(gpu=gpu)
+
+    class FakeClassHandle:
+        def __init__(self, gpu=None):
+            self.gpu = gpu
+
+        def with_options(self, *, gpu=None, secrets=None, **_kwargs):
+            captured.setdefault("with_options", []).append({"gpu": gpu, "secrets": secrets})
+            return FakeClassHandle(gpu=gpu)
+
+        def __call__(self):
+            return FakeObjectHandle(gpu=self.gpu)
+
+    class FakeCls:
+        @staticmethod
+        def from_name(app_name, name, environment_name=None):
+            captured["lookup"] = {
+                "app_name": app_name,
+                "name": name,
+                "environment_name": environment_name,
+            }
+            return FakeClassHandle()
+
+    class FakeSecret:
+        @staticmethod
+        def from_dict(payload):
+            return {"secret_payload": dict(payload)}
+
+    class FakeModal:
+        Cls = FakeCls
+        Secret = FakeSecret
+
+    monkeypatch.setattr("sigmaevolve.modal.require_modal", lambda: FakeModal)
+
+    launcher = create_modal_launcher(
+        app_name="sigmaevolve-runner",
+        function_name="run_trial",
+        database_url="postgresql://example/db",
+        dataset_root="/mnt/datasets",
+        environment_name="main",
+        wandb_env={"WANDB_API_KEY": "wandb-test-key"},
+    )
+    metadata = launcher.launch_trial(
+        "trial_1",
+        "dispatch_1",
+        launch_policy={"modal_gpu_preferences": ["T4", "L4", "A10"]},
+    )
+
+    assert [attempt["gpu"] for attempt in captured["spawn_attempts"]] == ["T4", "L4"]
+    assert metadata == {
+        "kind": "modal",
+        "run_id": "fc-456",
+        "run_url": "https://modal.com/apps/test/runs/fc-456",
+        "gpu_selected": "L4",
+        "gpu_attempts": ["T4", "L4"],
+    }
+
+
+def test_modal_launcher_surfaces_combined_gpu_failures(monkeypatch):
+    class FakeMethodHandle:
+        def __init__(self, gpu=None):
+            self.gpu = gpu
+
+        def spawn(self, **kwargs):
+            del kwargs
+            raise RuntimeError(f"{self.gpu} unavailable")
+
+    class FakeObjectHandle:
+        def __init__(self, gpu=None):
+            self.run_trial = FakeMethodHandle(gpu=gpu)
+
+    class FakeClassHandle:
+        def __init__(self, gpu=None):
+            self.gpu = gpu
+
+        def with_options(self, *, gpu=None, secrets=None, **_kwargs):
+            del secrets
+            return FakeClassHandle(gpu=gpu)
+
+        def __call__(self):
+            return FakeObjectHandle(gpu=self.gpu)
+
+    class FakeCls:
+        @staticmethod
+        def from_name(app_name, name, environment_name=None):
+            del app_name, name, environment_name
+            return FakeClassHandle()
+
+    class FakeSecret:
+        @staticmethod
+        def from_dict(payload):
+            return {"secret_payload": dict(payload)}
+
+    class FakeModal:
+        Cls = FakeCls
+        Secret = FakeSecret
+
+    monkeypatch.setattr("sigmaevolve.modal.require_modal", lambda: FakeModal)
+
+    launcher = create_modal_launcher(
+        app_name="sigmaevolve-runner",
+        function_name="run_trial",
+        database_url="postgresql://example/db",
+        dataset_root="/mnt/datasets",
+        environment_name="main",
+        wandb_env={"WANDB_API_KEY": "wandb-test-key"},
+    )
+
+    with pytest.raises(RuntimeError, match="T4: .*L4: .*A10:"):
+        launcher.launch_trial(
+            "trial_1",
+            "dispatch_1",
+            launch_policy={"modal_gpu_preferences": ["T4", "L4", "A10"]},
+        )
+
+
+def test_modal_launcher_cancels_function_call_by_run_id(monkeypatch):
+    captured = {}
+
+    class FakeFunctionCallHandle:
+        def __init__(self, run_id):
+            self.run_id = run_id
+
+        def cancel(self):
+            captured["cancelled_run_id"] = self.run_id
+
+    class FakeFunctionCall:
+        @staticmethod
+        def from_id(run_id):
+            captured["lookup_run_id"] = run_id
+            return FakeFunctionCallHandle(run_id)
+
+    class FakeModal:
+        FunctionCall = FakeFunctionCall
+
+    monkeypatch.setattr("sigmaevolve.modal.require_modal", lambda: FakeModal)
+
+    launcher = create_modal_launcher(
+        app_name="sigmaevolve-runner",
+        function_name="run_trial",
+        database_url="postgresql://example/db",
+        dataset_root="/mnt/datasets",
+        environment_name="main",
+        wandb_env={"WANDB_API_KEY": "wandb-test-key"},
+    )
+
+    launcher.cancel_run({"kind": "modal", "run_id": "fc-789"})
+
+    assert captured == {
+        "lookup_run_id": "fc-789",
+        "cancelled_run_id": "fc-789",
+    }
+
+
+def test_modal_launcher_surfaces_class_lookup_errors(monkeypatch):
+
+    class FakeCls:
+        @staticmethod
+        def from_name(app_name, name, environment_name=None):
+            del app_name, name, environment_name
+            raise RuntimeError("Class 'TrialRunner' not found in app 'sigmaevolve-runner'.")
+
+    class FakeModal:
+        Cls = FakeCls
+        Secret = type(
+            "FakeSecret",
+            (),
+            {"from_dict": staticmethod(lambda payload: {"secret_payload": dict(payload)})},
+        )
+
+    monkeypatch.setattr("sigmaevolve.modal.require_modal", lambda: FakeModal)
+
+    launcher = create_modal_launcher(
+        app_name="sigmaevolve-runner",
+        function_name="run_trial",
+        database_url="postgresql://example/db",
+        dataset_root="/mnt/datasets",
+        environment_name="main",
+        wandb_env={"WANDB_API_KEY": "wandb-test-key"},
+    )
+
+    with pytest.raises(RuntimeError, match="TrialRunner"):
+        launcher.launch_trial(
+            "trial_1",
+            "dispatch_1",
+            launch_policy={"modal_gpu_preferences": ["T4", "L4", "A10"]},
+        )

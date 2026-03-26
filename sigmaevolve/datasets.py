@@ -8,7 +8,7 @@ from typing import Protocol
 
 import numpy as np
 
-from sigmaevolve.models import DatasetManifest, DatasetRecord
+from sigmaevolve.core import DatasetManifest, DatasetRecord
 
 
 class DatasetProvider(Protocol):

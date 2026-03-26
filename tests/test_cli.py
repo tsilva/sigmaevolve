@@ -9,9 +9,9 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from sigmaevolve.cli_reporting import CliReconcileReporter
+from sigmaevolve.cli import CliReconcileReporter
 from sigmaevolve.cli import main
-from sigmaevolve.models import DEFAULT_GENERATION_MODEL
+from sigmaevolve.core import DEFAULT_GENERATION_MODEL
 from sigmaevolve.storage import normalize_database_url
 
 
@@ -46,7 +46,7 @@ def _run_cli(argv: list[str]) -> tuple[int, str, str]:
 @pytest.fixture
 def patched_cli_system(monkeypatch):
     from sigmaevolve import cli as cli_module
-    from sigmaevolve.system import build_system
+    from sigmaevolve.orchestration import build_system
 
     provider = _make_provider()
 
@@ -173,7 +173,7 @@ def test_cli_loads_env_file_for_defaults(tmp_path, monkeypatch):
     )
 
     from sigmaevolve import cli as cli_module
-    from sigmaevolve.env import load_env_file
+    from sigmaevolve.core import load_env_file
 
     original_loader = load_env_file
 
@@ -219,7 +219,7 @@ def test_cli_reconcile_reporter_dispatch_table_logs_known_events_and_ignores_unk
     def fake_info(message, *args):
         messages.append(message % args if args else message)
 
-    monkeypatch.setattr("sigmaevolve.cli_reporting.logger.info", fake_info)
+    monkeypatch.setattr("sigmaevolve.cli.logger.info", fake_info)
     reporter = CliReconcileReporter()
 
     reporter(
