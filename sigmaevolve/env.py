@@ -120,7 +120,7 @@ def _resolve_optional_env(*names: str) -> str | None:
     # Treat unset and blank env vars as absent so defaults remain predictable.
     for name in names:
         value = os.getenv(name)
-        has_non_blank_value = isinstance(value, str) and value.strip()
+        has_non_blank_value = isinstance(value, str) and bool(value.strip())
 
         # Return the first configured environment value that still contains content.
         if has_non_blank_value:

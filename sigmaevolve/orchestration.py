@@ -7,9 +7,24 @@ import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable
 
-from sigmaevolve.core import ACTIVE_STATUSES, ReconcileResult, now_utc
+from sigmaevolve.core import (
+    ACTIVE_STATUSES,
+    CANDIDATE_KIND_STRATEGY_V1,
+    DatasetRecord,
+    ReconcileResult,
+    TrackPolicy,
+    TrackRecord,
+    TrialRecord,
+    now_utc,
+)
+from sigmaevolve.datasets import DatasetManager, TorchvisionClassificationProvider
+from sigmaevolve.execution import RunnerService
+from sigmaevolve.generation import OpenRouterGenerationBackend
+from sigmaevolve.generation import build_baseline_train_script
+from sigmaevolve.storage import SQLAlchemyRepository
 
 
 def _emit(reporter: Callable[[str, dict[str, Any]], None] | None, event: str, **payload: Any) -> None:
@@ -993,23 +1008,6 @@ class Orchestrator:
 
 
 # ---- system.py ----
-
-from pathlib import Path
-
-from sigmaevolve.generation import build_baseline_train_script
-from sigmaevolve.datasets import DatasetManager, TorchvisionClassificationProvider
-from sigmaevolve.generation import OpenRouterGenerationBackend
-from sigmaevolve.core import (
-    CANDIDATE_KIND_STRATEGY_V1,
-    DatasetRecord,
-    TrackPolicy,
-    TrackRecord,
-    TrialRecord,
-)
-from sigmaevolve.execution import RunnerService
-from sigmaevolve.storage import SQLAlchemyRepository
-
-
 class EvolutionSystem:
     def __init__(
         self,
@@ -1119,6 +1117,7 @@ class EvolutionSystem:
             score=score,
             error_info=error_info,
         )
+
 
 def build_system(
     database_url: str,

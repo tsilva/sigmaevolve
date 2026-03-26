@@ -328,15 +328,19 @@ def main(argv=None):
     train_features, train_labels = read_split(config["train_split_path"])
     validation_features, _ = read_split(config["validation_split_path"])
     validation_labels = np.load(config["validation_labels_path"]).astype(np.int64)
-    if train_labels is None or not all(
-        isinstance(value, np.ndarray)
-        for value in (
-            train_features,
-            train_labels,
-            validation_features,
-            validation_labels,
-        )
-    ):
+
+    # Validate that every loaded split is a concrete NumPy array before training.
+    split_arrays = (
+        train_features,
+        train_labels,
+        validation_features,
+        validation_labels,
+    )
+    splits_are_numpy_arrays = all(isinstance(value, np.ndarray) for value in split_arrays)
+    has_labels = train_labels is not None
+
+    # Reject malformed dataset metadata before the training loop starts.
+    if not has_labels or not splits_are_numpy_arrays:
         raise RuntimeError("Dataset splits are invalid.")
 
     start_time = time.monotonic()
@@ -425,6 +429,8 @@ def main(argv=None):
             train_correct = 0
             train_examples = 0
             hook = getattr(model, "on_epoch_start", None)
+
+            # Invoke the optional epoch hook only when the model defines one.
             if callable(hook):
                 hook(epoch_index=epoch_index, num_epochs=num_epochs)
             model.train()
@@ -440,13 +446,19 @@ def main(argv=None):
                 train_loss_total += float(loss.detach().item()) * batch_size
                 train_correct += int((logits.argmax(dim=1) == batch_y).sum().item())
                 train_examples += batch_size
+
+                # Skip optimization work entirely when the model is inference-only.
                 if optimizer is None:
                     continue
                 optimizer.zero_grad(set_to_none=True)
                 loss.backward()
+
+                # Clip gradients only when the configuration requested it.
                 if grad_clip_norm is not None and trainable_parameters:
                     torch.nn.utils.clip_grad_norm_(trainable_parameters, max_norm=float(grad_clip_norm))
                 optimizer.step()
+
+                # Advance the learning-rate schedule alongside optimizer updates.
                 if scheduler is not None:
                     scheduler.step()
             report("eval", elapsed_time_sec=time.monotonic() - start_time, epoch_index=epoch_index)
@@ -498,6 +510,8 @@ def main(argv=None):
                 }
             )
             report("train", elapsed_time_sec=elapsed_after_eval, epoch_index=epochs_completed)
+
+            # Stop early once the configured patience budget is exhausted.
             if patience and stale_epochs >= patience and epochs_completed < num_epochs:
                 debug_payload["early_stopped"] = True
                 debug_payload["early_stop_epoch"] = epochs_completed
