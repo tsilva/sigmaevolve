@@ -5,4 +5,7 @@ __pycache__/
 *.egg-info/
 .vscode/
 artifacts/
-.vercel
+.next/
+node_modules/
+*.tsbuildinfo
+.vercel/

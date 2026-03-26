@@ -88,10 +88,6 @@ def _positive_float(value: str) -> float:
     return parsed
 
 
-def _default_database_url() -> str:
-    return os.getenv("SIGMAEVOLVE_DATABASE_URL") or os.getenv("DATABASE_URL") or ""
-
-
 def _make_system(args) -> Any:
     if not args.database_url:
         raise RuntimeError("A Postgres database URL is required. Set SIGMAEVOLVE_DATABASE_URL or DATABASE_URL.")
@@ -560,7 +556,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="sigmaevolve")
     parser.add_argument(
         "--database-url",
-        default=_default_database_url(),
+        default=os.getenv("DATABASE_URL"),
         help="SQLAlchemy database URL. Defaults to SIGMAEVOLVE_DATABASE_URL or DATABASE_URL.",
     )
     parser.add_argument(
@@ -575,7 +571,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--launcher",
-        choices=["recording", "inline", "modal"],
+        choices=["recording", "inline", "modal"], # TODO: what are these
         default="modal",
         help="Use modal to spawn remote runner jobs by default, inline to execute locally, or recording to reserve only.",
     )
@@ -587,7 +583,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--modal-function-name",
         default=DEFAULT_MODAL_FUNCTION_NAME,
-        help=f"Deployed Modal function name. Default: {DEFAULT_MODAL_FUNCTION_NAME}",
+        help=f"Deployed TrialRunner method name. Default: {DEFAULT_MODAL_FUNCTION_NAME}",
     )
     parser.add_argument(
         "--modal-dataset-volume",
