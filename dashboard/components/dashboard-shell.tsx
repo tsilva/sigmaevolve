@@ -2,7 +2,15 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { useDeferredValue, useEffect, useEffectEvent, useState, useTransition, type KeyboardEvent } from "react";
+import {
+  useDeferredValue,
+  useEffect,
+  useEffectEvent,
+  useState,
+  useTransition,
+  type KeyboardEvent,
+  type ReactNode,
+} from "react";
 
 import { HighlightedCode } from "@/components/highlighted-code";
 import { SourceDiff } from "@/components/source-diff";
@@ -277,6 +285,12 @@ type PromptMessage = {
   content: string;
 };
 
+type MixedSourceSnapshot = {
+  snippetCount: number;
+  source: string;
+  sourceKind: "current_program" | "mixed";
+};
+
 function asPromptMessages(value: Record<string, unknown> | null): PromptMessage[] {
   const raw = value?.request_messages;
   if (!Array.isArray(raw)) {
@@ -325,17 +339,48 @@ function normalizeSourceSnippet(content: string): string {
   return normalized ? `${normalized}\n` : "";
 }
 
-function extractMixedSourceSnapshot(messages: PromptMessage[]): { snippetCount: number; source: string } | null {
+function extractFencedSourceSnippets(content: string): string[] {
   const snippets: string[] = [];
+  const matches = content.matchAll(/```(?:python|py)?\n([\s\S]*?)```/g);
+  for (const match of matches) {
+    const snippet = normalizeSourceSnippet(match[1] ?? "");
+    if (snippet) {
+      snippets.push(snippet);
+    }
+  }
+  return snippets;
+}
+
+function extractCurrentProgramSnippet(content: string): string | null {
+  const sectionMatch = content.match(/CURRENT PROGRAM:\n([\s\S]*?)(?:\nREPLACEMENTS:|$)/);
+  if (!sectionMatch) {
+    return null;
+  }
+
+  const snippets = extractFencedSourceSnippets(sectionMatch[1] ?? "");
+  return snippets[0] ?? null;
+}
+
+function extractMixedSourceSnapshot(messages: PromptMessage[]): MixedSourceSnapshot | null {
+  const snippets: string[] = [];
+  let currentProgramSnippet: string | null = null;
 
   for (const message of messages) {
-    const matches = message.content.matchAll(/```(?:python|py)?\n([\s\S]*?)```/g);
-    for (const match of matches) {
-      const snippet = normalizeSourceSnippet(match[1] ?? "");
-      if (snippet) {
-        snippets.push(snippet);
-      }
+    if (currentProgramSnippet === null) {
+      currentProgramSnippet = extractCurrentProgramSnippet(message.content);
     }
+
+    for (const snippet of extractFencedSourceSnippets(message.content)) {
+      snippets.push(snippet);
+    }
+  }
+
+  if (currentProgramSnippet) {
+    return {
+      snippetCount: snippets.length,
+      source: currentProgramSnippet,
+      sourceKind: "current_program",
+    };
   }
 
   if (snippets.length === 0) {
@@ -350,7 +395,21 @@ function extractMixedSourceSnapshot(messages: PromptMessage[]): { snippetCount: 
   return {
     snippetCount: snippets.length,
     source,
+    sourceKind: "mixed",
   };
+}
+
+function formatMixedSourceSummary(value: MixedSourceSnapshot | null): string {
+  if (!value) {
+    return "No prompt source snippets";
+  }
+
+  const countLabel = `${value.snippetCount} prompt source${value.snippetCount === 1 ? "" : "s"}`;
+  if (value.sourceKind === "current_program" && value.snippetCount > 1) {
+    return `${countLabel} • diffing CURRENT PROGRAM`;
+  }
+
+  return countLabel;
 }
 
 function getGenerationPropertyGroups(trackId: string, value: Record<string, unknown> | null): PropertyGroup[] {
@@ -427,8 +486,17 @@ function getGenerationPropertyGroups(trackId: string, value: Record<string, unkn
 }
 
 function renderGenerationAssertionSummary(passed: boolean | null, failures: string[]) {
+  if (passed === null && failures.length === 0) {
+    return null;
+  }
+
   if (passed === null) {
-    return "Not recorded";
+    return (
+      <span className="timeline-assertion-summary">
+        <span className="flag-chip flag-danger">Failed</span>
+        <span className="timeline-detail">{failures.join("\n")}</span>
+      </span>
+    );
   }
 
   const status = passed ? (
@@ -464,9 +532,9 @@ function compactIdentifier(value: string, leading = 10, trailing = 6): string {
   return `${value.slice(0, leading)}…${value.slice(-trailing)}`;
 }
 
-function summarizeCrashDetails(value: string | null): string {
+function summarizeCrashDetails(value: string | null): string | null {
   if (!value) {
-    return "No crash detail recorded.";
+    return null;
   }
 
   const firstLine = value
@@ -475,7 +543,7 @@ function summarizeCrashDetails(value: string | null): string {
     .find(Boolean);
 
   if (!firstLine) {
-    return "No crash detail recorded.";
+    return null;
   }
 
   return firstLine.length > 160 ? `${firstLine.slice(0, 157)}...` : firstLine;
@@ -974,6 +1042,10 @@ export function DashboardShell({
   const selectedGeneratedSource = selectedTrial?.generatedSource ?? null;
   const selectedResponseText = selectedTrial?.responseText ?? null;
   const selectedAssertionFailures = selectedTrial?.generationAssertionFailures ?? [];
+  const selectedGenerationAssertionSummary = renderGenerationAssertionSummary(
+    selectedTrial?.generationAssertionsPassed ?? null,
+    selectedAssertionFailures,
+  );
   const selectedGenerationPropertyGroups = getGenerationPropertyGroups(
     selectedTrackId,
     selectedTrial?.provenanceJson ?? null,
@@ -1649,19 +1721,22 @@ export function DashboardShell({
                             { label: "Queued", value: formatDate(selectedTrial.createdAt) },
                             { label: "Started", value: formatDate(selectedTrial.startedAt) },
                             { label: "Finished", value: formatDate(selectedTrial.finishedAt) },
-                            {
-                              label: "Crash detail",
-                              title: selectedCrashDetails ?? undefined,
-                              value: selectedCrashSummary,
-                            },
-                            {
-                              label: "Generation assertions",
-                              value: renderGenerationAssertionSummary(
-                                selectedTrial.generationAssertionsPassed,
-                                selectedAssertionFailures,
-                              ),
-                            },
-                          ].map((row) => (
+                            selectedCrashSummary
+                              ? {
+                                  label: "Crash detail",
+                                  title: selectedCrashDetails ?? undefined,
+                                  value: selectedCrashSummary,
+                                }
+                              : null,
+                            selectedGenerationAssertionSummary
+                              ? {
+                                  label: "Generation assertions",
+                                  value: selectedGenerationAssertionSummary,
+                                }
+                              : null,
+                          ]
+                            .filter((row): row is { label: string; value: ReactNode; title?: string } => row !== null)
+                            .map((row) => (
                             <div className="timeline-row" key={row.label}>
                               <span>{row.label}</span>
                               <strong title={row.title}>{row.value}</strong>
@@ -1731,9 +1806,7 @@ export function DashboardShell({
                       <div className="analysis-card-header">
                         <h3>Mixed vs generated diff</h3>
                         <span>
-                          {selectedMixedSource
-                            ? `${selectedMixedSource.snippetCount} prompt source${selectedMixedSource.snippetCount === 1 ? "" : "s"}`
-                            : "No prompt source snippets"}
+                          {formatMixedSourceSummary(selectedMixedSource)}
                         </span>
                       </div>
                       {selectedMixedSource ? (

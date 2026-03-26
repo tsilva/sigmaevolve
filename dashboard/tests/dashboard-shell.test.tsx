@@ -362,6 +362,53 @@ describe("DashboardShell", () => {
     expect(screen.getAllByText("print('bad candidate')").length).toBeGreaterThan(0);
   });
 
+  it("diffs against the current program instead of reference programs when the prompt is structured", () => {
+    const detail = createDetail([
+      createTrial({
+        trialId: "trial_structured_diff",
+        source: ["def train():", "    return 'improved'", ""].join("\n"),
+        generatedSource: null,
+        provenanceJson: {
+          backend: "openrouter",
+          request_messages: [
+            {
+              role: "user",
+              content: [
+                "OBJECTIVE:",
+                "- Propose a safe improvement to CURRENT PROGRAM.",
+                "REFERENCE PROGRAMS:",
+                "```python",
+                "def train():",
+                "    return 'reference'",
+                "```",
+                "CURRENT PROGRAM:",
+                "Patch this program. SEARCH blocks must match text from CURRENT PROGRAM, not from REFERENCE PROGRAMS.",
+                "```python",
+                "def train():",
+                "    return 'baseline'",
+                "```",
+                "REPLACEMENTS:",
+              ].join("\n"),
+            },
+          ],
+        },
+      }),
+    ]);
+
+    renderShell({
+      detail,
+      initialSelectedTrialId: "trial_structured_diff",
+      pathname: "/tracks/track_1/trials/trial_structured_diff",
+    });
+
+    expect(screen.getByText("2 prompt sources • diffing CURRENT PROGRAM")).toBeTruthy();
+    expect(screen.getByText("+1 additions")).toBeTruthy();
+    expect(screen.getByText("-1 removals")).toBeTruthy();
+    expect(screen.queryByText("return 'reference'")).toBeNull();
+    expect(screen.getAllByText("return 'baseline'").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("return 'improved'").length).toBeGreaterThan(0);
+  });
+
   it("renders generation trace fields and diagnostic-source fallback for failed generation attempts", () => {
     renderShell({
       detail: createDetail([
@@ -396,6 +443,25 @@ describe("DashboardShell", () => {
     expect(screen.getByText("print('attempted candidate')")).toBeTruthy();
     expect(screen.getByText("candidate modified immutable text outside evolve blocks")).toBeTruthy();
     expect(screen.getByText(/stored row source is diagnostic-only/i)).toBeTruthy();
+  });
+
+  it("hides empty crash detail and generation assertion rows when nothing was recorded", () => {
+    renderShell({
+      detail: createDetail([
+        createTrial({
+          trialId: "trial_without_optional_timeline_fields",
+          errorJson: null,
+          generationAssertionsPassed: null,
+          generationAssertionFailures: [],
+        }),
+      ]),
+      initialSelectedTrialId: "trial_without_optional_timeline_fields",
+    });
+
+    expect(screen.queryByText("Crash detail")).toBeNull();
+    expect(screen.queryByText("Generation assertions")).toBeNull();
+    expect(screen.queryByText("No crash detail recorded.")).toBeNull();
+    expect(screen.queryByText("Not recorded")).toBeNull();
   });
 
   it("shows the persisted raw LLM response for successful trials", () => {
