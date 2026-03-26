@@ -112,6 +112,11 @@ type PropertyGroup = {
   label: string;
   entries: PropertyEntry[];
 };
+type TimelineRow = {
+  label: string;
+  value: ReactNode;
+  title?: string;
+};
 type ProgressSegment = {
   key: "queued" | "dispatching" | "active" | "finished" | "error";
   count: number;
@@ -1721,22 +1726,24 @@ export function DashboardShell({
                             { label: "Queued", value: formatDate(selectedTrial.createdAt) },
                             { label: "Started", value: formatDate(selectedTrial.startedAt) },
                             { label: "Finished", value: formatDate(selectedTrial.finishedAt) },
-                            selectedCrashSummary
-                              ? {
-                                  label: "Crash detail",
-                                  title: selectedCrashDetails ?? undefined,
-                                  value: selectedCrashSummary,
-                                }
-                              : null,
-                            selectedGenerationAssertionSummary
-                              ? {
-                                  label: "Generation assertions",
-                                  value: selectedGenerationAssertionSummary,
-                                }
-                              : null,
-                          ]
-                            .filter((row): row is { label: string; value: ReactNode; title?: string } => row !== null)
-                            .map((row) => (
+                            ...(selectedCrashSummary
+                              ? [
+                                  {
+                                    label: "Crash detail",
+                                    title: selectedCrashDetails ?? undefined,
+                                    value: selectedCrashSummary,
+                                  },
+                                ]
+                              : []),
+                            ...(selectedGenerationAssertionSummary
+                              ? [
+                                  {
+                                    label: "Generation assertions",
+                                    value: selectedGenerationAssertionSummary,
+                                  },
+                                ]
+                              : []),
+                          ].map((row: TimelineRow) => (
                             <div className="timeline-row" key={row.label}>
                               <span>{row.label}</span>
                               <strong title={row.title}>{row.value}</strong>
