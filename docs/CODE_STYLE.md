@@ -6,6 +6,7 @@ This guide is optimized for agent compliance first and human review second. Pref
 
 - Structure non-trivial functions in a readable order: validate inputs, run the main logic, then build the return value.
 - Prefer early returns over nested conditionals when a failed condition means the function should stop.
+- Add a short intent comment immediately above every `if`, `elif`, and `else` branch explaining what that branch does.
 - Introduce named intermediate variables for non-trivial expressions, boolean conditions, and transformed values before combining them.
 - Split signatures, calls, and returned dicts across multiple lines once the one-line form becomes visually dense.
 - Extract a helper when one block mixes iteration, filtering, transformation, and ordering.
@@ -20,6 +21,8 @@ This guide is optimized for agent compliance first and human review second. Pref
 ## Comments
 
 - Comments are required for contiguous logical blocks in non-trivial functions.
+- Leave one empty line above every standalone line comment.
+- Add a short intent comment immediately above every `if`, `elif`, and `else` branch.
 - Comments should explain intent or purpose, not restate the line below them.
 - Keep comments short and use domain language where possible.
 - Trivial one- or two-line helpers are the only exception.
@@ -28,6 +31,7 @@ This guide is optimized for agent compliance first and human review second. Pref
 
 - Do not force multiline formatting for tiny helpers that are already easy to read.
 - Do not use filler comments such as "Set variable" or "Return result".
+- Do not satisfy the branch-comment rule with empty boilerplate such as "Check condition" or "Else case".
 - Do not extract helpers unless the original block is carrying multiple responsibilities.
 
 ## Canonical Examples
@@ -41,9 +45,14 @@ def compute_classification_metrics(
     predictions: list[int],
     labels: list[int],
 ) -> dict[str, int | float]:
+
     # Validate the scoring inputs before computing aggregates.
+
+    # Reject empty evaluation sets.
     if not labels:
         raise ValueError("Cannot score an empty validation split.")
+
+    # Reject mismatched prediction and label lengths.
     if len(predictions) != len(labels):
         raise ValueError("Predictions and labels must have the same length.")
 
@@ -63,6 +72,7 @@ def compute_classification_metrics(
 
 ```python
 def should_retry_dispatch(trial: TrialRecord, now: datetime) -> bool:
+
     # Name each policy requirement before composing the final decision.
     is_dispatching = trial.status == "dispatching"
     has_deadline = trial.dispatch_deadline_at is not None
@@ -74,6 +84,44 @@ def should_retry_dispatch(trial: TrialRecord, now: datetime) -> bool:
 ```
 
 ## Additional Examples
+
+### Comment every branch and separate comments with blank lines
+
+Bad:
+
+```python
+def classify_score(score: float) -> str:
+    if score >= 0.9:
+        return "excellent"
+    elif score >= 0.75:
+        return "good"
+    else:
+        return "retry"
+```
+
+Good:
+
+```python
+def classify_score(score: float) -> str:
+
+    # Return the top bucket for clearly strong scores.
+    if score >= 0.9:
+        return "excellent"
+
+    # Return the middle bucket for acceptable scores.
+    elif score >= 0.75:
+        return "good"
+
+    # Fall back to the retry bucket for everything else.
+    else:
+        return "retry"
+```
+
+Why this version is preferred:
+
+- Each branch documents intent before the reader parses branch mechanics.
+- The blank line above each comment keeps comments visually distinct from code.
+- Reviewers can scan branch structure without reverse-engineering why each branch exists.
 
 ### Prefer early returns over nested control flow
 
@@ -93,10 +141,14 @@ Good:
 
 ```python
 def select_best_accuracy(metrics_json: dict[str, object] | None) -> float:
+
+    # Return the default when metrics are missing entirely.
     if metrics_json is None:
         return 0.0
 
     best_accuracy = metrics_json.get("best_accuracy")
+
+    # Return the default when the metrics payload has no best score.
     if best_accuracy is None:
         return 0.0
 
@@ -122,9 +174,12 @@ Good:
 
 ```python
 def build_trial_summary(trial: TrialRecord) -> str:
+
+    # Derive the summary fields before assembling the final string.
     eval_count = int(trial.metrics_json.get("eval_count", 0)) if trial.metrics_json else 0
     outcome_reason = trial.outcome_reason or "n/a"
 
+    # Return the summary in a reviewable, field-by-field layout.
     return (
         f"{trial.trial_id} "
         f"score={trial.score:.4f} "
@@ -163,9 +218,13 @@ Good:
 
 ```python
 def load_track_candidates(rows: list[dict[str, object]]) -> list[dict[str, object]]:
+
+    # Collect only rows that produce a valid finished candidate.
     candidates: list[dict[str, object]] = []
     for row in rows:
         candidate = build_finished_candidate(row)
+
+        # Keep only rows that passed candidate validation.
         if candidate is not None:
             candidates.append(candidate)
 
@@ -173,14 +232,20 @@ def load_track_candidates(rows: list[dict[str, object]]) -> list[dict[str, objec
 
 
 def build_finished_candidate(row: dict[str, object]) -> dict[str, object] | None:
+
+    # Ignore rows that are not finished yet.
     if row["status"] != "finished":
         return None
 
     metrics_json = row.get("metrics_json")
+
+    # Ignore rows whose metrics payload is missing or malformed.
     if not isinstance(metrics_json, dict):
         return None
 
     accuracy = metrics_json.get("accuracy")
+
+    # Ignore finished rows that still lack an accuracy value.
     if accuracy is None:
         return None
 
@@ -216,11 +281,14 @@ Good:
 
 ```python
 def should_retry_dispatch(trial: TrialRecord, now: datetime) -> bool:
+
+    # Name each policy requirement before composing the final decision.
     is_dispatching = trial.status == "dispatching"
     has_deadline = trial.dispatch_deadline_at is not None
     deadline_expired = has_deadline and trial.dispatch_deadline_at < now
     has_retry_budget = trial.dispatch_attempts < 3
 
+    # Express the retry policy as one readable predicate.
     return is_dispatching and deadline_expired and has_retry_budget
 ```
 

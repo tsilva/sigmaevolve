@@ -342,7 +342,7 @@ def test_cli_launch_maintain_running_stops_after_max_cycles(tmp_path, patched_cl
     code, stdout, _ = _run_cli(
         [
             "--launcher",
-            "recording",
+            "inline",
             "launch",
             track_id,
             "1",
@@ -370,7 +370,7 @@ def test_cli_daemon_reports_controller_mode_in_stderr(tmp_path, patched_cli_syst
     code, stdout, stderr = _run_cli(
         [
             "--launcher",
-            "recording",
+            "inline",
             "launch",
             track_id,
             "1",
@@ -443,6 +443,12 @@ def test_cli_rejects_removed_runtime_config_flags():
 
     with pytest.raises(SystemExit):
         parser.parse_args(["--modal-app-name", "custom-app", "modal-deploy"])
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--launcher", "recording", "list-trials", "track_1"])
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["sample-context", "track_1"])
 
 
 def test_cli_help_documents_env_runtime_config(capsys):

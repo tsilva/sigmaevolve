@@ -29,6 +29,13 @@ def test_track_policy_rejects_invalid_modal_gpu_preferences():
         TrackPolicy.from_dict({"modal_gpu_preferences": []})
 
 
+def test_track_policy_defaults_sampling_settings_to_seed_only():
+    policy = TrackPolicy.from_dict({})
+
+    assert policy.sampling_settings == {"seed": 0}
+    assert policy.to_dict()["sampling_settings"] == {"seed": 0}
+
+
 # ---- test_hashing.py ----
 
 from sigmaevolve.core import compute_script_hash, normalize_source

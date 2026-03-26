@@ -469,10 +469,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from sigmaevolve.core import load_env_file
 from sigmaevolve.core import OUTCOME_CRASHED, OUTCOME_EVAL_FAILED, OUTCOME_SUCCEEDED, OUTCOME_TIMEOUT
 from sigmaevolve.core import DEFAULT_TRIAL_HARD_TIMEOUT_SEC
 from sigmaevolve.core import compute_score
+from sigmaevolve.env import load_env_file
 
 logger = logging.getLogger(__name__)
 ACTIVE_METRICS_INTERVAL_SEC = 1.0

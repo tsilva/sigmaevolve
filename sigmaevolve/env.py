@@ -2,16 +2,10 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-
-from sigmaevolve.core import load_env_file
-from sigmaevolve.modal import (
-    DEFAULT_MODAL_APP_NAME,
-    DEFAULT_MODAL_DATASET_MOUNT,
-    DEFAULT_MODAL_DATASET_VOLUME,
-    DEFAULT_MODAL_FUNCTION_NAME,
-)
+from pathlib import Path
 
 
+DEFAULT_ENV_PATH = Path.home() / ".config" / "sigmaevolve" / ".env"
 DEFAULT_DATASET_ROOT = "./artifacts/datasets"
 
 
@@ -27,7 +21,45 @@ class RuntimeConfig:
     modal_environment_name: str | None
 
 
+def load_env_file(path: str | Path | None = None, *, override: bool = False) -> None:
+    # Resolve the default user-scoped env file and exit quietly when it is absent.
+    env_path = Path(path) if path is not None else DEFAULT_ENV_PATH
+    if not env_path.exists():
+        return
+
+    # Parse simple shell-style KEY=VALUE lines while ignoring blanks and comments.
+    for raw_line in env_path.read_text().splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export ") :].strip()
+        if "=" not in line:
+            continue
+
+        # Normalize the key/value tokens before applying optional quote stripping.
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if not key:
+            continue
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+            value = value[1:-1]
+
+        # Respect the caller's override policy when mutating the process environment.
+        if override or key not in os.environ:
+            os.environ[key] = value
+
+
 def resolve_runtime_config() -> RuntimeConfig:
+    # Resolve Modal defaults lazily so env loading does not participate in import cycles.
+    from sigmaevolve.modal import (
+        DEFAULT_MODAL_APP_NAME,
+        DEFAULT_MODAL_DATASET_MOUNT,
+        DEFAULT_MODAL_DATASET_VOLUME,
+        DEFAULT_MODAL_FUNCTION_NAME,
+    )
+
     # Resolve each runtime setting from SigmaEvolve-scoped env vars first.
     database_url = _resolve_optional_env("SIGMAEVOLVE_DATABASE_URL", "DATABASE_URL")
     dataset_root = _resolve_required_default(DEFAULT_DATASET_ROOT, "SIGMAEVOLVE_DATASET_ROOT")

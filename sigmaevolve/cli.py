@@ -18,7 +18,7 @@ from sigmaevolve.modal import (
     deploy_modal_app,
     sync_dataset_to_modal,
 )
-from sigmaevolve.orchestration import InlineRunnerLauncher, RecordingLauncher, build_system
+from sigmaevolve.orchestration import InlineRunnerLauncher, build_system
 
 
 logger = logging.getLogger(f"{__name__}.stderr")
@@ -143,11 +143,6 @@ def _configure_list_trials_parser(parser: argparse.ArgumentParser) -> None:
     )
 
 
-def _configure_sample_context_parser(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("track_id")
-    parser.add_argument("--limit", type=int, default=5)
-
-
 def _configure_rescore_parser(parser: argparse.ArgumentParser) -> None:
     target = parser.add_mutually_exclusive_group(required=True)
     target.add_argument("--track-id")
@@ -189,12 +184,6 @@ COMMAND_SPECS = (
         configure=_configure_list_trials_parser,
     ),
     CommandSpec(
-        name="sample-context",
-        help="Show successful finished trials used for generation context.",
-        handler_name="sample_context",
-        configure=_configure_sample_context_parser,
-    ),
-    CommandSpec(
         name="rescore",
         help="Rescore finished trials without rerunning training.",
         handler_name="rescore",
@@ -230,9 +219,9 @@ def build_cli_parser(*, handlers: dict[str, Callable[..., int]]) -> argparse.Arg
     )
     parser.add_argument(
         "--launcher",
-        choices=["recording", "inline", "modal"],
+        choices=["inline", "modal"],
         default="modal",
-        help="Use modal to spawn remote runner jobs by default, inline to execute locally, or recording to reserve only.",
+        help="Use modal to spawn remote runner jobs by default or inline to execute locally.",
     )
 
     # Register subcommands from one command-spec registry.
@@ -529,7 +518,7 @@ def _resolve_launcher(system, args) -> Any:
             wandb_env=collect_wandb_env(),
         )
 
-    return RecordingLauncher()
+    return system.launcher
 
 
 def _make_system(args) -> Any:
@@ -723,26 +712,6 @@ def cmd_list_trials(args) -> int:
     return 0
 
 
-def cmd_sample_context(args) -> int:
-    system = _make_system(args)
-    context = system.sample_trial_context(args.track_id, limit=args.limit)
-    _print_json(
-        [
-            {
-                "trial_id": trial.trial_id,
-                "score": trial.score,
-                "outcome_reason": trial.outcome_reason,
-                **_trial_diagnostics(trial.metrics_json),
-                "metrics_json": trial.metrics_json,
-                "provenance_json": trial.provenance_json,
-                "source": trial.source,
-            }
-            for trial in context
-        ]
-    )
-    return 0
-
-
 def cmd_rescore(args) -> int:
     system = _make_system(args)
     scorer_config = json_arg(args.scorer_json)
@@ -787,7 +756,6 @@ def build_parser() -> argparse.ArgumentParser:
             "create_track": cmd_create_track,
             "launch": cmd_launch,
             "list_trials": cmd_list_trials,
-            "sample_context": cmd_sample_context,
             "rescore": cmd_rescore,
             "modal_deploy": cmd_modal_deploy,
             "modal_sync_dataset": cmd_modal_sync_dataset,
