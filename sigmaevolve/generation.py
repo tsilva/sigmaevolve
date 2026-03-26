@@ -1,13 +1,16 @@
 from __future__ import annotations
+
 from pathlib import Path
 
 from sigmaevolve.core import normalize_source
 
 _BASELINE_TEMPLATE_PATH = Path(__file__).with_name("baseline_template.py")
 
+
 def build_baseline_train_script() -> str:
     template_source = _BASELINE_TEMPLATE_PATH.read_text(encoding="utf-8")
     return normalize_source(template_source)
+
 
 def build_baseline_linear_classifier() -> str:
     return build_baseline_train_script()
@@ -63,7 +66,11 @@ def _dedent_lines(lines: list[str]) -> tuple[list[str], str]:
     indent = _common_indent(lines)
     if not indent:
         return list(lines), ""
-    dedented = [line[len(indent) :] if line.startswith(indent) and line.strip() else line for line in lines]
+
+    dedented = [
+        line[len(indent) :] if line.startswith(indent) and line.strip() else line
+        for line in lines
+    ]
     return dedented, indent
 
 
@@ -81,6 +88,7 @@ def _reindent_lines(lines: list[str], indent: str) -> list[str]:
 def _find_matching_line_ranges(source_lines: list[str], search_lines: list[str]) -> list[tuple[int, int, str]]:
     if not search_lines:
         return []
+
     canonical_search_lines, _ = _dedent_lines(search_lines)
     search_length = len(search_lines)
     matches: list[tuple[int, int, str]] = []
@@ -121,6 +129,7 @@ def replace_evolve_block_payloads(template_source: str, block_payloads: list[str
         raise EvolveBlockError(
             f"expected {len(current_payloads)} evolve block payloads, received {len(block_payloads)}"
         )
+
     merged: list[str] = []
     for immutable_part, block_payload in zip(immutable_parts, block_payloads):
         merged.append(immutable_part)
@@ -139,13 +148,17 @@ def parse_search_replace_blocks(response_text: str) -> list[SearchReplaceBlock]:
     cursor = 0
 
     while cursor < len(lines):
+        # Skip layout-only separators between blocks.
         if lines[cursor].strip() == "":
             cursor += 1
             continue
+
+        # Require the explicit SEARCH header before collecting patch text.
         if lines[cursor] != "<<<<<<< SEARCH\n":
             raise EvolveBlockError("generated response must contain SEARCH/REPLACE blocks or NO_CHANGES")
         cursor += 1
 
+        # Collect the SEARCH payload up to the middle separator.
         search_lines: list[str] = []
         while cursor < len(lines) and lines[cursor] != "=======\n":
             search_lines.append(lines[cursor])
@@ -154,6 +167,7 @@ def parse_search_replace_blocks(response_text: str) -> list[SearchReplaceBlock]:
             raise EvolveBlockError("SEARCH/REPLACE block is missing ======= separator")
         cursor += 1
 
+        # Collect the REPLACE payload until the block terminator.
         replace_lines: list[str] = []
         while cursor < len(lines) and lines[cursor] != ">>>>>>> REPLACE\n":
             replace_lines.append(lines[cursor])
@@ -185,6 +199,7 @@ def apply_search_replace_blocks(current_source: str, blocks: list[SearchReplaceB
             raise EvolveBlockError(f"SEARCH block {index} did not match the current program")
         if len(matches) > 1:
             raise EvolveBlockError(f"SEARCH block {index} matched multiple locations in the current program")
+
         start, end, indent = matches[0]
         updated_lines[start:end] = _reindent_lines(replace_lines, indent)
     return normalize_source("".join(updated_lines))
@@ -193,9 +208,12 @@ def apply_search_replace_blocks(current_source: str, blocks: list[SearchReplaceB
 def materialize_candidate_source(current_source: str, generated_source: str) -> str:
     normalized_generated = normalize_source(generated_source)
     stripped_generated = normalized_generated.strip()
-    if stripped_generated == "NO_CHANGES" or stripped_generated.startswith("<<<<<<< SEARCH"):
+    is_search_replace_patch = stripped_generated.startswith("<<<<<<< SEARCH")
+    if stripped_generated == "NO_CHANGES" or is_search_replace_patch:
         return apply_search_replace_blocks(current_source, parse_search_replace_blocks(normalized_generated))
-    if EVOLVE_BLOCK_START in normalized_generated and EVOLVE_BLOCK_END in normalized_generated:
+
+    has_evolve_block_tags = EVOLVE_BLOCK_START in normalized_generated and EVOLVE_BLOCK_END in normalized_generated
+    if has_evolve_block_tags:
         return normalized_generated
     raise EvolveBlockError("generated response must be SEARCH/REPLACE blocks, NO_CHANGES, or a full program")
 
@@ -255,7 +273,12 @@ class FixedGenerationBackend:
     ) -> GenerationResult:
         # Emit a deterministic provenance payload for fixed test generations.
         system_prompt = "Test-only fixed generator stub for a recorded LLM prompt."
-        user_prompt = "Use this parent trial as the base candidate:\n```python\n# fixed backend stub\n```"
+        user_prompt = (
+            "Use this parent trial as the base candidate:\n"
+            "```python\n"
+            "# fixed backend stub\n"
+            "```"
+        )
         return GenerationResult(
             source=self.source,
             provenance_json={
@@ -335,13 +358,16 @@ class OpenRouterGenerationBackend:
         # Resolve model-pool selection strategies before building the request payload.
         model_pool = generation_policy.get("model_pool")
         if isinstance(model_pool, list) and model_pool:
-            selection = generation_policy.get("selection", "round_robin")
-            index = int(generation_policy.get("_generation_index", 0))
+            selection_strategy = generation_policy.get("selection", "round_robin")
+            generation_index = int(generation_policy.get("_generation_index", 0))
             seed = int(generation_policy.get("seed", 0))
-            if selection == "random":
-                rng = random.Random(seed + index)
+
+            # Handle stochastic pool selection before falling back to round robin.
+            if selection_strategy == "random":
+                rng = random.Random(seed + generation_index)
                 return dict(rng.choice(model_pool))
-            if selection == "weighted_random":
+
+            if selection_strategy == "weighted_random":
                 weights: list[float] = []
                 normalized_pool: list[dict[str, object]] = []
                 for entry in model_pool:
@@ -352,19 +378,23 @@ class OpenRouterGenerationBackend:
                         raise ValueError("generation_backend model_pool probabilities must be non-negative.")
                     normalized_pool.append(item)
                     weights.append(weight)
+
                 total_weight = sum(weights)
                 if total_weight <= 0:
                     raise ValueError(
                         "generation_backend weighted_random selection requires "
                         "a positive total probability."
                     )
-                rng = random.Random(seed + index)
+
+                rng = random.Random(seed + generation_index)
                 selected = dict(rng.choices(normalized_pool, weights=weights, k=1)[0])
                 selected["selection_probability"] = (
                     float(selected.get("probability", 1.0)) / total_weight
                 )
                 return selected
-            return dict(model_pool[index % len(model_pool)])
+
+            model_pool_index = generation_index % len(model_pool)
+            return dict(model_pool[model_pool_index])
 
         # Fall back to the single-model configuration shape.
         return {
@@ -393,14 +423,17 @@ class OpenRouterGenerationBackend:
                 lines.append(f"{prefix}- {label}:")
                 lines.extend(self._format_mapping(value, indent + 2))
                 continue
+
             if isinstance(value, list):
                 if not value:
                     lines.append(f"{prefix}- {label}: none")
                     continue
+
                 if all(not isinstance(item, (dict, list)) for item in value):
                     rendered = ", ".join(self._format_scalar(item) for item in value)
                     lines.append(f"{prefix}- {label}: {rendered}")
                     continue
+
                 lines.append(f"{prefix}- {label}:")
                 for item in value:
                     if isinstance(item, dict):
@@ -514,16 +547,18 @@ class OpenRouterGenerationBackend:
 
         # Render prior programs in diff-focused form when the prompt has history.
         if prior_programs:
-            prior_programs_text = "\n".join(
-                "\n".join(
-                    self._render_trial_prompt_block(
-                        trial,
-                        strip_evolve_block_tags=True,
-                        collapse_matching_against=current_program_stripped_source,
+            prior_program_blocks = []
+            for trial in prior_programs:
+                prior_program_blocks.append(
+                    "\n".join(
+                        self._render_trial_prompt_block(
+                            trial,
+                            strip_evolve_block_tags=True,
+                            collapse_matching_against=current_program_stripped_source,
+                        )
                     )
                 )
-                for trial in prior_programs
-            )
+            prior_programs_text = "\n".join(prior_program_blocks)
         else:
             prior_programs_text = "None."
 
@@ -1303,6 +1338,7 @@ def build_model_block(
 ) -> str:
     parts: list[str] = []
     imports = imports.strip()
+    # Keep imports and class/function scaffolding readable in the generated block.
     if imports:
         parts.append(imports)
         parts.append("")
@@ -1325,6 +1361,7 @@ def _build_function_block(
 ) -> str:
     parts: list[str] = []
     imports = imports.strip()
+    # Keep imports and function scaffolding readable in the generated block.
     if imports:
         parts.append(imports)
         parts.append("")

@@ -507,13 +507,19 @@ def _apply_runtime_config(args: argparse.Namespace) -> argparse.Namespace:
 
 
 def _resolve_launcher(system, args) -> Any:
-    if args.launcher == "inline":
+    # Keep launcher selection explicit so each runtime path is easy to audit.
+    uses_inline_launcher = args.launcher == "inline"
+    if uses_inline_launcher:
         runner = RunnerService(system.repository, system.dataset_manager)
         return InlineRunnerLauncher(runner)
 
-    if args.launcher == "modal":
-        if args.command == "launch" and args.database_url.startswith("sqlite"):
-            raise RuntimeError("Modal launcher requires a network-accessible database URL; sqlite is not supported.")
+    uses_modal_launcher = args.launcher == "modal"
+    if uses_modal_launcher:
+        requires_remote_database = args.command == "launch" and args.database_url.startswith("sqlite")
+        if requires_remote_database:
+            raise RuntimeError(
+                "Modal launcher requires a network-accessible database URL; sqlite is not supported."
+            )
         return create_modal_launcher(
             app_name=args.modal_app_name,
             function_name=args.modal_function_name,
@@ -550,7 +556,10 @@ def _print_json(payload: Any) -> None:
 
 def _ensure_dataset_prepared(system, dataset_id: str) -> tuple[Any, bool]:
     dataset = system.repository.get_dataset(dataset_id)
-    manifest_missing = dataset is None or dataset.manifest_path is None or not Path(dataset.manifest_path).exists()
+    has_dataset_record = dataset is not None
+    has_manifest_path = has_dataset_record and dataset.manifest_path is not None
+    manifest_exists = has_manifest_path and Path(dataset.manifest_path).exists()
+    manifest_missing = not has_dataset_record or not has_manifest_path or not manifest_exists
     if manifest_missing:
         return system.prepare_dataset(dataset_id), True
     return dataset, False

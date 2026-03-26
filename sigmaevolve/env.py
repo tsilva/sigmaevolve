@@ -29,24 +29,37 @@ class RuntimeConfig:
 
 def resolve_runtime_config() -> RuntimeConfig:
     # Resolve each runtime setting from SigmaEvolve-scoped env vars first.
+    database_url = _resolve_optional_env("SIGMAEVOLVE_DATABASE_URL", "DATABASE_URL")
+    dataset_root = _resolve_required_default(DEFAULT_DATASET_ROOT, "SIGMAEVOLVE_DATASET_ROOT")
+    openrouter_api_key = _resolve_optional_env(
+        "SIGMAEVOLVE_OPENROUTER_API_KEY",
+        "OPENROUTER_API_KEY",
+    )
+    modal_app_name = _resolve_required_default(DEFAULT_MODAL_APP_NAME, "SIGMAEVOLVE_MODAL_APP_NAME")
+    modal_function_name = _resolve_required_default(
+        DEFAULT_MODAL_FUNCTION_NAME,
+        "SIGMAEVOLVE_MODAL_FUNCTION_NAME",
+    )
+    modal_dataset_volume = _resolve_required_default(
+        DEFAULT_MODAL_DATASET_VOLUME,
+        "SIGMAEVOLVE_MODAL_DATASET_VOLUME",
+    )
+    modal_dataset_mount = _resolve_required_default(
+        DEFAULT_MODAL_DATASET_MOUNT,
+        "SIGMAEVOLVE_MODAL_DATASET_MOUNT",
+    )
+    modal_environment_name = _resolve_optional_env("SIGMAEVOLVE_MODAL_ENVIRONMENT_NAME")
+
+    # Assemble the final runtime config once each field has been resolved.
     return RuntimeConfig(
-        database_url=_resolve_optional_env("SIGMAEVOLVE_DATABASE_URL", "DATABASE_URL"),
-        dataset_root=_resolve_required_default(DEFAULT_DATASET_ROOT, "SIGMAEVOLVE_DATASET_ROOT"),
-        openrouter_api_key=_resolve_optional_env("SIGMAEVOLVE_OPENROUTER_API_KEY", "OPENROUTER_API_KEY"),
-        modal_app_name=_resolve_required_default(DEFAULT_MODAL_APP_NAME, "SIGMAEVOLVE_MODAL_APP_NAME"),
-        modal_function_name=_resolve_required_default(
-            DEFAULT_MODAL_FUNCTION_NAME,
-            "SIGMAEVOLVE_MODAL_FUNCTION_NAME",
-        ),
-        modal_dataset_volume=_resolve_required_default(
-            DEFAULT_MODAL_DATASET_VOLUME,
-            "SIGMAEVOLVE_MODAL_DATASET_VOLUME",
-        ),
-        modal_dataset_mount=_resolve_required_default(
-            DEFAULT_MODAL_DATASET_MOUNT,
-            "SIGMAEVOLVE_MODAL_DATASET_MOUNT",
-        ),
-        modal_environment_name=_resolve_optional_env("SIGMAEVOLVE_MODAL_ENVIRONMENT_NAME"),
+        database_url=database_url,
+        dataset_root=dataset_root,
+        openrouter_api_key=openrouter_api_key,
+        modal_app_name=modal_app_name,
+        modal_function_name=modal_function_name,
+        modal_dataset_volume=modal_dataset_volume,
+        modal_dataset_mount=modal_dataset_mount,
+        modal_environment_name=modal_environment_name,
     )
 
 
@@ -54,7 +67,8 @@ def _resolve_optional_env(*names: str) -> str | None:
     # Treat unset and blank env vars as absent so defaults remain predictable.
     for name in names:
         value = os.getenv(name)
-        if isinstance(value, str) and value.strip():
+        has_value = isinstance(value, str) and value.strip()
+        if has_value:
             return value
 
     return None
@@ -62,7 +76,8 @@ def _resolve_optional_env(*names: str) -> str | None:
 
 def _resolve_required_default(default: str, *names: str) -> str:
     value = _resolve_optional_env(*names)
-    if value is not None:
+    has_override = value is not None
+    if has_override:
         return value
 
     return default

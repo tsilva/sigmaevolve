@@ -12,8 +12,9 @@ metadata = sa.MetaData()
 def normalize_database_url(database_url: str) -> str:
     # Accept historical postgres:// URLs by rewriting them to SQLAlchemy's canonical form.
     normalized_url = database_url
-    if normalized_url.startswith("postgres://"):
-        normalized_url = "postgresql://" + normalized_url[len("postgres://") :]
+    postgres_prefix = "postgres://"
+    if normalized_url.startswith(postgres_prefix):
+        normalized_url = "postgresql://" + normalized_url[len(postgres_prefix) :]
 
     # Default PostgreSQL connections to the psycopg driver when no driver is specified.
     if normalized_url.startswith("postgresql://") and "+psycopg" not in normalized_url:
@@ -293,6 +294,16 @@ def _row_to_dataset(row: sa.Row[Any]) -> DatasetRecord:
     )
 
 
+def _copy_json_dict(value: dict[str, Any] | None) -> dict[str, Any]:
+    return dict(value or {})
+
+
+def _copy_optional_json_dict(value: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not value:
+        return None
+    return dict(value)
+
+
 def _row_to_track(row: sa.Row[Any]) -> TrackRecord:
     return TrackRecord(
         track_id=row.track_id,
@@ -309,7 +320,7 @@ def _row_to_trial(row: sa.Row[Any]) -> TrialRecord:
         track_id=row.track_id,
         source=row.source,
         script_hash=row.script_hash,
-        provenance_json=dict(row.provenance_json or {}),
+        provenance_json=_copy_json_dict(row.provenance_json),
         status=row.status,
         outcome_reason=row.outcome_reason,
         dispatch_token=row.dispatch_token,
@@ -318,9 +329,9 @@ def _row_to_trial(row: sa.Row[Any]) -> TrialRecord:
         heartbeat_at=row.heartbeat_at,
         started_at=row.started_at,
         finished_at=row.finished_at,
-        metrics_json=dict(row.metrics_json) if row.metrics_json else None,
+        metrics_json=_copy_optional_json_dict(row.metrics_json),
         score=float(row.score or 0.0),
-        error_json=dict(row.error_json) if row.error_json else None,
+        error_json=_copy_optional_json_dict(row.error_json),
         dispatch_attempts=int(row.dispatch_attempts),
         created_at=row.created_at,
     )
@@ -341,11 +352,11 @@ def _row_to_trial_summary(row: sa.Row[Any]) -> TrialSummary:
     return TrialSummary(
         trial_id=row.trial_id,
         score=float(row.score or 0.0),
-        metrics_json=dict(row.metrics_json) if row.metrics_json else None,
+        metrics_json=_copy_optional_json_dict(row.metrics_json),
         source=row.source,
-        provenance_json=dict(row.provenance_json or {}),
+        provenance_json=_copy_json_dict(row.provenance_json),
         outcome_reason=row.outcome_reason,
-        error_json=dict(row.error_json) if row.error_json else None,
+        error_json=_copy_optional_json_dict(row.error_json),
     )
 
 
@@ -692,7 +703,11 @@ class SQLAlchemyRepository:
 
     def list_trials(self, track_id: str, statuses: set[str] | None = None) -> list[TrialRecord]:
         # Apply the optional status filter before loading trials in creation order.
-        stmt = sa.select(trials_table).where(trials_table.c.track_id == track_id).order_by(trials_table.c.created_at)
+        stmt = (
+            sa.select(trials_table)
+            .where(trials_table.c.track_id == track_id)
+            .order_by(trials_table.c.created_at)
+        )
         if statuses:
             stmt = stmt.where(trials_table.c.status.in_(sorted(statuses)))
         with self.engine.connect() as conn:
@@ -717,11 +732,12 @@ class SQLAlchemyRepository:
             rows = conn.execute(stmt).fetchall()
 
         # Apply candidate-kind filtering in Python after the rows are materialized.
-        summaries = [
-            _row_to_trial_summary(row)
-            for row in rows
-            if candidate_kind is None or dict(row.provenance_json or {}).get("candidate_kind") == candidate_kind
-        ]
+        summaries: list[TrialSummary] = []
+        for row in rows:
+            row_candidate_kind = _copy_json_dict(row.provenance_json).get("candidate_kind")
+            if candidate_kind is not None and row_candidate_kind != candidate_kind:
+                continue
+            summaries.append(_row_to_trial_summary(row))
         return sorted(summaries, key=_trial_summary_sort_key)[:limit]
 
     def list_recent_trial_summaries(
@@ -754,7 +770,11 @@ class SQLAlchemyRepository:
         return [_row_to_trial_summary(row) for row in rows]
 
     def count_trials(self, track_id: str, statuses: set[str] | None = None) -> int:
-        stmt = sa.select(sa.func.count()).select_from(trials_table).where(trials_table.c.track_id == track_id)
+        stmt = (
+            sa.select(sa.func.count())
+            .select_from(trials_table)
+            .where(trials_table.c.track_id == track_id)
+        )
         if statuses:
             stmt = stmt.where(trials_table.c.status.in_(sorted(statuses)))
         with self.engine.connect() as conn:
@@ -885,7 +905,7 @@ class SQLAlchemyRepository:
             ).fetchone()
             if row is None:
                 return
-            existing = dict(row.metrics_json) if row.metrics_json else None
+            existing = _copy_optional_json_dict(row.metrics_json)
             if existing == payload:
                 return
 
@@ -926,8 +946,9 @@ class SQLAlchemyRepository:
 
         with self.transaction() as conn:
             # Require the expected active runner state when finalizing from a worker.
+            requires_runner_state = runner_id is not None
             state_filters: list[Any] = []
-            if runner_id is not None:
+            if requires_runner_state:
                 state_filters.append(trials_table.c.runner_id == runner_id)
                 state_filters.append(trials_table.c.status == TRIAL_STATUS_ACTIVE)
 
@@ -970,7 +991,8 @@ class SQLAlchemyRepository:
                 )
             ).fetchall()
             for row in rows:
-                if int(row.dispatch_attempts) < max_dispatch_retries:
+                can_retry = int(row.dispatch_attempts) < max_dispatch_retries
+                if can_retry:
                     # Return retryable trials to the queued state.
                     conn.execute(
                         sa.update(trials_table)

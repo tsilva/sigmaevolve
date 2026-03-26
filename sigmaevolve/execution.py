@@ -19,11 +19,13 @@ _DISALLOWED_WANDB_MODES = {"disabled", "dryrun", "offline"}
 
 
 def collect_wandb_env() -> dict[str, str]:
-    return {
-        key: value
-        for key in WANDB_ENV_KEYS
-        if isinstance((value := os.environ.get(key)), str) and value.strip()
-    }
+    # Capture only the non-empty WandB variables that are already present.
+    collected: dict[str, str] = {}
+    for key in WANDB_ENV_KEYS:
+        value = os.environ.get(key)
+        if isinstance(value, str) and value.strip():
+            collected[key] = value
+    return collected
 
 
 def apply_wandb_env(overrides: dict[str, str] | None) -> None:
@@ -51,11 +53,14 @@ def _env_first(*keys: str, default: str | None = None) -> str | None:
 
 
 def _wandb_metric_aliases(metrics: dict[str, Any] | None) -> dict[str, Any]:
+    # Mirror canonical metrics under the field names expected by WandB dashboards.
     payload = dict(metrics or {})
     train_loss = payload.get("train_loss")
     train_acc = payload.get("train_acc")
     val_loss = payload.get("val_loss")
-    val_acc = payload.get("val_acc", payload.get("accuracy"))
+    val_acc = payload.get("val_acc")
+    if val_acc is None:
+        val_acc = payload.get("accuracy")
 
     if train_loss is not None:
         payload["train/loss"] = train_loss
@@ -85,11 +90,15 @@ def resolve_wandb_settings() -> WandbSettings:
     if api_key is None:
         raise RuntimeError("WANDB_API_KEY is required to log SigmaEvolve runs to Weights & Biases.")
 
+    project = _env_first("WANDB_PROJECT", default="sigmaevolve") or "sigmaevolve"
+    entity = _env_first("WANDB_ENTITY")
+    base_url = _env_first("WANDB_BASE_URL")
+
     return WandbSettings(
         api_key=api_key,
-        project=_env_first("WANDB_PROJECT", default="sigmaevolve") or "sigmaevolve",
-        entity=_env_first("WANDB_ENTITY"),
-        base_url=_env_first("WANDB_BASE_URL"),
+        project=project,
+        entity=entity,
+        base_url=base_url,
     )
 
 
@@ -116,41 +125,44 @@ class WandbRunLogger:
             os.environ["WANDB_BASE_URL"] = settings.base_url
         wandb.login(key=settings.api_key, relogin=True)
 
+        wandb_config = {
+            "sigmaevolve": {
+                "trial_id": trial.trial_id,
+                "track_id": track.track_id,
+                "track_name": track.name,
+                "dataset_id": track.dataset_id,
+                "runner_id": runner_id,
+                "script_hash": trial.script_hash,
+                "dispatch_attempts": trial.dispatch_attempts,
+                "policy": dict(track.policy_json),
+                "provenance": dict(trial.provenance_json),
+                "dataset_metadata": dict(manifest.metadata),
+            }
+        }
+        wandb_tags = [
+            "sigmaevolve",
+            f"track:{track.track_id}",
+            f"dataset:{track.dataset_id}",
+        ]
         run = wandb.init(
             project=settings.project,
             entity=settings.entity,
             job_type="trial",
             name=f"{track.track_id}:{trial.trial_id}",
-            config={
-                "sigmaevolve": {
-                    "trial_id": trial.trial_id,
-                    "track_id": track.track_id,
-                    "track_name": track.name,
-                    "dataset_id": track.dataset_id,
-                    "runner_id": runner_id,
-                    "script_hash": trial.script_hash,
-                    "dispatch_attempts": trial.dispatch_attempts,
-                    "policy": dict(track.policy_json),
-                    "provenance": dict(trial.provenance_json),
-                    "dataset_metadata": dict(manifest.metadata),
-                }
-            },
-            tags=[
-                "sigmaevolve",
-                f"track:{track.track_id}",
-                f"dataset:{track.dataset_id}",
-            ],
+            config=wandb_config,
+            tags=wandb_tags,
         )
         self.run = run
+        wandb_metadata = {
+            "project": settings.project,
+            "entity": getattr(run, "entity", None) or settings.entity,
+            "run_id": getattr(run, "id", None),
+            "run_name": getattr(run, "name", None),
+            "run_url": getattr(run, "url", None),
+        }
         self.repository.record_trial_wandb_metadata(
             trial.trial_id,
-            {
-                "project": settings.project,
-                "entity": getattr(run, "entity", None) or settings.entity,
-                "run_id": getattr(run, "id", None),
-                "run_name": getattr(run, "name", None),
-                "run_url": getattr(run, "url", None),
-            },
+            wandb_metadata,
         )
 
     def log_metrics(self, metrics: dict[str, Any], *, state: str) -> None:
@@ -167,6 +179,7 @@ class WandbRunLogger:
         score: float,
         error_info: dict[str, Any] | None,
     ) -> None:
+        # Build the terminal log entry in the same field order the dashboards expect.
         payload = {
             "trial_state": "terminal",
             "outcome_reason": outcome_reason,
@@ -243,6 +256,12 @@ def coerce_optional_scalar(value: Any, cast) -> Any | None:
         return None
 
 
+def _read_eval_metadata(payload: dict[str, Any], key: str, cast) -> Any | None:
+    if key not in payload:
+        return None
+    return coerce_optional_scalar(payload[key], cast)
+
+
 def load_eval_artifacts(
     *,
     eval_dir: Path,
@@ -278,21 +297,9 @@ def load_eval_artifacts(
 
             # Preserve the artifact metadata alongside the derived metrics.
             metrics.setdefault("val_acc", metrics.get("accuracy"))
-            eval_index = (
-                coerce_optional_scalar(payload["eval_index"], int)
-                if "eval_index" in payload
-                else None
-            )
-            elapsed_time_sec = (
-                coerce_optional_scalar(payload["elapsed_time_sec"], float)
-                if "elapsed_time_sec" in payload
-                else None
-            )
-            epoch = (
-                coerce_optional_scalar(payload["epoch"], int)
-                if "epoch" in payload
-                else None
-            )
+            eval_index = _read_eval_metadata(payload, "eval_index", int)
+            elapsed_time_sec = _read_eval_metadata(payload, "elapsed_time_sec", float)
+            epoch = _read_eval_metadata(payload, "epoch", int)
 
             artifacts.append(
                 {
@@ -307,25 +314,32 @@ def load_eval_artifacts(
     return artifacts
 
 
-def select_best_eval(artifacts: list[dict[str, Any]]) -> dict[str, Any]:
-    return min(
-        artifacts,
-        key=lambda artifact: (
-            -float(artifact["metrics"]["accuracy"]),
-            float(artifact.get("elapsed_time_sec") if artifact.get("elapsed_time_sec") is not None else float("inf")),
-            int(artifact.get("eval_index") if artifact.get("eval_index") is not None else np.iinfo(np.int64).max),
-        ),
+def _best_eval_sort_key(artifact: dict[str, Any]) -> tuple[float, float, int]:
+    accuracy = float(artifact["metrics"]["accuracy"])
+    elapsed_time_sec = artifact.get("elapsed_time_sec")
+    eval_index = artifact.get("eval_index")
+    return (
+        -accuracy,
+        float(elapsed_time_sec) if elapsed_time_sec is not None else float("inf"),
+        int(eval_index) if eval_index is not None else np.iinfo(np.int64).max,
     )
+
+
+def _last_completed_eval_sort_key(artifact: dict[str, Any]) -> tuple[float, int]:
+    elapsed_time_sec = artifact.get("elapsed_time_sec")
+    eval_index = artifact.get("eval_index")
+    return (
+        float(elapsed_time_sec) if elapsed_time_sec is not None else -1.0,
+        int(eval_index) if eval_index is not None else -1,
+    )
+
+
+def select_best_eval(artifacts: list[dict[str, Any]]) -> dict[str, Any]:
+    return min(artifacts, key=_best_eval_sort_key)
 
 
 def select_last_completed_eval(artifacts: list[dict[str, Any]]) -> dict[str, Any]:
-    return max(
-        artifacts,
-        key=lambda artifact: (
-            float(artifact.get("elapsed_time_sec") if artifact.get("elapsed_time_sec") is not None else -1.0),
-            int(artifact.get("eval_index") if artifact.get("eval_index") is not None else -1),
-        ),
-    )
+    return max(artifacts, key=_last_completed_eval_sort_key)
 
 
 def apply_debug_metrics(metrics: dict[str, Any], debug_payload: dict[str, Any] | None) -> None:
@@ -363,32 +377,30 @@ def build_final_metrics_payload(
         last_phase = progress_payload.get("phase") or progress_payload.get("current_phase")
 
     # Flag timeouts that ended with a measurable amount of unevaluated work.
-    had_unscored_work_at_timeout = bool(
-        timed_out
-        and time_since_last_eval_sec is not None
-        and time_since_last_eval_sec > 0.05
-        and (last_phase in {None, "train"})
-    )
+    is_timed_out = timed_out
+    has_last_eval_gap = time_since_last_eval_sec is not None and time_since_last_eval_sec > 0.05
+    is_training_phase = last_phase in {None, "train"}
+    had_unscored_work_at_timeout = bool(is_timed_out and has_last_eval_gap and is_training_phase)
 
     # Merge the best evaluation metrics with run-level diagnostic fields.
-    metrics = dict(best_artifact["metrics"])
-    metrics.update(
-        {
-            "best_accuracy": best_artifact["metrics"]["accuracy"],
-            "time_to_best_eval_sec": time_to_best_eval_sec,
-            "best_eval_index": best_artifact.get("eval_index"),
-            "best_eval_epoch": best_artifact.get("epoch"),
-            "best_eval_path": best_artifact["path"],
-            "last_completed_eval_sec": last_completed_eval_sec,
-            "last_completed_eval_index": last_artifact.get("eval_index"),
-            "timed_out": timed_out,
-            "time_since_last_eval_sec": time_since_last_eval_sec,
-            "had_unscored_work_at_timeout": had_unscored_work_at_timeout,
-            "last_phase": last_phase,
-            "eval_count": len(artifacts),
-            "process_elapsed_sec": float(process_elapsed_sec),
-        }
-    )
+    best_metrics = dict(best_artifact["metrics"])
+    metrics_payload = {
+        "best_accuracy": best_metrics["accuracy"],
+        "time_to_best_eval_sec": time_to_best_eval_sec,
+        "best_eval_index": best_artifact.get("eval_index"),
+        "best_eval_epoch": best_artifact.get("epoch"),
+        "best_eval_path": best_artifact["path"],
+        "last_completed_eval_sec": last_completed_eval_sec,
+        "last_completed_eval_index": last_artifact.get("eval_index"),
+        "timed_out": timed_out,
+        "time_since_last_eval_sec": time_since_last_eval_sec,
+        "had_unscored_work_at_timeout": had_unscored_work_at_timeout,
+        "last_phase": last_phase,
+        "eval_count": len(artifacts),
+        "process_elapsed_sec": float(process_elapsed_sec),
+    }
+    metrics = dict(best_metrics)
+    metrics.update(metrics_payload)
 
     apply_debug_metrics(metrics, debug_payload)
     return metrics
@@ -423,18 +435,15 @@ def build_active_metrics_payload(
         last_artifact = select_last_completed_eval(artifacts)
         last_completed_eval_sec = coerce_optional_scalar(last_artifact.get("elapsed_time_sec"), float)
         last_completed_eval_index = coerce_optional_scalar(last_artifact.get("eval_index"), int)
-        metrics.update(dict(best_artifact["metrics"]))
-        metrics.update(
-            {
-                "best_accuracy": best_artifact["metrics"]["accuracy"],
-                "time_to_best_eval_sec": coerce_optional_scalar(
-                    best_artifact.get("elapsed_time_sec"),
-                    float,
-                ),
-                "best_eval_index": coerce_optional_scalar(best_artifact.get("eval_index"), int),
-                "best_eval_epoch": coerce_optional_scalar(best_artifact.get("epoch"), int),
-            }
-        )
+        best_metrics = dict(best_artifact["metrics"])
+        metrics.update(best_metrics)
+        best_metrics_payload = {
+            "best_accuracy": best_metrics["accuracy"],
+            "time_to_best_eval_sec": coerce_optional_scalar(best_artifact.get("elapsed_time_sec"), float),
+            "best_eval_index": coerce_optional_scalar(best_artifact.get("eval_index"), int),
+            "best_eval_epoch": coerce_optional_scalar(best_artifact.get("epoch"), int),
+        }
+        metrics.update(best_metrics_payload)
 
     # Keep the last completed evaluation metadata in scalar form for the dashboard.
     if last_completed_eval_sec is not None:
@@ -830,23 +839,19 @@ class RunnerService:
                 debug_path = temp_path / "debug.json"
                 eval_dir.mkdir(parents=True, exist_ok=True)
                 train_script_path.write_text(trial.source)
-                config_path.write_text(
-                    json.dumps(
-                        {
-                            "train_split_path": manifest.train_split_path,
-                            "validation_split_path": manifest.validation_split_path,
-                            "validation_labels_path": manifest.validation_labels_path,
-                            "epochs": int(policy["epochs"]),
-                            "hard_timeout_sec": self.hard_timeout_sec,
-                            "random_seed": 1234,
-                            "progress_path": str(progress_path),
-                            "eval_dir": str(eval_dir),
-                            "debug_output_path": str(debug_path),
-                            "dataset_metadata": manifest.metadata,
-                        },
-                        sort_keys=True,
-                    )
-                )
+                run_config_payload = {
+                    "train_split_path": manifest.train_split_path,
+                    "validation_split_path": manifest.validation_split_path,
+                    "validation_labels_path": manifest.validation_labels_path,
+                    "epochs": int(policy["epochs"]),
+                    "hard_timeout_sec": self.hard_timeout_sec,
+                    "random_seed": 1234,
+                    "progress_path": str(progress_path),
+                    "eval_dir": str(eval_dir),
+                    "debug_output_path": str(debug_path),
+                    "dataset_metadata": manifest.metadata,
+                }
+                config_path.write_text(json.dumps(run_config_payload, sort_keys=True))
                 def finalize_outcome(
                     outcome_reason: str,
                     *,
@@ -1237,6 +1242,7 @@ def _build_context(
 ) -> StrategyContext:
     elapsed = time.monotonic() - start_time
     remaining = max(0.0, float(hard_timeout_sec) - float(elapsed))
+    epochs_remaining = max(0, int(num_epochs) - int(epoch_index))
     return StrategyContext(
         train_features=train_features,
         train_labels=train_labels,
@@ -1246,7 +1252,7 @@ def _build_context(
         device=device,
         epoch_index=epoch_index,
         num_epochs=int(num_epochs),
-        epochs_remaining=max(0, int(num_epochs) - int(epoch_index)),
+        epochs_remaining=epochs_remaining,
         budget_sec=float(hard_timeout_sec),
         remaining_budget_sec=remaining,
         max_eval_gap_sec=float(hard_timeout_sec),
@@ -1299,6 +1305,7 @@ def _run_harness(config: dict[str, Any]) -> int:
     debug_payload: dict[str, Any] = {"timed_out": False, "eval_count": 0}
 
     try:
+        # Load the candidate strategy and validate its required entry points first.
         initialize, train_window, predict_validation = load_strategy(strategy_path)
         init_ctx = _build_context(
             train_features=train_features,
@@ -1316,6 +1323,7 @@ def _run_harness(config: dict[str, Any]) -> int:
         if not isinstance(state, dict):
             raise StrategyContractError("initialize must return a dict state object.")
 
+        # Write the initial progress snapshot before the epoch loop begins.
         _write_progress(
             progress_path,
             phase="train",
@@ -1325,6 +1333,7 @@ def _run_harness(config: dict[str, Any]) -> int:
             epoch_index=0,
         )
 
+        # Alternate between train and eval work while keeping progress updates durable.
         for epoch_index in range(num_epochs):
             elapsed_before = time.monotonic() - start_time
             train_ctx = _build_context(
@@ -1397,6 +1406,7 @@ def _run_harness(config: dict[str, Any]) -> int:
                 epoch_index=epoch_index + 1,
             )
 
+        # Finish with a terminal snapshot and the final debug payload.
         _write_progress(
             progress_path,
             phase="finished",
@@ -1408,6 +1418,7 @@ def _run_harness(config: dict[str, Any]) -> int:
         write_json_atomic(debug_output_path, debug_payload)
         return 0
     except StrategyContractError as exc:
+        # Persist strategy contract failures in the debug payload for the parent process.
         debug_payload.update(
             {
                 "failure_outcome": "eval_failed",
