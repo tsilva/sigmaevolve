@@ -46,21 +46,23 @@ def load_track_definition(track_file: str) -> tuple[str, dict[str, Any]]:
     if "name" in parsed:
         raise argparse.ArgumentTypeError("Track file name is no longer supported.")
 
-    # Support either an explicit policy object or legacy top-level policy fields.
-    policy = parsed.get("policy")
+    # Reject the removed legacy policy wrapper before reading policy fields.
+    if "policy_json" in parsed:
+        raise argparse.ArgumentTypeError(
+            "Track file policy_json is no longer supported."
+        )
 
-    # Fall back to the legacy policy_json field when no nested policy exists.
-    if policy is None:
-        policy = parsed.get("policy_json")
+    # Support either an explicit policy object or current top-level policy fields.
+    policy = parsed.get("policy")
 
     # Validate object-shaped policy payloads before copying them.
     if policy is not None:
-        # Reject malformed explicit policy objects before normalizing them.
+        # Reject malformed explicit policy objects before copying them.
         if not isinstance(policy, dict):
             raise argparse.ArgumentTypeError("Track file policy must be a JSON object.")
         policy_json = dict(policy)
 
-    # Preserve legacy top-level fields when no explicit policy object is present.
+    # Preserve the current top-level track policy shape when no explicit policy object is present.
     else:
         excluded_fields = {"dataset_id"}
         policy_json = {
@@ -175,12 +177,6 @@ COMMAND_SPECS = (
         help="Upload a prepared dataset to the Modal dataset volume.",
         handler_name="modal_sync_dataset",
         configure=_configure_modal_sync_dataset_parser,
-    ),
-    CommandSpec(
-        name="migrate-schema",
-        help="Rewrite an existing database into the reduced schema.",
-        handler_name="migrate_schema",
-        configure=lambda parser: None,
     ),
 )
 
@@ -759,13 +755,6 @@ def cmd_modal_sync_dataset(args) -> int:
     return 0
 
 
-def cmd_migrate_schema(args) -> int:
-    system = _make_system(args)
-    payload = system.repository.migrate_reduced_schema()
-    _print_json(payload)
-    return 0
-
-
 def build_parser() -> argparse.ArgumentParser:
     return build_cli_parser(
         handlers={
@@ -774,7 +763,6 @@ def build_parser() -> argparse.ArgumentParser:
             "list_trials": cmd_list_trials,
             "modal_deploy": cmd_modal_deploy,
             "modal_sync_dataset": cmd_modal_sync_dataset,
-            "migrate_schema": cmd_migrate_schema,
         }
     )
 

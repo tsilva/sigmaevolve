@@ -179,6 +179,26 @@ def test_cli_create_track_from_track_file(tmp_path, patched_cli_system, monkeypa
     assert pool[1]["model"] == "anthropic/claude-sonnet-4.6"
 
 
+def test_cli_rejects_legacy_policy_json_field(
+    tmp_path, patched_cli_system, monkeypatch
+):
+    del patched_cli_system
+    db_url = f"sqlite:///{tmp_path / 'cli-policy-json.sqlite'}"
+    dataset_root = tmp_path / "datasets"
+    _set_runtime_env(monkeypatch, database_url=db_url, dataset_root=dataset_root)
+    track_file = _write_track_file(
+        tmp_path,
+        {
+            "dataset_id": "mnist:v1",
+            "policy_json": {"epochs": 5},
+        },
+    )
+
+    code, _, stderr = _run_cli(["create-track", track_file])
+    assert code == 1
+    assert "policy_json is no longer supported" in stderr
+
+
 def test_cli_create_track_reports_progress_to_stderr(
     tmp_path, patched_cli_system, monkeypatch
 ):
