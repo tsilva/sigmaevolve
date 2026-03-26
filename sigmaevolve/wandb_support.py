@@ -55,7 +55,7 @@ def _wandb_metric_aliases(metrics: dict[str, Any] | None) -> dict[str, Any]:
     payload = dict(metrics or {})
     train_loss = payload.get("train_loss")
     train_acc = payload.get("train_acc")
-    val_loss = payload.get("val_loss", payload.get("loss"))
+    val_loss = payload.get("val_loss")
     val_acc = payload.get("val_acc", payload.get("accuracy"))
 
     if train_loss is not None:

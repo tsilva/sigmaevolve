@@ -84,14 +84,14 @@ def _context_with_prior_programs():
         TrialSummary(
             trial_id="trial_current",
             score=0.992,
-            metrics_json={"accuracy": 0.992, "loss": 0.1},
+            metrics_json={"accuracy": 0.992, "val_loss": 0.1},
             source=_mutated_script("return torch.zeros((x.shape[0], 10), dtype=torch.float32) + 0.2"),
             provenance_json={"backend": "openrouter", "candidate_kind": "strategy_v1"},
         ),
         TrialSummary(
             trial_id="trial_prior",
             score=0.998,
-            metrics_json={"accuracy": 0.998, "loss": 0.023},
+            metrics_json={"accuracy": 0.998, "val_loss": 0.023},
             source=_mutated_script("return torch.zeros((x.shape[0], 10), dtype=torch.float32) + 0.3"),
             provenance_json={"backend": "openrouter", "candidate_kind": "strategy_v1"},
         ),

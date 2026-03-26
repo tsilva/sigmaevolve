@@ -469,7 +469,6 @@ def build_baseline_train_script() -> str:
                                 "train_acc": train_acc,
                                 "val_loss": val_loss,
                                 "val_acc": val_acc,
-                                "loss": val_loss,
                                 "accuracy": val_acc,
                             },
                         )

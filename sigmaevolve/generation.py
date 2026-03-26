@@ -249,7 +249,7 @@ class OpenRouterGenerationBackend:
             "trial.md",
             score=self._format_scalar(trial.score),
             val_acc=self._trial_prompt_metric(trial, "val_acc", "accuracy"),
-            val_loss=self._trial_prompt_metric(trial, "val_loss", "loss"),
+            val_loss=self._trial_prompt_metric(trial, "val_loss"),
             source=source.rstrip(),
         )
         return rendered.splitlines()

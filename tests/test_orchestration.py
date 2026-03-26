@@ -7,11 +7,9 @@ import pytest
 
 from sigmaevolve.baseline import build_baseline_linear_classifier
 from sigmaevolve.generation import FixedGenerationBackend, OpenRouterGenerationBackend
-from sigmaevolve.hashing import compute_script_hash, normalize_source
 from sigmaevolve.models import CANDIDATE_KIND_STRATEGY_V1, GenerationResult
 from sigmaevolve.orchestrator import InlineRunnerLauncher, RecordingLauncher
 from sigmaevolve.runner import RunnerService
-from sigmaevolve.storage import trials_table
 from sigmaevolve.system import EvolutionSystem
 from sigmaevolve.train_script_blocks import build_candidate_train_script, build_model_block
 from tests.support import make_llm_provenance
@@ -645,88 +643,6 @@ def forward(self, x):
     assert generator.negative_trials == []
 
 
-def test_reconcile_does_not_mutate_legacy_successes(repository, dataset_manager):
-    class CapturingGenerator:
-        def __init__(self):
-            self.called = False
-
-        def generate(
-            self,
-            track,
-            dataset_manifest,
-            context_trials,
-            negative_trials=None,
-            generation_index=0,
-            duplicate_retry_count=0,
-        ):
-            self.called = True
-            return type(
-                "Generated",
-                (),
-                {
-                    "source": build_candidate_train_script(
-                        "import torch\n"
-                    ),
-                    "provenance_json": {
-                        **make_llm_provenance(model="capture"),
-                    },
-                },
-            )()
-
-    _prepare_repo_dataset(repository, dataset_manager)
-    generator = CapturingGenerator()
-    system, _ = _build_system(repository, dataset_manager, generator, RecordingLauncher())
-    track = system.create_track("legacy-only", "mnist:v1", {})
-
-    baseline = repository.list_trials(track.track_id)[0]
-    repository.finalize_trial(
-        trial_id=baseline.trial_id,
-        runner_id=None,
-        outcome_reason="stale",
-        metrics=None,
-        score=0.0,
-        error_info={"reason": "test_setup"},
-    )
-    legacy_source = normalize_source("print('legacy train script')\n")
-    legacy_trial_id = "trial_legacy_success"
-    with repository.transaction() as conn:
-        conn.execute(
-            trials_table.insert().values(
-                trial_id=legacy_trial_id,
-                track_id=track.track_id,
-                source=legacy_source,
-                script_hash=compute_script_hash(legacy_source),
-                provenance_json={"backend": "legacy"},
-                status="queued",
-                outcome_reason=None,
-                dispatch_token=None,
-                dispatch_deadline_at=None,
-                runner_id=None,
-                heartbeat_at=None,
-                started_at=None,
-                finished_at=None,
-                metrics_json=None,
-                score=0.0,
-                error_json=None,
-                dispatch_attempts=0,
-                created_at=baseline.created_at,
-            )
-        )
-    legacy = repository.get_trial(legacy_trial_id)
-    assert legacy is not None
-    repository.finalize_trial(
-        trial_id=legacy.trial_id,
-        runner_id=None,
-        outcome_reason="succeeded",
-        metrics={"accuracy": 0.8},
-        score=0.8,
-        error_info=None,
-    )
-
-    result = system.reconcile_track(track.track_id)
-
-    assert generator.called is False
-    assert result.generated_trial_ids == []
 
 
 def test_reconcile_rejects_mutations_outside_evolve_blocks(repository, dataset_manager):

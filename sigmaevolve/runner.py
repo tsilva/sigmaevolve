@@ -33,7 +33,6 @@ DEBUG_METRIC_KEYS = (
 )
 EVAL_ARTIFACT_METRIC_KEYS = (
     "accuracy",
-    "loss",
     "train_loss",
     "train_acc",
     "val_loss",
@@ -195,8 +194,6 @@ class RunnerService:
         self,
         eval_dir: Path,
         labels_path: str,
-        fallback_predictions_path: Path | None,
-        fallback_elapsed_time_sec: float,
     ) -> list[dict[str, Any]]:
         labels = np.load(labels_path)
         artifacts: list[dict[str, Any]] = []
@@ -215,10 +212,6 @@ class RunnerService:
                     if value is not None:
                         metrics[key] = value
                 metrics.setdefault("val_acc", metrics.get("accuracy"))
-                if metrics.get("val_loss") is not None:
-                    metrics.setdefault("loss", metrics["val_loss"])
-                elif metrics.get("loss") is not None:
-                    metrics.setdefault("val_loss", metrics["loss"])
                 artifacts.append(
                     {
                         "path": str(eval_path),
@@ -230,22 +223,6 @@ class RunnerService:
                         "metrics": metrics,
                     }
                 )
-
-        if not artifacts and fallback_predictions_path is not None and fallback_predictions_path.exists():
-            with np.load(fallback_predictions_path) as payload:
-                predictions = payload["predictions"]
-                if predictions.ndim > 1:
-                    predictions = predictions.argmax(axis=1)
-            metrics = compute_classification_metrics(predictions.astype(int).tolist(), labels.astype(int).tolist())
-            artifacts.append(
-                {
-                    "path": str(fallback_predictions_path),
-                    "eval_index": 0,
-                    "elapsed_time_sec": float(fallback_elapsed_time_sec),
-                    "epoch": None,
-                    "metrics": metrics,
-                }
-            )
         return artifacts
 
     def _select_best_eval(self, artifacts: list[dict[str, Any]]) -> dict[str, Any]:
@@ -649,8 +626,6 @@ class RunnerService:
                     artifacts = self._load_eval_artifacts(
                         eval_dir=eval_dir,
                         labels_path=manifest.validation_labels_path,
-                        fallback_predictions_path=temp_path / "unused_predictions.npz",
-                        fallback_elapsed_time_sec=process_elapsed_sec,
                     )
                 except Exception as exc:
                     error_info = {
