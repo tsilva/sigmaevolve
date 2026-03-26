@@ -1,22 +1,27 @@
 from __future__ import annotations
 
-from pathlib import Path
 import sys
 import types
+from pathlib import Path
 
 import numpy as np
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
+
+# Add the repository root so test imports resolve the local package.
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from sigmaevolve.datasets import ArrayDatasetProvider, DatasetManager
-from sigmaevolve.generation import FixedGenerationBackend
 from sigmaevolve.execution import RunnerService
-from sigmaevolve.storage import SQLAlchemyRepository
 from sigmaevolve.orchestration import EvolutionSystem
-from sigmaevolve.generation import build_candidate_train_script, build_model_block
+from sigmaevolve.generation import (
+    FixedGenerationBackend,
+    build_candidate_train_script,
+    build_model_block,
+)
+from sigmaevolve.storage import SQLAlchemyRepository
 from tests.support import RecordingLauncherDouble
 
 
@@ -145,18 +150,29 @@ def dataset_manager(tmp_path, providers):
 
 @pytest.fixture
 def system(repository, dataset_manager):
+    # Build the launcher double used by orchestration tests.
     launcher = RecordingLauncherDouble()
-    generator = FixedGenerationBackend(
-        source=build_candidate_train_script(
-            build_model_block(
-                """
+
+    # Build the default candidate generator used in integration fixtures.
+    model_source = build_model_block(
+        """
 def forward(self, x):
     flat = x.reshape(x.shape[0], -1)
     scores = flat.sum(dim=1)
     return torch.stack((-scores, scores), dim=1)
 """
-            )
-        )
     )
+    generation_source = build_candidate_train_script(model_source)
+    generator = FixedGenerationBackend(
+        source=generation_source,
+    )
+
+    # Assemble the service layer used by end-to-end tests.
     runner_service = RunnerService(repository=repository, dataset_manager=dataset_manager)
-    return EvolutionSystem(repository, dataset_manager, generator, launcher, runner_service)
+    return EvolutionSystem(
+        repository,
+        dataset_manager,
+        generator,
+        launcher,
+        runner_service,
+    )

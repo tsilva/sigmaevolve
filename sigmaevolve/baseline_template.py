@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 import argparse
 import json
 import logging
@@ -18,13 +19,15 @@ class TrainScriptContractError(RuntimeError):
 
 
 def write_json_atomic(path, payload):
+    serialized_payload = json.dumps(payload, sort_keys=True)
     path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = path.with_suffix(path.suffix + ".tmp")
-    temp_path.write_text(json.dumps(payload, sort_keys=True))
+    temp_path.write_text(serialized_payload)
     temp_path.replace(path)
 
 
 def write_eval_atomic(eval_dir, eval_index, predictions, elapsed_time_sec, epoch, metrics=None):
+    # Stage the evaluation payload before writing the atomic artifact.
     eval_dir.mkdir(parents=True, exist_ok=True)
     temp_path = eval_dir / f".eval_{eval_index:04d}.tmp.npz"
     payload = {
@@ -33,7 +36,10 @@ def write_eval_atomic(eval_dir, eval_index, predictions, elapsed_time_sec, epoch
         "elapsed_time_sec": np.array(elapsed_time_sec, dtype=np.float64),
         "epoch": np.array(epoch, dtype=np.int64),
     }
+
+    # Preserve only numeric metrics that have a real value.
     for key, value in (metrics or {}).items():
+        # Skip missing metric values.
         if value is None:
             continue
         payload[key] = np.array(float(value), dtype=np.float64)
@@ -45,6 +51,8 @@ def seed_everything(seed):
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
+
+    # Seed CUDA deterministically when a GPU is available.
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
 
@@ -52,11 +60,14 @@ def seed_everything(seed):
 def read_split(path):
     payload = np.load(path)
     labels = payload["labels"].astype(np.int64) if "labels" in payload else None
-    return payload["features"].astype(np.float32), labels
+    features = payload["features"].astype(np.float32)
+    return features, labels
 
 
 def prepare_feature_tensor(features, *, input_shape=None):
     del input_shape
+
+    # Reject flat inputs before reshaping them into model features.
     if features.ndim < 2:
         raise TrainScriptContractError("training features must include at least one non-batch dimension")
 
@@ -94,6 +105,7 @@ CONFIG = {
 # EVOLVE-BLOCK-END
 
 def normalize_feature_tensors(train_x, validation_x):
+    # Reject tensors that were not flattened into feature matrices.
     if train_x.ndim != 2 or validation_x.ndim != 2:
         raise TrainScriptContractError("feature tensors must be 2D after flattening")
 
@@ -112,19 +124,29 @@ def normalize_predictions(raw_predictions, *, num_examples, num_classes):
         if isinstance(raw_predictions, torch.Tensor)
         else np.asarray(raw_predictions)
     )
+
+    # Reject scalar outputs that do not map to per-example predictions.
     if array.ndim == 0:
         raise TrainScriptContractError("model evaluation must return one prediction per validation example.")
+
+    # Keep the prediction count aligned with the validation split.
     if array.shape[0] != num_examples:
         raise TrainScriptContractError(
             f"model evaluation returned {array.shape[0]} predictions for {num_examples} validation examples."
         )
+
+    # Normalize 1D outputs into class ids for binary or label predictions.
     if array.ndim == 1:
+        # Keep integer class ids unchanged.
         if not np.issubdtype(array.dtype, np.floating):
             return array.astype(np.int64)
+
+        # Require binary logits when the model emits a single float per example.
         if num_classes != 2:
             raise TrainScriptContractError(
                 "model evaluation returned a 1D float array for a non-binary task; return class ids or logits."
             )
+
         finite = array[np.isfinite(array)]
         threshold = (
             CONFIG["binary_probability_threshold"]
@@ -132,6 +154,7 @@ def normalize_predictions(raw_predictions, *, num_examples, num_classes):
             else CONFIG["binary_logit_threshold"]
         )
         return (array >= threshold).astype(np.int64)
+
     reshaped = array.reshape(num_examples, -1)
     normalized = (
         reshaped.reshape(num_examples)
@@ -147,11 +170,17 @@ def coerce_model_logits(raw_output, *, batch_size, num_classes):
         if isinstance(raw_output, torch.Tensor)
         else torch.as_tensor(raw_output, dtype=torch.float32)
     )
+
+    # Interpret a single example's logits directly when they match the class count.
     if logits.ndim == 1:
         if batch_size == 1 and logits.shape[0] == num_classes:
             return logits.reshape(1, num_classes)
+
+        # Expand binary scores into two-class logits for downstream consumers.
         if num_classes == 2 and logits.shape[0] == batch_size:
             return torch.stack((-logits, logits), dim=1)
+
+    # Preserve already batched logits when they are shaped correctly.
     if logits.ndim == 2 and logits.shape[0] == batch_size:
         return logits
     raise TrainScriptContractError(
@@ -161,12 +190,16 @@ def coerce_model_logits(raw_output, *, batch_size, num_classes):
 
 def require_callable(name):
     value = globals().get(name)
+
+    # Require evolve-block callables to be present and executable.
     if not callable(value):
         raise TrainScriptContractError(f"train.py is missing required evolve-block callable: {name}")
     return value
 
 
 def require_mapping(name, value):
+
+    # Require each evolve-block helper to return a mapping payload.
     if not isinstance(value, dict):
         raise TrainScriptContractError(f"{name} must return a dict.")
     return value
@@ -180,6 +213,7 @@ class EvolvedModel(torch.nn.Module):
         flat_dim = int(np.prod(input_shape))
         hidden_dim_1, hidden_dim_2 = model_config["hidden_dims"]
 
+        # Build the baseline MLP in a single sequential stack.
         self.network = torch.nn.Sequential(
             torch.nn.Linear(flat_dim, hidden_dim_1),
             torch.nn.ReLU(),
@@ -200,6 +234,8 @@ def build_model(*, input_shape, num_classes):
 def run_validation(model, validation_loader, *, num_classes):
     model.eval()
     predictions = []
+
+    # Collect batched predictions under evaluation mode only.
     with torch.no_grad():
         for (batch_x,) in validation_loader:
             predictions.append(
@@ -209,6 +245,8 @@ def run_validation(model, validation_loader, *, num_classes):
                     num_classes=num_classes,
                 )
             )
+
+    # Require the validation loader to produce at least one batch.
     if not predictions:
         raise TrainScriptContractError("validation loader must yield at least one batch")
     return torch.cat(predictions, dim=0)
@@ -219,6 +257,8 @@ def configure_data(*, train_x, train_y, validation_x, random_seed):
     del random_seed
     data_config = CONFIG["data"]
     batch_size = max(1, min(data_config["max_batch_size"], int(train_x.shape[0])))
+
+    # Build train and validation loaders with the configured batching policy.
     return {
         "batch_size": batch_size,
         "train_loader": torch.utils.data.DataLoader(
@@ -243,12 +283,16 @@ def configure_optimization(*, model, train_loader, num_epochs, num_classes):
     optimization_config = CONFIG["optimization"]
     trainable_parameters = [parameter for parameter in model.parameters() if parameter.requires_grad]
     optimizer = None
+
+    # Instantiate AdamW only when the model exposes trainable parameters.
     if trainable_parameters:
         optimizer = torch.optim.AdamW(
             trainable_parameters,
             lr=optimization_config["learning_rate"],
             weight_decay=optimization_config["weight_decay"],
         )
+
+    # Return the optimizer setup in a reviewable payload.
     return {
         "trainable_parameters": trainable_parameters,
         "optimizer": optimizer,

@@ -81,7 +81,10 @@ def _reindent_lines(lines: list[str], indent: str) -> list[str]:
     return [f"{indent}{line}" if line.strip() else line for line in lines]
 
 
-def _find_matching_line_ranges(source_lines: list[str], search_lines: list[str]) -> list[tuple[int, int, str]]:
+def _find_matching_line_ranges(
+    source_lines: list[str],
+    search_lines: list[str],
+) -> list[tuple[int, int, str]]:
     if not search_lines:
         return []
 
@@ -123,7 +126,8 @@ def replace_evolve_block_payloads(template_source: str, block_payloads: list[str
     immutable_parts, current_payloads = split_evolve_blocks(template_source)
     if len(block_payloads) != len(current_payloads):
         raise EvolveBlockError(
-            f"expected {len(current_payloads)} evolve block payloads, received {len(block_payloads)}"
+            f"expected {len(current_payloads)} evolve block payloads, "
+            f"received {len(block_payloads)}"
         )
 
     merged: list[str] = []
@@ -145,13 +149,17 @@ def parse_search_replace_blocks(response_text: str) -> list[SearchReplaceBlock]:
 
     while cursor < len(lines):
         # Skip layout-only separators between blocks.
-        if lines[cursor].strip() == "":
+        is_separator_line = lines[cursor].strip() == ""
+        if is_separator_line:
             cursor += 1
             continue
 
         # Require the explicit SEARCH header before collecting patch text.
-        if lines[cursor] != "<<<<<<< SEARCH\n":
-            raise EvolveBlockError("generated response must contain SEARCH/REPLACE blocks or NO_CHANGES")
+        has_search_header = lines[cursor] == "<<<<<<< SEARCH\n"
+        if not has_search_header:
+            raise EvolveBlockError(
+                "generated response must contain SEARCH/REPLACE blocks or NO_CHANGES"
+            )
         cursor += 1
 
         # Collect the SEARCH payload up to the middle separator.
@@ -176,12 +184,20 @@ def parse_search_replace_blocks(response_text: str) -> list[SearchReplaceBlock]:
         if not search:
             raise EvolveBlockError("SEARCH/REPLACE block must include non-empty SEARCH text")
         replace = "".join(replace_lines)
-        if _contains_evolve_block_marker_line(search) or _contains_evolve_block_marker_line(replace):
-            raise EvolveBlockError("SEARCH/REPLACE blocks may not include evolve block marker lines")
+        contains_marker_line = (
+            _contains_evolve_block_marker_line(search)
+            or _contains_evolve_block_marker_line(replace)
+        )
+        if contains_marker_line:
+            raise EvolveBlockError(
+                "SEARCH/REPLACE blocks may not include evolve block marker lines"
+            )
         blocks.append(SearchReplaceBlock(search=search, replace=replace))
 
     if not blocks:
-        raise EvolveBlockError("generated response must contain SEARCH/REPLACE blocks or NO_CHANGES")
+        raise EvolveBlockError(
+            "generated response must contain SEARCH/REPLACE blocks or NO_CHANGES"
+        )
     return blocks
 
 
@@ -194,7 +210,9 @@ def apply_search_replace_blocks(current_source: str, blocks: list[SearchReplaceB
         if not matches:
             raise EvolveBlockError(f"SEARCH block {index} did not match the current program")
         if len(matches) > 1:
-            raise EvolveBlockError(f"SEARCH block {index} matched multiple locations in the current program")
+            raise EvolveBlockError(
+                f"SEARCH block {index} matched multiple locations in the current program"
+            )
 
         start, end, indent = matches[0]
         updated_lines[start:end] = _reindent_lines(replace_lines, indent)
@@ -204,14 +222,24 @@ def apply_search_replace_blocks(current_source: str, blocks: list[SearchReplaceB
 def materialize_candidate_source(current_source: str, generated_source: str) -> str:
     normalized_generated = normalize_source(generated_source)
     stripped_generated = normalized_generated.strip()
+
+    # Treat SEARCH/REPLACE input as a patch rather than a full program.
     is_search_replace_patch = stripped_generated.startswith("<<<<<<< SEARCH")
     if stripped_generated == "NO_CHANGES" or is_search_replace_patch:
-        return apply_search_replace_blocks(current_source, parse_search_replace_blocks(normalized_generated))
+        return apply_search_replace_blocks(
+            current_source,
+            parse_search_replace_blocks(normalized_generated),
+        )
 
-    has_evolve_block_tags = EVOLVE_BLOCK_START in normalized_generated and EVOLVE_BLOCK_END in normalized_generated
+    # Accept a full program only when both evolve-block markers are present.
+    has_evolve_block_tags = (
+        EVOLVE_BLOCK_START in normalized_generated and EVOLVE_BLOCK_END in normalized_generated
+    )
     if has_evolve_block_tags:
         return normalized_generated
-    raise EvolveBlockError("generated response must be SEARCH/REPLACE blocks, NO_CHANGES, or a full program")
+    raise EvolveBlockError(
+        "generated response must be SEARCH/REPLACE blocks, NO_CHANGES, or a full program"
+    )
 
 
 def assert_only_evolve_blocks_changed(parent_source: str, candidate_source: str) -> None:
@@ -237,7 +265,13 @@ from typing import Protocol
 from urllib import request
 from urllib.error import HTTPError, URLError
 
-from sigmaevolve.core import CANDIDATE_KIND_STRATEGY_V1, DatasetManifest, GenerationResult, TrackRecord, TrialSummary
+from sigmaevolve.core import (
+    CANDIDATE_KIND_STRATEGY_V1,
+    DatasetManifest,
+    GenerationResult,
+    TrackRecord,
+    TrialSummary,
+)
 
 
 class GenerationBackend(Protocol):
@@ -350,10 +384,14 @@ class OpenRouterGenerationBackend:
         self.site_url = site_url
         self.app_name = app_name
 
-    def _normalize_generation_config(self, generation_policy: dict[str, object]) -> dict[str, object]:
+    def _normalize_generation_config(
+        self,
+        generation_policy: dict[str, object],
+    ) -> dict[str, object]:
         # Resolve model-pool selection strategies before building the request payload.
         model_pool = generation_policy.get("model_pool")
-        if isinstance(model_pool, list) and model_pool:
+        has_model_pool = isinstance(model_pool, list) and model_pool
+        if has_model_pool:
             selection_strategy = generation_policy.get("selection", "round_robin")
             generation_index = int(generation_policy.get("_generation_index", 0))
             seed = int(generation_policy.get("seed", 0))
@@ -363,6 +401,7 @@ class OpenRouterGenerationBackend:
                 rng = random.Random(seed + generation_index)
                 return dict(rng.choice(model_pool))
 
+            # Weight the pool entries when the policy asks for weighted selection.
             if selection_strategy == "weighted_random":
                 weights: list[float] = []
                 normalized_pool: list[dict[str, object]] = []
@@ -371,7 +410,9 @@ class OpenRouterGenerationBackend:
                     raw_weight = item.get("probability", item.get("weight", 1.0))
                     weight = float(raw_weight)
                     if weight < 0:
-                        raise ValueError("generation_backend model_pool probabilities must be non-negative.")
+                        raise ValueError(
+                            "generation_backend model_pool probabilities must be non-negative."
+                        )
                     normalized_pool.append(item)
                     weights.append(weight)
 
@@ -389,6 +430,7 @@ class OpenRouterGenerationBackend:
                 )
                 return selected
 
+            # Use the deterministic pool slot when no stochastic selector is requested.
             model_pool_index = generation_index % len(model_pool)
             return dict(model_pool[model_pool_index])
 
@@ -415,11 +457,13 @@ class OpenRouterGenerationBackend:
         prefix = " " * indent
         for key, value in payload.items():
             label = str(key)
+            # Expand nested mappings so each field stays readable in prompt text.
             if isinstance(value, dict):
                 lines.append(f"{prefix}- {label}:")
                 lines.extend(self._format_mapping(value, indent + 2))
                 continue
 
+            # Collapse flat lists into one line when the values are scalar-like.
             if isinstance(value, list):
                 if not value:
                     lines.append(f"{prefix}- {label}: none")
@@ -448,15 +492,22 @@ class OpenRouterGenerationBackend:
         if not error_json:
             return []
         lines: list[str] = []
+        # Record the concise failure reason when the provider reported one.
         reason = error_json.get("reason")
         if reason is not None:
             lines.append(f"- error reason: {self._format_scalar(reason)}")
+
+        # Include the human-readable detail when the error payload has one.
         detail = error_json.get("detail")
         if detail is not None:
             lines.append(f"- error detail: {self._format_scalar(detail)}")
+
+        # Surface the subprocess return code for execution failures.
         returncode = error_json.get("returncode")
         if returncode is not None:
             lines.append(f"- returncode: {self._format_scalar(returncode)}")
+
+        # Capture the last stderr line as the shortest useful excerpt.
         stderr = error_json.get("stderr")
         if isinstance(stderr, str) and stderr.strip():
             excerpt = stderr.strip().splitlines()[-1][:240]
@@ -473,7 +524,11 @@ class OpenRouterGenerationBackend:
 
     def _strip_evolve_block_tags(self, source: str) -> str:
         lines = source.splitlines()
-        filtered_lines = [line for line in lines if line not in {EVOLVE_BLOCK_START, EVOLVE_BLOCK_END}]
+        filtered_lines = [
+            line
+            for line in lines
+            if line not in {EVOLVE_BLOCK_START, EVOLVE_BLOCK_END}
+        ]
         return "\n".join(filtered_lines) + ("\n" if source.endswith("\n") else "")
 
     def _collapse_matching_source(self, source: str, reference_source: str) -> str:
@@ -752,6 +807,7 @@ class OpenRouterGenerationBackend:
                     error_info["reasoning_tokens"] = reasoning_tokens
 
         # Detect whether the provider consumed its budget on hidden reasoning.
+        # Detect whether the provider consumed its budget on hidden reasoning.
         reasoning_present = False
         if isinstance(message, dict):
             reasoning = message.get("reasoning")
@@ -777,7 +833,9 @@ class OpenRouterGenerationBackend:
             )
         elif finish_reason == "length":
             error_info["error_type"] = "generation_output_truncated"
-            error_info["detail"] = "Provider reached the completion limit before emitting assistant content."
+            error_info["detail"] = (
+                "Provider reached the completion limit before emitting assistant content."
+            )
         else:
             error_info["error_type"] = "generation_provider_failure"
         return error_info
@@ -884,14 +942,21 @@ class OpenRouterGenerationBackend:
         except json.JSONDecodeError as exc:
             return self._build_generation_result(
                 context=context,
-                error_info={"reason": "provider_response_invalid_json", "detail": str(exc), "response_body": raw_body},
+                error_info={
+                    "reason": "provider_response_invalid_json",
+                    "detail": str(exc),
+                    "response_body": raw_body,
+                },
             )
         choices = body.get("choices")
         if not isinstance(choices, list) or not choices:
             return self._build_generation_result(
                 context=context,
                 provider_response_id=body.get("id"),
-                error_info={"reason": "provider_response_missing_choices", "response_body": raw_body},
+                error_info={
+                    "reason": "provider_response_missing_choices",
+                    "response_body": raw_body,
+                },
             )
 
         # Extract the first assistant message and reject empty content payloads.
@@ -984,7 +1049,11 @@ class GenerationCoordinator:
             if total_weight <= 0.0:
                 selected_index = rng.randrange(len(remaining))
             else:
-                selected_index = rng.choices(range(len(remaining)), weights=remaining_weights, k=1)[0]
+                selected_index = rng.choices(
+                    range(len(remaining)),
+                    weights=remaining_weights,
+                    k=1,
+                )[0]
             sampled.append(remaining.pop(selected_index))
             remaining_weights.pop(selected_index)
 
@@ -1000,12 +1069,20 @@ class GenerationCoordinator:
         generation_index: int,
     ) -> list[TrialSummary]:
         # Use successful strategy trials first whenever any exist.
-        successful_context = self.sample_successful_context_trials(track_id, sampling_settings, generation_index)
+        successful_context = self.sample_successful_context_trials(
+            track_id,
+            sampling_settings,
+            generation_index,
+        )
         if successful_context:
             return successful_context
 
         # Avoid mixing in unfinished or failed context once scored trials exist.
-        if self.repository.sample_trial_context(track_id, limit=self.repository.count_trials(track_id)):
+        has_scored_history = self.repository.sample_trial_context(
+            track_id,
+            limit=self.repository.count_trials(track_id),
+        )
+        if has_scored_history:
             return []
 
         # Fall back to the seeded baseline when the track has no scored history yet.
@@ -1091,7 +1168,10 @@ class GenerationCoordinator:
                 model = "unknown"
 
         system_prompt = "Generation backend failed before prompts could be fully recorded."
-        user_prompt = "No user prompt was captured because generation aborted before the provider call completed."
+        user_prompt = (
+            "No user prompt was captured because generation aborted before the "
+            "provider call completed."
+        )
 
         # Emit a synthetic but schema-valid generation payload for failure records.
         generation_payload = {
@@ -1310,7 +1390,9 @@ def build_candidate_train_script(
 
     replacements: dict[int, str | None] = {
         CONFIG_BLOCK_INDEX: config_block_payload,
-        MODEL_BLOCK_INDEX: model_block_payload if model_block_payload is not None else block_payload,
+            MODEL_BLOCK_INDEX: (
+                model_block_payload if model_block_payload is not None else block_payload
+            ),
         DATA_BLOCK_INDEX: data_block_payload,
         OPTIMIZATION_BLOCK_INDEX: optimization_block_payload,
         TRAINING_POLICY_BLOCK_INDEX: training_policy_block_payload,

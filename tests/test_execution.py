@@ -9,15 +9,19 @@ import time
 import numpy as np
 import pytest
 
+from sigmaevolve import execution as strategy_runtime
 from sigmaevolve.core import CANDIDATE_KIND_STRATEGY_V1
-from sigmaevolve.orchestration import InlineRunnerLauncher
-from sigmaevolve.execution import RunnerService
-from sigmaevolve.orchestration import EvolutionSystem
+from sigmaevolve.execution import RunnerService, collect_wandb_env, resolve_wandb_settings
 from sigmaevolve.generation import (
     build_candidate_train_script,
     build_data_block,
     build_model_block,
     build_optimization_block,
+)
+from sigmaevolve.modal import create_modal_launcher
+from sigmaevolve.orchestration import (
+    EvolutionSystem,
+    InlineRunnerLauncher,
 )
 from tests.support import make_llm_provenance
 
@@ -544,13 +548,6 @@ def test_collect_active_metrics_payload_uses_eval_artifacts(repository, dataset_
     assert metrics["eval_count"] == 1
     assert metrics["last_phase"] == "eval"
     assert "timed_out" not in metrics
-
-# ---- test_strategy_runtime.py ----
-
-
-from sigmaevolve import execution as strategy_runtime
-
-
 def test_seed_everything_returns_cpu_when_cuda_unavailable(monkeypatch):
     class FakeTorch:
         class cuda:
@@ -593,15 +590,6 @@ def test_seed_everything_returns_cuda_when_available(monkeypatch):
     assert strategy_runtime._seed_everything(7) == "cuda"
     assert state == {"manual_seed": [7], "manual_seed_all": [7]}
 
-
-# ---- test_wandb_support.py ----
-
-
-import pytest
-
-from sigmaevolve.execution import collect_wandb_env, resolve_wandb_settings
-
-
 def test_collect_wandb_env_uses_standard_wandb_keys(monkeypatch):
     monkeypatch.setenv("WANDB_API_KEY", "key")
     monkeypatch.setenv("WANDB_PROJECT", "proj")
@@ -635,15 +623,6 @@ def test_resolve_wandb_settings_requires_wandb_api_key(monkeypatch):
 
     with pytest.raises(RuntimeError, match="WANDB_API_KEY is required"):
         resolve_wandb_settings()
-
-
-# ---- test_modal_support.py ----
-
-
-import pytest
-
-from sigmaevolve.modal import create_modal_launcher
-
 
 def test_modal_launcher_spawns_named_method_without_gpu_override(monkeypatch):
     captured = {}
