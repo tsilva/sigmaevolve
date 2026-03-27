@@ -323,6 +323,25 @@ describe("DashboardShell", () => {
     expect(row.textContent).toContain("error payload");
   });
 
+  it("shows the task description in the trials table when recorded", () => {
+    renderShell({
+      detail: createDetail([
+        createTrial({
+          trialId: "trial_tasked",
+          taskDescription:
+            "Tune the training loop to improve validation accuracy without destabilizing the early stopping policy.",
+        }),
+      ]),
+    });
+
+    expect(screen.getByRole("columnheader", { name: "Task" })).toBeTruthy();
+    expect(
+      screen.getByText(
+        "Tune the training loop to improve validation accuracy without destabilizing the early stopping policy.",
+      ),
+    ).toBeTruthy();
+  });
+
   it("shows launcher and wandb badges in the inspector when the selected trial has remote run URLs", () => {
     renderShell({
       detail: createDetail([
