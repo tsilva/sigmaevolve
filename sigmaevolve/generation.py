@@ -1395,6 +1395,42 @@ class GenerationCoordinator:
         assert_only_evolve_blocks_changed(parent_source, candidate_source)
         return candidate_source
 
+    def _accepted_generation_trace_error(
+        self, provenance_json: dict[str, Any], candidate_source: str
+    ) -> str | None:
+        generation_payload = provenance_json.get("generation")
+        if not isinstance(generation_payload, dict):
+            return (
+                "Accepted generated candidates must include provenance_json.generation."
+            )
+
+        response_text = generation_payload.get("response_text")
+        has_response_text = isinstance(response_text, str) and bool(
+            response_text.strip()
+        )
+        if not has_response_text:
+            return (
+                "Accepted generated candidates must persist a non-empty "
+                "provenance_json.generation.response_text."
+            )
+
+        generated_source = generation_payload.get("generated_source")
+        has_generated_source = isinstance(generated_source, str) and bool(
+            generated_source.strip()
+        )
+        if not has_generated_source:
+            return (
+                "Accepted generated candidates must persist a non-empty "
+                "provenance_json.generation.generated_source."
+            )
+
+        if normalize_source(generated_source) != normalize_source(candidate_source):
+            return (
+                "Accepted generated candidates must persist a generation "
+                "generated_source that matches the queued trial source."
+            )
+        return None
+
     def accept_generated_candidate(
         self,
         *,
@@ -1412,6 +1448,29 @@ class GenerationCoordinator:
             assertion_failures=[],
             candidate_hash=candidate_hash,
         )
+        trace_error = self._accepted_generation_trace_error(
+            final_provenance,
+            candidate_source,
+        )
+        if trace_error is not None:
+            self.record_generation_attempt_failure(
+                track_id=track_id,
+                result=result,
+                provenance_json=final_provenance,
+                reason="missing_generation_trace",
+                detail=trace_error,
+                generated_source=candidate_source,
+                candidate_hash=candidate_hash,
+                result_error=f"missing_generation_trace:{trace_error}",
+            )
+            return {
+                "event": "generation_failed",
+                "payload": {
+                    "reason": "missing_generation_trace",
+                    "detail": trace_error,
+                },
+            }
+
         trial, created = self.repository.create_queued_trial_if_absent(
             track_id=track_id,
             source=candidate_source,

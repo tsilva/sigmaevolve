@@ -122,6 +122,17 @@ type ProgressSegment = {
   count: number;
   label: string;
 };
+type CollapsibleSectionProps = {
+  children: ReactNode;
+  expanded: boolean;
+  id: string;
+  onToggle: () => void;
+  summary?: ReactNode;
+  title: string;
+  titleClassName?: string;
+  titleTag?: "div" | "h3";
+  toggleClassName?: string;
+};
 
 const HIDDEN_WANDB_KEYS = new Set(["project", "entity", "run_id", "run_name", "run_url"]);
 
@@ -621,6 +632,49 @@ function getTrackLabel(track: TrackListItem): string {
   return track.trackId;
 }
 
+function CollapsibleSection({
+  children,
+  expanded,
+  id,
+  onToggle,
+  summary,
+  title,
+  titleClassName,
+  titleTag = "div",
+  toggleClassName,
+}: CollapsibleSectionProps) {
+  const TitleTag = titleTag;
+  const contentId = `${id}-content`;
+
+  return (
+    <>
+      <button
+        type="button"
+        className={toggleClassName ? `collapsible-section-toggle ${toggleClassName}` : "collapsible-section-toggle"}
+        onClick={onToggle}
+        aria-expanded={expanded}
+        aria-controls={contentId}
+      >
+        <span className="collapsible-section-copy">
+          <TitleTag className={titleClassName ?? "collapsible-section-title"}>{title}</TitleTag>
+          {summary ? <span className="collapsible-section-summary">{summary}</span> : null}
+        </span>
+        <span
+          className={`collapsible-section-indicator ${expanded ? "expanded" : ""}`}
+          aria-hidden="true"
+        >
+          ›
+        </span>
+      </button>
+      {expanded ? (
+        <div id={contentId} className="collapsible-section-body">
+          {children}
+        </div>
+      ) : null}
+    </>
+  );
+}
+
 function getCompletedCount(track: TrackListItem): number {
   return track.finishedTrials + track.errorTrials;
 }
@@ -1008,6 +1062,7 @@ export function DashboardShell({
   const [selectedTrialId, setSelectedTrialId] = useState<string | null>(initialSelectedTrialId);
   const [urlTrialId, setUrlTrialId] = useState<string | null>(initialSelectedTrialId);
   const [hoveredScorePoint, setHoveredScorePoint] = useState<ScoreChartPoint | null>(null);
+  const [expandedSectionIds, setExpandedSectionIds] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
   const deferredSearchText = useDeferredValue(searchText.trim().toLowerCase());
@@ -1022,12 +1077,17 @@ export function DashboardShell({
     setSelectedTrialId(initialSelectedTrialId);
     setUrlTrialId(initialSelectedTrialId);
     setHoveredScorePoint(null);
+    setExpandedSectionIds([]);
     setError(null);
   }, [initialDetail, initialSelectedTrialId, initialTracks, selectedTrackId]);
 
   useEffect(() => {
     setUrlTrialId(routeTrialId);
   }, [routeTrialId]);
+
+  useEffect(() => {
+    setExpandedSectionIds([]);
+  }, [selectedTrialId]);
 
   const visibleTrials = detail.trials.filter((trial) => matchesSearch(trial, deferredSearchText));
   const selectedTrial =
@@ -1075,6 +1135,14 @@ export function DashboardShell({
       ? null
       : detail.trials.reduce((best, trial) => (trial.score > best.score ? trial : best), detail.trials[0]).trialId);
   const selectedIsBestTrial = selectedTrial ? isBestTrial(detail.track, selectedTrial.trialId) : false;
+  const isSectionExpanded = (sectionId: string) => expandedSectionIds.includes(sectionId);
+  const toggleSection = (sectionId: string) => {
+    setExpandedSectionIds((current) =>
+      current.includes(sectionId)
+        ? current.filter((existingSectionId) => existingSectionId !== sectionId)
+        : [...current, sectionId],
+    );
+  };
 
   const updateTrialUrl = useEffectEvent((nextTrialId: string | null) => {
     const nextUrl = nextTrialId
@@ -1649,150 +1717,186 @@ export function DashboardShell({
                   <div className="trial-summary-grid">
                     <div className="trial-summary-column">
                       <section className="trial-summary-panel">
-                        <div className="trial-summary-section-label">Overview</div>
-                        <div className="context-stack">
-                          {[
-                            {
-                              label: "Trial ID",
-                              mono: true,
-                              value: selectedTrial.trialId,
-                              title: selectedTrial.trialId,
-                            },
-                            { label: "Model", value: selectedTrial.model ?? "unknown model" },
-                            { label: "Backend", value: selectedTrial.backend ?? "unknown backend" },
-                            {
-                              label: "Outcome",
-                              value: selectedTrial.outcomeReason ? (
-                                <span className="flag-chip">{selectedTrial.outcomeReason}</span>
-                              ) : (
-                                "Not reported"
-                              ),
-                            },
-                            {
-                              label: "Error Type",
-                              value: selectedTrial.errorType ? (
-                                <span className="flag-chip flag-danger">{selectedTrial.errorType}</span>
-                              ) : (
-                                "—"
-                              ),
-                            },
-                            {
-                              label: "Last Phase",
-                              value: selectedTrial.lastPhase ? <span className="flag-chip">{selectedTrial.lastPhase}</span> : "—",
-                            },
-                          ].map((row) => (
-                            <div className="context-row" key={row.label}>
-                              <span>{row.label}</span>
-                              <strong className={row.mono ? "trial-summary-mono" : undefined} title={row.title}>
-                                {row.value}
-                              </strong>
-                            </div>
-                          ))}
-                        </div>
-                        <div className="flag-row trial-summary-flags">
-                          {selectedTrial.timedOut ? <span className="flag-chip flag-warning">timed out</span> : null}
-                          {selectedTrial.hadUnscoredWorkAtTimeout ? (
-                            <span className="flag-chip flag-warning">left work unscored</span>
-                          ) : null}
-                          {selectedTrial.hasError ? <span className="flag-chip flag-danger">error payload captured</span> : null}
-                        </div>
+                        <CollapsibleSection
+                          id="trial-overview"
+                          expanded={isSectionExpanded("trial-overview")}
+                          onToggle={() => toggleSection("trial-overview")}
+                          title="Overview"
+                          titleClassName="trial-summary-section-label"
+                          toggleClassName="trial-summary-section-toggle"
+                        >
+                          <div className="context-stack">
+                            {[
+                              {
+                                label: "Trial ID",
+                                mono: true,
+                                value: selectedTrial.trialId,
+                                title: selectedTrial.trialId,
+                              },
+                              { label: "Model", value: selectedTrial.model ?? "unknown model" },
+                              { label: "Backend", value: selectedTrial.backend ?? "unknown backend" },
+                              {
+                                label: "Outcome",
+                                value: selectedTrial.outcomeReason ? (
+                                  <span className="flag-chip">{selectedTrial.outcomeReason}</span>
+                                ) : (
+                                  "Not reported"
+                                ),
+                              },
+                              {
+                                label: "Error Type",
+                                value: selectedTrial.errorType ? (
+                                  <span className="flag-chip flag-danger">{selectedTrial.errorType}</span>
+                                ) : (
+                                  "—"
+                                ),
+                              },
+                              {
+                                label: "Last Phase",
+                                value: selectedTrial.lastPhase ? (
+                                  <span className="flag-chip">{selectedTrial.lastPhase}</span>
+                                ) : (
+                                  "—"
+                                ),
+                              },
+                            ].map((row) => (
+                              <div className="context-row" key={row.label}>
+                                <span>{row.label}</span>
+                                <strong className={row.mono ? "trial-summary-mono" : undefined} title={row.title}>
+                                  {row.value}
+                                </strong>
+                              </div>
+                            ))}
+                          </div>
+                          <div className="flag-row trial-summary-flags">
+                            {selectedTrial.timedOut ? <span className="flag-chip flag-warning">timed out</span> : null}
+                            {selectedTrial.hadUnscoredWorkAtTimeout ? (
+                              <span className="flag-chip flag-warning">left work unscored</span>
+                            ) : null}
+                            {selectedTrial.hasError ? <span className="flag-chip flag-danger">error payload captured</span> : null}
+                          </div>
+                        </CollapsibleSection>
                       </section>
 
                       <section className="trial-summary-panel">
-                        <div className="trial-summary-section-label">Metrics</div>
-                        <div className="context-stack">
-                          {[
-                            { label: "Score", value: formatNumber(selectedTrial.score, 4) },
-                            { label: "Accuracy", value: formatNumber(selectedTrial.accuracy, 4) },
-                            { label: "Time To Best Eval", value: formatDuration(selectedTrial.timeToBestEvalSec) },
-                            { label: "Duration", value: formatDuration(selectedTrial.durationSec) },
-                            { label: "Dispatch Attempts", value: selectedTrial.dispatchAttempts },
-                            { label: "Idle Since Eval", value: formatDuration(selectedTrial.timeSinceLastEvalSec) },
-                          ].map((row) => (
-                            <div className="context-row" key={row.label}>
-                              <span>{row.label}</span>
-                              <strong>{row.value}</strong>
-                            </div>
-                          ))}
-                        </div>
+                        <CollapsibleSection
+                          id="trial-metrics"
+                          expanded={isSectionExpanded("trial-metrics")}
+                          onToggle={() => toggleSection("trial-metrics")}
+                          title="Metrics"
+                          titleClassName="trial-summary-section-label"
+                          toggleClassName="trial-summary-section-toggle"
+                        >
+                          <div className="context-stack">
+                            {[
+                              { label: "Score", value: formatNumber(selectedTrial.score, 4) },
+                              { label: "Accuracy", value: formatNumber(selectedTrial.accuracy, 4) },
+                              { label: "Time To Best Eval", value: formatDuration(selectedTrial.timeToBestEvalSec) },
+                              { label: "Duration", value: formatDuration(selectedTrial.durationSec) },
+                              { label: "Dispatch Attempts", value: selectedTrial.dispatchAttempts },
+                              { label: "Idle Since Eval", value: formatDuration(selectedTrial.timeSinceLastEvalSec) },
+                            ].map((row) => (
+                              <div className="context-row" key={row.label}>
+                                <span>{row.label}</span>
+                                <strong>{row.value}</strong>
+                              </div>
+                            ))}
+                          </div>
+                        </CollapsibleSection>
                       </section>
                     </div>
 
                     <div className="trial-summary-column">
                       <section className="trial-summary-panel">
-                        <div className="trial-summary-section-label">Run timeline</div>
-                        <div className="timeline-list">
-                          {[
-                            { label: "Queued", value: formatDate(selectedTrial.createdAt) },
-                            { label: "Started", value: formatDate(selectedTrial.startedAt) },
-                            { label: "Finished", value: formatDate(selectedTrial.finishedAt) },
-                            ...(selectedCrashSummary
-                              ? [
-                                  {
-                                    label: "Crash detail",
-                                    title: selectedCrashDetails ?? undefined,
-                                    value: selectedCrashSummary,
-                                  },
-                                ]
-                              : []),
-                            ...(selectedGenerationAssertionSummary
-                              ? [
-                                  {
-                                    label: "Generation assertions",
-                                    value: selectedGenerationAssertionSummary,
-                                  },
-                                ]
-                              : []),
-                          ].map((row: TimelineRow) => (
-                            <div className="timeline-row" key={row.label}>
-                              <span>{row.label}</span>
-                              <strong title={row.title}>{row.value}</strong>
-                            </div>
-                          ))}
-                        </div>
+                        <CollapsibleSection
+                          id="trial-run-timeline"
+                          expanded={isSectionExpanded("trial-run-timeline")}
+                          onToggle={() => toggleSection("trial-run-timeline")}
+                          title="Run timeline"
+                          titleClassName="trial-summary-section-label"
+                          toggleClassName="trial-summary-section-toggle"
+                        >
+                          <div className="timeline-list">
+                            {[
+                              { label: "Queued", value: formatDate(selectedTrial.createdAt) },
+                              { label: "Started", value: formatDate(selectedTrial.startedAt) },
+                              { label: "Finished", value: formatDate(selectedTrial.finishedAt) },
+                              ...(selectedCrashSummary
+                                ? [
+                                    {
+                                      label: "Crash detail",
+                                      title: selectedCrashDetails ?? undefined,
+                                      value: selectedCrashSummary,
+                                    },
+                                  ]
+                                : []),
+                              ...(selectedGenerationAssertionSummary
+                                ? [
+                                    {
+                                      label: "Generation assertions",
+                                      value: selectedGenerationAssertionSummary,
+                                    },
+                                  ]
+                                : []),
+                            ].map((row: TimelineRow) => (
+                              <div className="timeline-row" key={row.label}>
+                                <span>{row.label}</span>
+                                <strong title={row.title}>{row.value}</strong>
+                              </div>
+                            ))}
+                          </div>
+                        </CollapsibleSection>
                       </section>
 
                       <section className="trial-summary-panel">
-                        <div className="trial-summary-section-label">Generation provenance</div>
-                        {selectedGenerationPropertyGroups.length > 0 ? (
-                          <div className="trial-summary-group-stack">
-                            {selectedGenerationPropertyGroups.map((group) => (
-                              <section className="trial-summary-subsection" key={group.label}>
-                                <div className="trial-summary-subsection-label">{group.label}</div>
-                                <div className="context-stack">
-                                  {group.entries.map((entry) => (
-                                    <div className="context-row" key={`${group.label}:${entry.label}`}>
-                                      <span>{entry.label}</span>
-                                      <strong className={entry.mono ? "trial-summary-mono" : undefined}>
-                                        {entry.values.length === 1 ? (
-                                          renderPropertyValue(entry.values[0], "trial-summary-link")
-                                        ) : (
-                                          <span className="property-chip-list">
-                                            {entry.values.map((item) => {
-                                              const itemClassName = `meta-chip ${entry.mono ? "meta-chip-mono" : ""}`.trim();
-                                              const key = `${group.label}:${entry.label}:${item.text}`;
-                                              return item.href ? (
-                                                <span key={key}>
-                                                  {renderPropertyValue(item, itemClassName)}
-                                                </span>
-                                              ) : (
-                                                <span key={key} className={itemClassName}>
-                                                  {item.text}
-                                                </span>
-                                              );
-                                            })}
-                                          </span>
-                                        )}
-                                      </strong>
-                                    </div>
-                                  ))}
-                                </div>
-                              </section>
-                            ))}
-                          </div>
-                        ) : (
-                          <p className="section-copy">No provenance payload recorded.</p>
-                        )}
+                        <CollapsibleSection
+                          id="trial-generation-provenance"
+                          expanded={isSectionExpanded("trial-generation-provenance")}
+                          onToggle={() => toggleSection("trial-generation-provenance")}
+                          title="Generation provenance"
+                          titleClassName="trial-summary-section-label"
+                          toggleClassName="trial-summary-section-toggle"
+                        >
+                          {selectedGenerationPropertyGroups.length > 0 ? (
+                            <div className="trial-summary-group-stack">
+                              {selectedGenerationPropertyGroups.map((group) => (
+                                <section className="trial-summary-subsection" key={group.label}>
+                                  <div className="trial-summary-subsection-label">{group.label}</div>
+                                  <div className="context-stack">
+                                    {group.entries.map((entry) => (
+                                      <div className="context-row" key={`${group.label}:${entry.label}`}>
+                                        <span>{entry.label}</span>
+                                        <strong className={entry.mono ? "trial-summary-mono" : undefined}>
+                                          {entry.values.length === 1 ? (
+                                            renderPropertyValue(entry.values[0], "trial-summary-link")
+                                          ) : (
+                                            <span className="property-chip-list">
+                                              {entry.values.map((item) => {
+                                                const itemClassName = `meta-chip ${entry.mono ? "meta-chip-mono" : ""}`.trim();
+                                                const key = `${group.label}:${entry.label}:${item.text}`;
+                                                return item.href ? (
+                                                  <span key={key}>
+                                                    {renderPropertyValue(item, itemClassName)}
+                                                  </span>
+                                                ) : (
+                                                  <span key={key} className={itemClassName}>
+                                                    {item.text}
+                                                  </span>
+                                                );
+                                              })}
+                                            </span>
+                                          )}
+                                        </strong>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </section>
+                              ))}
+                            </div>
+                          ) : (
+                            <p className="section-copy">No provenance payload recorded.</p>
+                          )}
+                        </CollapsibleSection>
                       </section>
                     </div>
                   </div>
@@ -1801,80 +1905,114 @@ export function DashboardShell({
                 <div className="inspector-grid">
                   {selectedTrial.hasError ? (
                     <article className="analysis-card wide-card">
-                      <div className="analysis-card-header">
-                        <h3>Error payload</h3>
-                      </div>
-                      <HighlightedCode code={formatJsonBlock(selectedTrial.errorJson)} language="json" wrap />
+                      <CollapsibleSection
+                        id="trial-error-payload"
+                        expanded={isSectionExpanded("trial-error-payload")}
+                        onToggle={() => toggleSection("trial-error-payload")}
+                        title="Error payload"
+                        titleTag="h3"
+                        toggleClassName="analysis-card-header"
+                      >
+                        <HighlightedCode code={formatJsonBlock(selectedTrial.errorJson)} language="json" wrap />
+                      </CollapsibleSection>
                     </article>
                   ) : null}
 
                   {selectedCanCompareMixedSource ? (
                     <article className="analysis-card wide-card">
-                      <div className="analysis-card-header">
-                        <h3>Mixed vs generated diff</h3>
-                        <span>
-                          {formatMixedSourceSummary(selectedMixedSource)}
-                        </span>
-                      </div>
-                      {selectedMixedSource ? (
-                        <SourceDiff before={selectedMixedSource.source} after={selectedGeneratedProgram ?? ""} />
-                      ) : (
-                        <p className="section-copy">No prompt-embedded source snippets were recorded for this trial.</p>
-                      )}
+                      <CollapsibleSection
+                        id="trial-mixed-source-diff"
+                        expanded={isSectionExpanded("trial-mixed-source-diff")}
+                        onToggle={() => toggleSection("trial-mixed-source-diff")}
+                        title="Mixed vs generated diff"
+                        titleTag="h3"
+                        summary={formatMixedSourceSummary(selectedMixedSource)}
+                        toggleClassName="analysis-card-header"
+                      >
+                        {selectedMixedSource ? (
+                          <SourceDiff before={selectedMixedSource.source} after={selectedGeneratedProgram ?? ""} />
+                        ) : (
+                          <p className="section-copy">No prompt-embedded source snippets were recorded for this trial.</p>
+                        )}
+                      </CollapsibleSection>
                     </article>
                   ) : null}
 
                   <article className="analysis-card wide-card">
-                    <div className="analysis-card-header">
-                      <h3>System prompt</h3>
-                    </div>
-                    <HighlightedCode
-                      code={selectedSystemPrompt ?? "No system prompt recorded."}
-                      language={detectPromptLanguage(selectedSystemPrompt ?? "")}
-                      wrap
-                    />
+                    <CollapsibleSection
+                      id="trial-system-prompt"
+                      expanded={isSectionExpanded("trial-system-prompt")}
+                      onToggle={() => toggleSection("trial-system-prompt")}
+                      title="System prompt"
+                      titleTag="h3"
+                      toggleClassName="analysis-card-header"
+                    >
+                      <HighlightedCode
+                        code={selectedSystemPrompt ?? "No system prompt recorded."}
+                        language={detectPromptLanguage(selectedSystemPrompt ?? "")}
+                        wrap
+                      />
+                    </CollapsibleSection>
                   </article>
 
                   <article className="analysis-card wide-card">
-                    <div className="analysis-card-header">
-                      <h3>User prompt</h3>
-                    </div>
-                    <HighlightedCode
-                      code={selectedUserPrompt ?? "No user prompt recorded."}
-                      language={detectPromptLanguage(selectedUserPrompt ?? "")}
-                      wrap
-                    />
+                    <CollapsibleSection
+                      id="trial-user-prompt"
+                      expanded={isSectionExpanded("trial-user-prompt")}
+                      onToggle={() => toggleSection("trial-user-prompt")}
+                      title="User prompt"
+                      titleTag="h3"
+                      toggleClassName="analysis-card-header"
+                    >
+                      <HighlightedCode
+                        code={selectedUserPrompt ?? "No user prompt recorded."}
+                        language={detectPromptLanguage(selectedUserPrompt ?? "")}
+                        wrap
+                      />
+                    </CollapsibleSection>
                   </article>
 
                   <article className="analysis-card wide-card">
-                    <div className="analysis-card-header">
-                      <h3>Raw LLM response</h3>
-                    </div>
-                    <HighlightedCode
-                      code={selectedResponseText ?? "No raw response recorded."}
-                      language={detectPromptLanguage(selectedResponseText ?? "")}
-                      wrap
-                    />
+                    <CollapsibleSection
+                      id="trial-raw-llm-response"
+                      expanded={isSectionExpanded("trial-raw-llm-response")}
+                      onToggle={() => toggleSection("trial-raw-llm-response")}
+                      title="Raw LLM response"
+                      titleTag="h3"
+                      toggleClassName="analysis-card-header"
+                    >
+                      <HighlightedCode
+                        code={selectedResponseText ?? "No raw response recorded."}
+                        language={detectPromptLanguage(selectedResponseText ?? "")}
+                        wrap
+                      />
+                    </CollapsibleSection>
                   </article>
 
                   <article className="analysis-card wide-card">
-                    <div className="analysis-card-header">
-                      <h3>{selectedIsGenerationFailure ? "Generation attempt" : "Generated program"}</h3>
-                    </div>
-                    {selectedShowsDiagnosticSource ? (
-                      <p className="section-copy">
-                        This trial never became runnable. The stored row source is diagnostic-only; this is the
-                        attempted candidate captured from generation.
-                      </p>
-                    ) : null}
-                    <HighlightedCode
-                      code={
-                        selectedGeneratedProgram ??
-                        (selectedIsGenerationFailure ? "No generation attempt recorded." : "No generated program recorded.")
-                      }
-                      language="python"
-                      wrap
-                    />
+                    <CollapsibleSection
+                      id="trial-generated-program"
+                      expanded={isSectionExpanded("trial-generated-program")}
+                      onToggle={() => toggleSection("trial-generated-program")}
+                      title={selectedIsGenerationFailure ? "Generation attempt" : "Generated program"}
+                      titleTag="h3"
+                      toggleClassName="analysis-card-header"
+                    >
+                      {selectedShowsDiagnosticSource ? (
+                        <p className="section-copy">
+                          This trial never became runnable. The stored row source is diagnostic-only; this is the
+                          attempted candidate captured from generation.
+                        </p>
+                      ) : null}
+                      <HighlightedCode
+                        code={
+                          selectedGeneratedProgram ??
+                          (selectedIsGenerationFailure ? "No generation attempt recorded." : "No generated program recorded.")
+                        }
+                        language="python"
+                        wrap
+                      />
+                    </CollapsibleSection>
                   </article>
                 </div>
               </>
