@@ -1,6 +1,6 @@
 {
   "dataset_id": "mnist:v1",
-  "epochs": 5,
+  "epochs": 20,
   "dispatch_ttl_sec": 300,
   "heartbeat_interval_sec": 15,
   "stale_ttl_sec": 120,

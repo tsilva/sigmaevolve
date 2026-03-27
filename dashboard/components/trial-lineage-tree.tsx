@@ -30,6 +30,23 @@ function formatShortTrialId(value: string): string {
   return formatCompactEntityId(value, "trial_");
 }
 
+function summarizeTaskDescription(value: string | null, maxLength = 72): string {
+  if (!value) {
+    return "No task description";
+  }
+
+  const collapsed = value.replace(/\s+/g, " ").trim();
+  if (collapsed.length === 0) {
+    return "No task description";
+  }
+
+  if (collapsed.length <= maxLength) {
+    return collapsed;
+  }
+
+  return `${collapsed.slice(0, maxLength - 1).trimEnd()}…`;
+}
+
 function TreeNode({
   node,
   onOpenTrial,
@@ -40,12 +57,13 @@ function TreeNode({
   selectedTrialId: string | null;
 }) {
   const isSelected = node.trial.trialId === selectedTrialId;
+  const taskSummary = summarizeTaskDescription(node.trial.taskDescription);
 
   return (
     <li className="trial-tree-item">
       <button
         type="button"
-        className={`trial-tree-node ${isSelected ? "active" : ""}`.trim()}
+        className={`trial-tree-node status-${node.trial.status} ${isSelected ? "active" : ""}`.trim()}
         onClick={() => onOpenTrial(node.trial.trialId)}
         aria-label={`Open lineage node ${node.trial.trialId}`}
       >
@@ -53,6 +71,10 @@ function TreeNode({
           {formatShortTrialId(node.trial.trialId)}
         </span>
         <span className="trial-tree-node-score">{formatNumber(node.trial.accuracy ?? node.trial.score)}</span>
+        <span className="trial-tree-node-status">{node.trial.status}</span>
+        <span className="trial-tree-node-task" title={node.trial.taskDescription ?? "No task description"}>
+          {taskSummary}
+        </span>
       </button>
 
       {node.children.length > 0 ? (
