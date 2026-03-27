@@ -320,6 +320,12 @@ def test_openrouter_generation_uses_model_pool_round_robin(monkeypatch):
     assert "- split_sizes:" in first_prompt
     assert "- dataset_metadata:" in first_prompt
     assert "- num_classes: 10" in first_prompt
+    assert "OBJECTIVE:" in first_prompt
+    assert "Improve CURRENT_PROGRAM for higher val_acc." in first_prompt
+    assert "Only CURRENT_PROGRAM is editable." in first_prompt
+    assert "Later appendices are ordered as REFERENCE, NEGATIVE, CURRENT_PROGRAM." in (
+        first_prompt
+    )
     assert "score:" not in first_prompt
     assert reference_appendix == "REFERENCE APPENDIX\nNone."
     assert negative_appendix == "NEGATIVE APPENDIX\nNone."
@@ -401,6 +407,7 @@ def test_openrouter_generation_prompt_includes_expected_sections(monkeypatch):
     current_program_appendix = payloads[0]["messages"][4]["content"]
     assert "# EVOLVE-BLOCK-START" in system_prompt
     assert "# EVOLVE-BLOCK-END" in system_prompt
+    assert "OBJECTIVE:" in stable_prompt
     assert "TASK CONTEXT:" in stable_prompt
     assert reference_appendix.startswith("REFERENCE APPENDIX")
     assert negative_appendix.startswith("NEGATIVE APPENDIX")
@@ -423,6 +430,7 @@ def test_openrouter_generation_prompt_compacts_prior_programs_before_current_pro
     negative_section = prompt_messages[3]["content"]
     current_section = prompt_messages[4]["content"]
 
+    assert "OBJECTIVE:" in stable_prompt
     assert "TASK CONTEXT:" in stable_prompt
     assert "REFERENCE APPENDIX" in prior_section
     assert "REFERENCE val_acc=0.998 val_loss=0.023" in prior_section
@@ -435,8 +443,9 @@ def test_openrouter_generation_prompt_compacts_prior_programs_before_current_pro
         "return torch.zeros((x.shape[0], 10), dtype=torch.float32) + 0.3"
         in prior_section
     )
-    assert "return torch.zeros((x.shape[0], 10), dtype=torch.float32) + 0.2" not in (
-        prior_section
+    assert (
+        "return torch.zeros((x.shape[0], 10), dtype=torch.float32) + 0.2"
+        not in prior_section
     )
     assert "CURRENT PROGRAM APPENDIX" in current_section
     assert "CURRENT_PROGRAM val_acc=0.992 val_loss=0.1" in current_section
@@ -507,6 +516,7 @@ def test_openrouter_generation_prompt_keeps_stable_prefix_across_context_changes
         selected_config={"model": "test/model"},
     )
 
+    assert first_prompt[0]["content"] == second_prompt[0]["content"]
     assert first_prompt[0]["content"] == second_prompt[0]["content"]
     assert first_prompt[1]["content"] == second_prompt[1]["content"]
     assert first_prompt[2]["content"] != second_prompt[2]["content"]
