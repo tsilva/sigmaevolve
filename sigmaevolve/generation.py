@@ -63,6 +63,10 @@ TASK_DESCRIPTION_HEADER = "TASK_DESCRIPTION:"
 MAX_CONTEXT_TRIALS = 4
 MAX_NEGATIVE_TRIALS = 4
 INSPIRATION_POOL_SIZE = 8
+MAX_RENDERED_INSPIRATIONS = 2
+MAX_RENDERED_NEGATIVE_TRIALS = 2
+MAX_NEGATIVE_DETAIL_CHARS = 120
+MAX_NEGATIVE_STDERR_CHARS = 120
 
 
 def _contains_evolve_block_marker_line(text: str) -> bool:
@@ -459,6 +463,35 @@ def _render_prompt_template(name: str, **variables: str) -> str:
     return re.sub(r"{{([a-zA-Z0-9_]+)}}", replace_variable, template)
 
 
+def _first_message_content(
+    messages: list[dict[str, str]],
+    *,
+    role: str,
+) -> str:
+    for message in messages:
+        if message.get("role") != role:
+            continue
+        content = message.get("content")
+        if isinstance(content, str):
+            return content
+    return ""
+
+
+def _join_message_contents(
+    messages: list[dict[str, str]],
+    *,
+    role: str,
+) -> str:
+    contents = [
+        content
+        for message in messages
+        if message.get("role") == role
+        for content in [message.get("content")]
+        if isinstance(content, str) and content
+    ]
+    return "\n\n".join(contents)
+
+
 @dataclass(frozen=True)
 class _GenerationRequestContext:
     selected_config: dict[str, object]
@@ -584,6 +617,14 @@ class OpenRouterGenerationBackend:
             lines.append(f"{prefix}- {label}: {self._format_scalar(value)}")
         return lines
 
+    def _trim_prompt_excerpt(self, value: object, *, limit: int) -> str:
+        text = " ".join(self._format_scalar(value).split())
+        if len(text) <= limit:
+            return text
+        if limit <= 3:
+            return text[:limit]
+        return f"{text[: limit - 3].rstrip()}..."
+
     def _summarize_error(self, error_json: dict[str, object] | None) -> list[str]:
         # Extract the most actionable error fields for prompt-side diagnostics.
         if not error_json:
@@ -597,7 +638,11 @@ class OpenRouterGenerationBackend:
         # Include the human-readable detail when the error payload has one.
         detail = error_json.get("detail")
         if detail is not None:
-            lines.append(f"- error detail: {self._format_scalar(detail)}")
+            trimmed_detail = self._trim_prompt_excerpt(
+                detail,
+                limit=MAX_NEGATIVE_DETAIL_CHARS,
+            )
+            lines.append(f"- error detail: {trimmed_detail}")
 
         # Surface the subprocess return code for execution failures.
         returncode = error_json.get("returncode")
@@ -618,7 +663,10 @@ class OpenRouterGenerationBackend:
         # Capture the last stderr line as the shortest useful excerpt.
         stderr = error_json.get("stderr")
         if isinstance(stderr, str) and stderr.strip():
-            excerpt = stderr.strip().splitlines()[-1][:240]
+            excerpt = self._trim_prompt_excerpt(
+                stderr.strip().splitlines()[-1],
+                limit=MAX_NEGATIVE_STDERR_CHARS,
+            )
             lines.append(f"- stderr excerpt: {excerpt}")
         return lines
 
@@ -673,9 +721,10 @@ class OpenRouterGenerationBackend:
         self,
         trial: TrialSummary,
         *,
+        header: str,
         strip_evolve_block_tags: bool = False,
         compact_evolve_source: bool = False,
-    ) -> list[str]:
+    ) -> str:
         # Normalize the source snapshot before rendering the trial prompt block.
         source = self._prompt_trial_source(
             trial,
@@ -685,25 +734,47 @@ class OpenRouterGenerationBackend:
             source = self._extract_compact_evolve_source(source)
         rendered = _render_prompt_template(
             "trial.md",
-            val_acc=self._trial_prompt_metric(trial, "val_acc", "accuracy"),
-            val_loss=self._trial_prompt_metric(trial, "val_loss"),
+            header=header,
             source=source.rstrip(),
         )
-        return rendered.splitlines()
+        return rendered.rstrip()
 
-    def _render_negative_trial_prompt_block(self, trial: TrialSummary) -> list[str]:
+    def _reference_header(self, trial: TrialSummary) -> str:
+        return (
+            "REFERENCE "
+            f"val_acc={self._trial_prompt_metric(trial, 'val_acc', 'accuracy')} "
+            f"val_loss={self._trial_prompt_metric(trial, 'val_loss')}"
+        )
+
+    def _current_program_header(self, trial: TrialSummary) -> str:
+        return (
+            "CURRENT_PROGRAM "
+            f"val_acc={self._trial_prompt_metric(trial, 'val_acc', 'accuracy')} "
+            f"val_loss={self._trial_prompt_metric(trial, 'val_loss')}"
+        )
+
+    def _render_negative_trial_prompt_block(self, trial: TrialSummary) -> str:
         source = self._prompt_trial_source(
             trial,
             prefer_generated_source=True,
         )
         source = self._extract_compact_evolve_source(source)
-        lines = [
-            "---",
-            f"outcome_reason: {self._format_scalar(trial.outcome_reason or 'unknown')}",
-        ]
-        lines.extend(self._summarize_error(trial.error_json))
-        lines.extend(("```python", source.rstrip(), "```"))
-        return lines
+        reason = self._format_scalar(trial.outcome_reason or "unknown")
+        detail = "none"
+        for line in self._summarize_error(trial.error_json):
+            if line.startswith("- error detail: "):
+                detail = line.removeprefix("- error detail: ")
+                break
+            if line.startswith("- stderr excerpt: "):
+                detail = line.removeprefix("- stderr excerpt: ")
+        lines = [f"NEGATIVE reason={reason} detail={detail}"]
+        if trial.error_json and trial.error_json.get("returncode") is not None:
+            lines.append(
+                f"returncode={self._format_scalar(trial.error_json['returncode'])}"
+            )
+        if source.rstrip():
+            lines.append(source.rstrip())
+        return "\n".join(lines)
 
     def _build_system_prompt_text(self) -> str:
         return _render_prompt_template(
@@ -743,50 +814,53 @@ class OpenRouterGenerationBackend:
         negative_trials: list[TrialSummary],
         selected_config: dict[str, object],
     ) -> str:
-        del selected_config
+        del context_trials, negative_trials, selected_config
         task_context_text = self._build_prompt_context_text(track, dataset_manifest)
-
-        # Split the context into the current program and optional prior examples.
-        current_program = context_trials[0] if context_trials else None
-        prior_programs = context_trials[1:] if len(context_trials) > 1 else []
-
-        # Compact prior programs to mutable payloads to avoid repeating boilerplate.
-        if prior_programs:
-            prior_program_blocks = []
-            for trial in prior_programs:
-                prior_program_blocks.append(
-                    "\n".join(
-                        self._render_trial_prompt_block(
-                            trial,
-                            compact_evolve_source=True,
-                        )
-                    )
-                )
-            prior_programs_text = "\n".join(prior_program_blocks)
-        else:
-            prior_programs_text = "None."
-
-        # Keep the current program intact so SEARCH blocks match the real source.
-        if current_program is not None:
-            current_program_text = "\n".join(
-                self._render_trial_prompt_block(current_program)
-            )
-        else:
-            current_program_text = "None."
-        if negative_trials:
-            negative_trials_text = "\n".join(
-                "\n".join(self._render_negative_trial_prompt_block(trial))
-                for trial in negative_trials
-            )
-        else:
-            negative_trials_text = "None."
         return _render_prompt_template(
             "user.md",
             task_context=task_context_text,
-            prior_programs=prior_programs_text,
-            negative_trials=negative_trials_text,
-            current_program=current_program_text,
         )
+
+    def _build_reference_appendix_text(self, prior_programs: list[TrialSummary]) -> str:
+        entries = prior_programs[:MAX_RENDERED_INSPIRATIONS]
+        if not entries:
+            return "REFERENCE APPENDIX\nNone."
+
+        rendered_entries = [
+            self._render_trial_prompt_block(
+                trial,
+                header=self._reference_header(trial),
+                compact_evolve_source=True,
+            )
+            for trial in entries
+        ]
+        return "REFERENCE APPENDIX\n\n" + "\n\n".join(rendered_entries)
+
+    def _build_negative_appendix_text(
+        self,
+        negative_trials: list[TrialSummary],
+    ) -> str:
+        entries = negative_trials[:MAX_RENDERED_NEGATIVE_TRIALS]
+        if not entries:
+            return "NEGATIVE APPENDIX\nNone."
+
+        rendered_entries = [
+            self._render_negative_trial_prompt_block(trial) for trial in entries
+        ]
+        return "NEGATIVE APPENDIX\n\n" + "\n\n".join(rendered_entries)
+
+    def _build_current_program_appendix_text(
+        self,
+        current_program: TrialSummary | None,
+    ) -> str:
+        if current_program is None:
+            return "CURRENT PROGRAM APPENDIX\nNone."
+
+        rendered_program = self._render_trial_prompt_block(
+            current_program,
+            header=self._current_program_header(current_program),
+        )
+        return "CURRENT PROGRAM APPENDIX\n\n" + rendered_program
 
     def _build_prompt(
         self,
@@ -796,7 +870,7 @@ class OpenRouterGenerationBackend:
         negative_trials: list[TrialSummary],
         selected_config: dict[str, object],
     ) -> list[dict[str, str]]:
-        # Build the final two-message chat payload from the system and user prompts.
+        # Build the final chat payload with a stable prefix before volatile content.
         system_prompt = self._build_system_prompt_text()
         user_prompt = self._build_user_prompt_text(
             track,
@@ -805,9 +879,19 @@ class OpenRouterGenerationBackend:
             negative_trials,
             selected_config,
         )
+        current_program = context_trials[0] if context_trials else None
+        prior_programs = context_trials[1:] if len(context_trials) > 1 else []
+        reference_appendix = self._build_reference_appendix_text(prior_programs)
+        negative_appendix = self._build_negative_appendix_text(negative_trials)
+        current_program_appendix = self._build_current_program_appendix_text(
+            current_program
+        )
         return [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
+            {"role": "user", "content": reference_appendix},
+            {"role": "user", "content": negative_appendix},
+            {"role": "user", "content": current_program_appendix},
         ]
 
     def _build_request_context(
@@ -860,10 +944,8 @@ class OpenRouterGenerationBackend:
     ) -> dict[str, object]:
         # Preserve the prompt text and response metadata in a single provenance shape.
         request_messages = context.request_messages
-        system_prompt = request_messages[0]["content"] if request_messages else ""
-        user_prompt = (
-            request_messages[1]["content"] if len(request_messages) > 1 else ""
-        )
+        system_prompt = _first_message_content(request_messages, role="system")
+        user_prompt = _join_message_contents(request_messages, role="user")
         generation_payload: dict[str, object] = {
             "system_prompt": system_prompt,
             "user_prompt": user_prompt,
@@ -1345,15 +1427,20 @@ class GenerationCoordinator:
 
         # Backfill prompt text when older payloads only stored request messages.
         if isinstance(request_messages, list):
-            if "system_prompt" not in generation_payload and request_messages:
-                first = request_messages[0]
-                if isinstance(first, dict) and isinstance(first.get("content"), str):
-                    generation_payload["system_prompt"] = first["content"]
+            request_message_dicts = [
+                message for message in request_messages if isinstance(message, dict)
+            ]
+            if "system_prompt" not in generation_payload:
+                generation_payload["system_prompt"] = _first_message_content(
+                    request_message_dicts,
+                    role="system",
+                )
 
-            if "user_prompt" not in generation_payload and len(request_messages) > 1:
-                second = request_messages[1]
-                if isinstance(second, dict) and isinstance(second.get("content"), str):
-                    generation_payload["user_prompt"] = second["content"]
+            if "user_prompt" not in generation_payload:
+                generation_payload["user_prompt"] = _join_message_contents(
+                    request_message_dicts,
+                    role="user",
+                )
 
         # Record the generated candidate trace in one normalized generation block.
         generation_payload.setdefault("response_text", None)
