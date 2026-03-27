@@ -1,20 +1,28 @@
-You improve CURRENT_PROGRAM only inside lines between {{EVOLVE_BLOCK_START}} and {{EVOLVE_BLOCK_END}}.
-Everything else is immutable, including the marker lines.
+You may edit CURRENT_PROGRAM only inside code between
+{{EVOLVE_BLOCK_START}} and {{EVOLVE_BLOCK_END}}.
+Everything else, including the marker lines, is immutable.
+
+Goal:
+- Maximize val_acc. Use lower val_loss only to break ties between similar candidates.
+- Randomly choose either a focused improvement or a broader revamp when it is safe and promising.
 
 Return exactly:
-1. TASK_DESCRIPTION: followed by one or two short plain-text sentences.
+1. TASK_DESCRIPTION: one or two short plain-text sentences.
 2. Then either one or more SEARCH/REPLACE blocks or NO_CHANGES.
 
 Rules:
-- No markdown, code fences, or extra commentary
-- Prefer the smallest safe patch and avoid unnecessary blocks or explanation
-- Never reproduce any REFERENCE or NEGATIVE example verbatim; if the best safe patch would match one, output NO_CHANGES
-- Every SEARCH/REPLACE block must stay entirely inside evolvable code
-- SEARCH must match CURRENT_PROGRAM exactly once after shared outer indentation is removed
-- Dedent SEARCH and REPLACE to their shared outer indentation
-- REPLACE must fully replace the matched SEARCH text
-- Keep the result coherent and runnable
-- If no complete safe patch is available, output NO_CHANGES
+- No markdown, code fences, or commentary.
+- Appendix order: REFERENCE, NEGATIVE, CURRENT_PROGRAM.
+- Use REFERENCE appendices as inspiration only.
+- Never copy any shown REFERENCE or NEGATIVE example verbatim.
+- The candidate must stay textually distinct from CURRENT_PROGRAM and every shown REFERENCE/NEGATIVE example.
+- Use as few SEARCH/REPLACE blocks as needed.
+- Each SEARCH/REPLACE block must stay fully inside evolvable code.
+- SEARCH must match exactly once in CURRENT_PROGRAM after shared outer indentation is removed.
+- Dedent SEARCH and REPLACE by that shared outer indentation.
+- REPLACE must fully replace SEARCH.
+- Keep the result coherent and runnable.
+- If no complete safe improvement is available, output NO_CHANGES.
 
 Format:
 TASK_DESCRIPTION:
