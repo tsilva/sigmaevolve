@@ -5,15 +5,12 @@ export type TrialLineageNode = {
   descendantCount: number;
   directForkCount: number;
   hasMissingParent: boolean;
-  inspirationTrialIds: string[];
-  inspirationUseTrialIds: string[];
   parentTrialId: string | null;
   trial: TrialListItem;
 };
 
 export type TrialLineageGraph = {
   forkEdgeCount: number;
-  inspirationEdgeCount: number;
   nodeCount: number;
   roots: TrialLineageNode[];
 };
@@ -23,8 +20,6 @@ type TrialLineageDraft = {
   descendantCount: number;
   directForkCount: number;
   hasMissingParent: boolean;
-  inspirationTrialIds: string[];
-  inspirationUseTrialIds: string[];
   parentTrialId: string | null;
   trial: TrialListItem;
 };
@@ -45,11 +40,6 @@ function getParentTrialId(trial: TrialListItem): string | null {
 
   const parentTrialIds = asTrialIdList(trial.provenanceJson?.parent_trial_ids);
   return parentTrialIds[0] ?? null;
-}
-
-function getInspirationTrialIds(trial: TrialListItem): string[] {
-  const contextTrialIds = asTrialIdList(trial.provenanceJson?.context_trial_ids);
-  return contextTrialIds.length > 1 ? contextTrialIds.slice(1) : [];
 }
 
 function compareTrials(left: TrialListItem, right: TrialListItem): number {
@@ -76,8 +66,6 @@ function finalizeNode(node: TrialLineageDraft): TrialLineageNode {
     descendantCount,
     directForkCount: children.length,
     hasMissingParent: node.hasMissingParent,
-    inspirationTrialIds: [...node.inspirationTrialIds],
-    inspirationUseTrialIds: [...node.inspirationUseTrialIds].sort(),
     parentTrialId: node.parentTrialId,
     trial: node.trial,
   };
@@ -93,15 +81,12 @@ export function buildTrialLineageGraph(trials: TrialListItem[]): TrialLineageGra
       descendantCount: 0,
       directForkCount: 0,
       hasMissingParent: false,
-      inspirationTrialIds: getInspirationTrialIds(trial),
-      inspirationUseTrialIds: [],
       parentTrialId: getParentTrialId(trial),
       trial,
     });
   }
 
   let forkEdgeCount = 0;
-  let inspirationEdgeCount = 0;
 
   for (const node of drafts.values()) {
     if (node.parentTrialId && node.parentTrialId !== node.trial.trialId) {
@@ -112,20 +97,6 @@ export function buildTrialLineageGraph(trials: TrialListItem[]): TrialLineageGra
       } else {
         node.hasMissingParent = true;
       }
-    }
-
-    for (const inspirationTrialId of node.inspirationTrialIds) {
-      if (inspirationTrialId === node.trial.trialId) {
-        continue;
-      }
-
-      const inspirationSource = drafts.get(inspirationTrialId);
-      if (!inspirationSource) {
-        continue;
-      }
-
-      inspirationSource.inspirationUseTrialIds.push(node.trial.trialId);
-      inspirationEdgeCount += 1;
     }
   }
 
@@ -142,7 +113,6 @@ export function buildTrialLineageGraph(trials: TrialListItem[]): TrialLineageGra
 
   return {
     forkEdgeCount,
-    inspirationEdgeCount,
     nodeCount: sortedTrials.length,
     roots,
   };

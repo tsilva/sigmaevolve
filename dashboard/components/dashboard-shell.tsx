@@ -1864,12 +1864,10 @@ export function DashboardShell({
           <>
             {error ? <div className="error-banner">{error}</div> : null}
             <TrialLineageTree
-              bestTrialId={bestTrialId}
               graph={lineageGraph}
               isLoading={isLineageLoading}
               onOpenTrial={openInspector}
               selectedTrialId={selectedTrialId}
-              track={detail.track}
             />
           </>
           ) : null}
