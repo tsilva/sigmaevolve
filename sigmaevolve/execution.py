@@ -655,12 +655,13 @@ def _stage_trial_runtime_package(run_dir: Path) -> None:
     package_dir.mkdir(parents=True, exist_ok=True)
 
     source_dir = Path(__file__).resolve().parent
-    init_source = (source_dir / "__init__.py").read_text(encoding="utf-8")
     runtime_source = (source_dir / "train_script_runtime.py").read_text(
         encoding="utf-8"
     )
 
-    (package_dir / "__init__.py").write_text(init_source, encoding="utf-8")
+    # Keep the staged package minimal so importing the helper module does not
+    # pull in the full sigmaevolve package tree inside the temp run directory.
+    (package_dir / "__init__.py").write_text("", encoding="utf-8")
     (package_dir / "train_script_runtime.py").write_text(
         runtime_source,
         encoding="utf-8",

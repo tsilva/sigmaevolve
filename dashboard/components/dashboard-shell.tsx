@@ -575,12 +575,20 @@ function compactIdentifier(value: string, leading = 10, trailing = 6): string {
   return `${value.slice(0, leading)}…${value.slice(-trailing)}`;
 }
 
-function formatShortTrialId(value: string): string {
-  const trimmed = value.startsWith("trial_") ? value.slice("trial_".length) : value;
+function formatCompactEntityId(value: string, prefix?: string): string {
+  const trimmed = prefix && value.startsWith(prefix) ? value.slice(prefix.length) : value;
   if (trimmed.length <= 6) {
     return trimmed;
   }
   return `${trimmed.slice(0, 3)}${trimmed.slice(-3)}`;
+}
+
+function formatShortTrialId(value: string): string {
+  return formatCompactEntityId(value, "trial_");
+}
+
+function formatShortTrackId(value: string): string {
+  return formatCompactEntityId(value, "track_");
 }
 
 function summarizeCrashDetails(value: string | null): string | null {
@@ -1387,7 +1395,9 @@ export function DashboardShell({
                 >
                   <div className="track-card-top">
                     <div>
-                      <div className="track-card-title">{getTrackLabel(track)}</div>
+                      <div className="track-card-title" title={track.trackId}>
+                        {formatShortTrackId(track.trackId)}
+                      </div>
                       <div className="track-card-subtitle">{track.datasetId}</div>
                     </div>
                     <div className="track-score">{formatNumber(track.bestScore, 4)}</div>
@@ -1501,19 +1511,14 @@ export function DashboardShell({
                       {scoreChart.scoredCount} scored / {visibleTrials.length} displayed
                     </span>
                   </div>
-                  <div className="score-chart-meta">
-                    <span>Best {formatNumber(scoreChart.bestScore, 4)}</span>
-                    <span>
-                      {scoreChart.scaleMode === "zoomed" ? "Zoomed range" : "Range"} {formatNumber(scoreChart.yMin, 4)} to{" "}
-                      {formatNumber(scoreChart.yMax, 4)}
-                    </span>
-                    {scoreChart.scaleMode === "zoomed" ? (
+                  {scoreChart.scaleMode === "zoomed" ? (
+                    <div className="score-chart-meta">
                       <span>
                         {scoreChart.clippedLowCount} lower outlier{scoreChart.clippedLowCount === 1 ? "" : "s"} pinned to the
                         baseline
                       </span>
-                    ) : null}
-                  </div>
+                    </div>
+                  ) : null}
                   <div className="score-chart-shell">
                     <svg
                       className="score-chart"
@@ -1979,9 +1984,8 @@ export function DashboardShell({
                   {selectedTrial.hasError ? (
                     <article className="analysis-card wide-card">
                       <CollapsibleSection
+                        collapsible={false}
                         id="trial-error-payload"
-                        expanded={isSectionExpanded("trial-error-payload")}
-                        onToggle={() => toggleSection("trial-error-payload")}
                         title="Error payload"
                         titleTag="h3"
                         toggleClassName="analysis-card-header"
