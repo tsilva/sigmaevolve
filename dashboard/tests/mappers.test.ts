@@ -44,6 +44,8 @@ describe("dashboard row mappers", () => {
       modalRunUrl: null,
       score: "0",
       accuracy: null,
+      bestEvalEpoch: null,
+      epochsCompleted: null,
       timeToBestEvalSec: null,
       timedOut: false,
       timeSinceLastEvalSec: null,
@@ -81,6 +83,8 @@ describe("dashboard row mappers", () => {
       modalRunUrl: null,
       score: 0,
       accuracy: null,
+      bestEvalEpoch: null,
+      epochsCompleted: null,
       timeToBestEvalSec: null,
       timedOut: false,
       timeSinceLastEvalSec: null,
@@ -127,6 +131,8 @@ describe("dashboard row mappers", () => {
       modalRunUrl: null,
       score: "0",
       accuracy: "0.875",
+      bestEvalEpoch: "3",
+      epochsCompleted: "5",
       timeToBestEvalSec: "1.25",
       timedOut: false,
       timeSinceLastEvalSec: null,
@@ -147,6 +153,8 @@ describe("dashboard row mappers", () => {
 
     expect(mapped.status).toBe("active");
     expect(mapped.accuracy).toBe(0.875);
+    expect(mapped.bestEvalEpoch).toBe(3);
+    expect(mapped.epochsCompleted).toBe(5);
     expect(mapped.timeToBestEvalSec).toBe(1.25);
     expect(mapped.lastPhase).toBe("train");
     expect(mapped.durationSec).toBe(12.5);
@@ -161,6 +169,8 @@ describe("dashboard row mappers", () => {
       modalRunUrl: null,
       score: "0.91",
       accuracy: "0.91",
+      bestEvalEpoch: null,
+      epochsCompleted: null,
       timeToBestEvalSec: "1.5",
       timedOut: false,
       timeSinceLastEvalSec: "2.0",
@@ -206,6 +216,8 @@ describe("dashboard row mappers", () => {
       modalRunUrl: "https://modal.com/apps/test/runs/fc-123",
       score: "0.927",
       accuracy: "0.927",
+      bestEvalEpoch: "2",
+      epochsCompleted: "4",
       timeToBestEvalSec: "1.97",
       timedOut: false,
       timeSinceLastEvalSec: "4.19",
@@ -226,6 +238,8 @@ describe("dashboard row mappers", () => {
 
     expect(mapped.hasError).toBe(false);
     expect(mapped.modalRunUrl).toBe("https://modal.com/apps/test/runs/fc-123");
+    expect(mapped.bestEvalEpoch).toBe(2);
+    expect(mapped.epochsCompleted).toBe(4);
     expect(mapped.errorJson).toEqual({ stderr: "", eval_artifacts: ["/tmp/eval_0001.npz"] });
     expect(mapped.responseText).toBeNull();
     expect(mapped.taskDescription).toBeNull();
@@ -244,6 +258,8 @@ describe("dashboard row mappers", () => {
       modalRunUrl: null,
       score: "0.927",
       accuracy: "0.927",
+      bestEvalEpoch: null,
+      epochsCompleted: null,
       timeToBestEvalSec: "1.97",
       timedOut: false,
       timeSinceLastEvalSec: "4.19",

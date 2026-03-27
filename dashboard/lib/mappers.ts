@@ -27,6 +27,8 @@ type TrialRow = {
   modalRunUrl: string | null;
   score: number | string | null;
   accuracy: number | string | null;
+  bestEvalEpoch: number | string | null;
+  epochsCompleted: number | string | null;
   timeToBestEvalSec: number | string | null;
   timedOut: boolean | null;
   timeSinceLastEvalSec: number | string | null;
@@ -255,6 +257,8 @@ export function mapTrialListItem(row: TrialRow): TrialListItem {
     modalRunUrl: asNullableString(row.modalRunUrl),
     score: asNumber(row.score),
     accuracy: asNullableNumber(row.accuracy),
+    bestEvalEpoch: asNullableNumber(row.bestEvalEpoch),
+    epochsCompleted: asNullableNumber(row.epochsCompleted),
     timeToBestEvalSec: asNullableNumber(row.timeToBestEvalSec),
     timedOut: Boolean(row.timedOut),
     timeSinceLastEvalSec: asNullableNumber(row.timeSinceLastEvalSec),

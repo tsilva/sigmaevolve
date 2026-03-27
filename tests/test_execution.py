@@ -25,7 +25,7 @@ from sigmaevolve.orchestration import (
     InlineRunnerLauncher,
 )
 from sigmaevolve.storage import classify_error_type
-from tests.support import make_llm_provenance
+from tests.support import make_generation_trace, make_llm_provenance
 
 SUCCESS_BLOCK = build_model_block(
     """
@@ -212,7 +212,10 @@ def _run_trial(system, track_id, source):
     _, created = system.repository.create_queued_trial_if_absent(
         track_id,
         trial_source,
-        make_llm_provenance(candidate_kind=CANDIDATE_KIND_STRATEGY_V1),
+        make_llm_provenance(
+            candidate_kind=CANDIDATE_KIND_STRATEGY_V1,
+            generation=make_generation_trace(trial_source),
+        ),
     )
     assert created is True
     reserved = system.repository.reserve_trials(
@@ -256,6 +259,8 @@ def test_successful_run_produces_metrics_and_score(repository, dataset_manager):
     assert finished.metrics_json["accuracy"] >= 0.0
     assert finished.metrics_json["val_loss"] >= 0.0
     assert finished.metrics_json["eval_count"] == 2
+    assert finished.metrics_json["epochs_completed"] == 2
+    assert finished.metrics_json["best_eval_epoch"] == 1
     assert finished.score == finished.metrics_json["accuracy"]
     assert finished.error_json is None
 
@@ -451,7 +456,10 @@ def test_run_uses_unbuffered_python_for_child_process(
     _, created = system.repository.create_queued_trial_if_absent(
         track.track_id,
         reserved_source,
-        make_llm_provenance(candidate_kind=CANDIDATE_KIND_STRATEGY_V1),
+        make_llm_provenance(
+            candidate_kind=CANDIDATE_KIND_STRATEGY_V1,
+            generation=make_generation_trace(reserved_source),
+        ),
     )
     assert created is True
     reserved = system.repository.reserve_trials(
@@ -490,10 +498,14 @@ def test_active_run_persists_live_metrics_before_finalization(
     system.prepare_dataset("mnist:v1")
     track = _create_track(system, {"epochs": 3})
     finalize_baseline(system, track.track_id)
+    live_metrics_source = build_candidate_train_script(LIVE_METRICS_BLOCK)
     _, created = system.repository.create_queued_trial_if_absent(
         track.track_id,
-        build_candidate_train_script(LIVE_METRICS_BLOCK),
-        make_llm_provenance(candidate_kind=CANDIDATE_KIND_STRATEGY_V1),
+        live_metrics_source,
+        make_llm_provenance(
+            candidate_kind=CANDIDATE_KIND_STRATEGY_V1,
+            generation=make_generation_trace(live_metrics_source),
+        ),
     )
     assert created is True
 
@@ -528,6 +540,7 @@ def test_active_run_persists_live_metrics_before_finalization(
     assert active_snapshot.metrics_json["accuracy"] == 1.0
     assert active_snapshot.metrics_json["val_loss"] >= 0.0
     assert active_snapshot.metrics_json["eval_count"] >= 1
+    assert active_snapshot.metrics_json["best_eval_epoch"] == 1
     assert active_snapshot.metrics_json["last_phase"] in {"train", "eval", "finished"}
     assert "timed_out" not in active_snapshot.metrics_json
 
@@ -536,6 +549,8 @@ def test_active_run_persists_live_metrics_before_finalization(
     assert finished.status == "finished"
     assert finished.metrics_json["timed_out"] is False
     assert finished.metrics_json["accuracy"] == 1.0
+    assert finished.metrics_json["epochs_completed"] == 3
+    assert finished.metrics_json["best_eval_epoch"] == 1
     assert finished.metrics_json != active_snapshot.metrics_json
 
     runs = fake_wandb["runs"]
@@ -594,6 +609,7 @@ def test_collect_active_metrics_payload_uses_eval_artifacts(
     assert metrics["accuracy"] == 1.0
     assert metrics["best_accuracy"] == 1.0
     assert metrics["best_eval_index"] == 1
+    assert metrics["best_eval_epoch"] == 1
     assert metrics["eval_count"] == 1
     assert metrics["last_phase"] == "eval"
     assert "timed_out" not in metrics

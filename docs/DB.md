@@ -108,13 +108,15 @@ Persisted keys:
 | `accuracy` | Validation accuracy for the persisted best-scoring evaluation. This is the ranking metric used for derived score. |
 | `val_loss` | Validation loss for the persisted best-scoring evaluation. |
 | `time_to_best_eval_sec` | Elapsed runtime until the best evaluation was produced. |
+| `best_eval_epoch` | 1-based training epoch that produced the persisted best-scoring evaluation. |
 | `eval_count` | Number of completed evaluations observed so far or at finish time. |
+| `epochs_completed` | Total number of training epochs that completed before the run stopped or finished. |
 | `timed_out` | Whether the run ended due to timeout. |
 | `time_since_last_eval_sec` | Runtime elapsed after the last completed evaluation. Useful for timeout diagnostics. |
 | `had_unscored_work_at_timeout` | Indicates the process timed out while additional training work had not yet produced a scored evaluation. |
 | `last_phase` | Last reported phase such as `train`, `eval`, or `finished`. |
 
-No other runner metrics are persisted in the live schema. Fields such as `best_accuracy`, `train_loss`, `train_acc`, `val_acc`, `best_eval_index`, `best_eval_epoch`, `best_eval_path`, `last_completed_eval_sec`, `last_completed_eval_index`, `process_elapsed_sec`, `epochs_completed`, `epochs_without_improvement`, and `early_stop_epoch` are intentionally dropped before persistence.
+No other runner metrics are persisted in the live schema. Fields such as `best_accuracy`, `train_loss`, `train_acc`, `val_acc`, `best_eval_index`, `best_eval_path`, `last_completed_eval_sec`, `last_completed_eval_index`, `process_elapsed_sec`, `epochs_without_improvement`, and `early_stop_epoch` are intentionally dropped before persistence.
 
 ### `trials.error_json`
 
