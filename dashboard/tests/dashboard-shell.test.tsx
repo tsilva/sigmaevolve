@@ -539,6 +539,30 @@ describe("DashboardShell", () => {
     expect(screen.queryByText("No reasoning trace recorded.")).toBeNull();
   });
 
+  it("shows a safe note when the provider returns an encrypted reasoning payload", () => {
+    renderShell({
+      detail: createDetail([
+        createTrial({
+          trialId: "trial_encrypted_reasoning_trace",
+          reasoningText:
+            "Reasoning trace unavailable. Provider returned encrypted reasoning blocks (google-gemini-v1).",
+        }),
+      ]),
+      initialSelectedTrialId: "trial_encrypted_reasoning_trace",
+    });
+
+    toggleSection("Reasoning trace");
+
+    expect(
+      screen.getByText(
+        "Reasoning trace unavailable. Provider returned encrypted reasoning blocks (google-gemini-v1).",
+      ),
+    ).toBeTruthy();
+    expect(
+      screen.queryByText("AY89a19Jsq7xtfbhrjynErTNjrdDbmfbe3gDcIH4rvFJEp195oIBbTyfgiQ1/5l2oko="),
+    ).toBeNull();
+  });
+
   it("shows the error payload card at the front of the inspector card stack", () => {
     const { container } = renderShell({
       detail: createDetail([

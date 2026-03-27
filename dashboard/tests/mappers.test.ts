@@ -152,6 +152,51 @@ describe("dashboard row mappers", () => {
     expect(mapped.durationSec).toBe(12.5);
   });
 
+  it("replaces encrypted reasoning payloads with a safe availability message", () => {
+    const mapped = mapTrialListItem({
+      trialId: "trial_encrypted_reasoning",
+      status: "finished",
+      outcomeReason: "succeeded",
+      modalRunId: null,
+      modalRunUrl: null,
+      score: "0.91",
+      accuracy: "0.91",
+      timeToBestEvalSec: "1.5",
+      timedOut: false,
+      timeSinceLastEvalSec: "2.0",
+      hadUnscoredWorkAtTimeout: false,
+      lastPhase: "finished",
+      backend: "openrouter",
+      model: "google/gemini",
+      dispatchAttempts: "1",
+      createdAt: "2026-03-20T15:00:00.000Z",
+      startedAt: "2026-03-20T15:01:00.000Z",
+      finishedAt: "2026-03-20T15:02:00.000Z",
+      durationSec: "60",
+      hasError: false,
+      source: "print('ok')\n",
+      errorJson: null,
+      provenanceJson: {
+        model: "google/gemini",
+        request_messages: [],
+        generation: {
+          reasoning_text: [
+            {
+              type: "reasoning.encrypted",
+              data: "AY89a19Jsq7xtfbhrjynErTNjrdDbmfbe3gDcIH4rvFJEp195oIBbTyfgiQ1/5l2oko=",
+              format: "google-gemini-v1",
+              index: 0,
+            },
+          ],
+        },
+      },
+    });
+
+    expect(mapped.reasoningText).toBe(
+      "Reasoning trace unavailable. Provider returned encrypted reasoning blocks (google-gemini-v1).",
+    );
+  });
+
   it("does not flag successful diagnostics as an execution error", () => {
     const mapped = mapTrialListItem({
       trialId: "trial_success",

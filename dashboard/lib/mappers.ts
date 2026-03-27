@@ -99,6 +99,41 @@ function asNullableString(value: string | null | undefined): string | null {
   return value;
 }
 
+function formatStructuredReasoningTrace(value: unknown): string | null {
+  if (typeof value === "string") {
+    return asNullableString(value);
+  }
+
+  if (!Array.isArray(value) || value.length === 0) {
+    return null;
+  }
+
+  const encryptedEntries = value.filter(
+    (entry): entry is { format?: unknown; type?: unknown } =>
+      Boolean(entry) &&
+      typeof entry === "object" &&
+      (entry as { type?: unknown }).type === "reasoning.encrypted",
+  );
+
+  if (encryptedEntries.length === value.length) {
+    const formats = Array.from(
+      new Set(
+        encryptedEntries
+          .map((entry) => (typeof entry.format === "string" ? entry.format.trim() : ""))
+          .filter((entry) => entry.length > 0),
+      ),
+    );
+
+    if (formats.length > 0) {
+      return `Reasoning trace unavailable. Provider returned encrypted reasoning blocks (${formats.join(", ")}).`;
+    }
+
+    return "Reasoning trace unavailable. Provider returned encrypted reasoning blocks.";
+  }
+
+  return "Reasoning trace unavailable. Provider returned a structured reasoning payload that cannot be rendered.";
+}
+
 function asStringArray(value: unknown): string[] {
   // Keep only non-empty string entries from mixed JSON arrays.
   if (!Array.isArray(value)) {
@@ -237,7 +272,7 @@ export function mapTrialListItem(row: TrialRow): TrialListItem {
     source: row.source ?? "",
     taskDescription: asNullableString(generation?.task_description as string | null | undefined),
     responseText: asNullableString(generation?.response_text as string | null | undefined),
-    reasoningText: asNullableString(generation?.reasoning_text as string | null | undefined),
+    reasoningText: formatStructuredReasoningTrace(generation?.reasoning_text),
     generatedSource: asNullableString(generation?.generated_source as string | null | undefined),
     generationAssertionsPassed:
       typeof generation?.assertions_passed === "boolean" ? (generation.assertions_passed as boolean) : null,
