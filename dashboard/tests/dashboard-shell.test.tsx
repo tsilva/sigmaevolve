@@ -188,7 +188,7 @@ describe("DashboardShell", () => {
     expect(screen.getByRole("button", { name: "Open trial trial_2" })).toBeTruthy();
   });
 
-  it("renders a lineage tree with fork and inspiration relationships", () => {
+  it("renders a minimal lineage tree with short ids and scores", () => {
     renderShell({
       detail: createDetail([
         createTrial({
@@ -221,12 +221,13 @@ describe("DashboardShell", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Lineage tree" }));
 
-    expect(screen.getByText("How candidates fork and cross-pollinate")).toBeTruthy();
-    expect(screen.getByText("2 direct forks")).toBeTruthy();
-    expect(screen.getByText("Inspired by")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "trial_child_a" })).toBeTruthy();
-    expect(screen.getByText("Inspires")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "trial_child_b" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Open lineage node trial_root" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Open lineage node trial_child_a" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Open lineage node trial_child_b" })).toBeTruthy();
+    expect(screen.getAllByText("root")).toHaveLength(1);
+    expect(screen.getAllByText("0.9100").length).toBeGreaterThanOrEqual(1);
+    expect(screen.queryByText("Inspired by")).toBeNull();
+    expect(screen.queryByText("Inspires")).toBeNull();
   });
 
   it("opens the inspector from a lineage node", () => {

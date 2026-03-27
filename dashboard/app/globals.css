@@ -826,10 +826,6 @@ button {
   -webkit-line-clamp: 3;
 }
 
-.tree-metrics {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-}
-
 .tree-loading-banner {
   padding: 10px 12px;
   border-radius: 14px;
@@ -883,17 +879,15 @@ button {
 
 .trial-tree-node {
   display: grid;
-  gap: 10px;
-  padding: 12px;
+  gap: 3px;
+  min-width: 128px;
+  padding: 10px 12px;
   border-radius: 16px;
   border: 1px solid rgba(62, 50, 35, 0.08);
+  background: rgba(255, 255, 255, 0.92);
   box-shadow: var(--shadow);
-}
-
-.trial-tree-node.best-trial {
-  box-shadow:
-    inset 3px 0 0 rgba(181, 122, 23, 0.85),
-    var(--shadow);
+  text-align: left;
+  cursor: pointer;
 }
 
 .trial-tree-node.active {
@@ -901,44 +895,9 @@ button {
   background: rgba(255, 255, 255, 0.94);
 }
 
-.trial-tree-node-header {
-  display: flex;
-  justify-content: space-between;
-  gap: 10px;
-  align-items: flex-start;
-}
-
-.trial-tree-node-header > * {
-  min-width: 0;
-}
-
-.trial-tree-node-button {
-  display: grid;
-  gap: 4px;
-  width: 100%;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  text-align: left;
-  cursor: pointer;
-}
-
-.trial-tree-node-button:focus-visible,
-.trial-tree-link-chip:focus-visible {
+.trial-tree-node:focus-visible {
   outline: 2px solid rgba(51, 98, 183, 0.28);
   outline-offset: 3px;
-}
-
-.trial-tree-node-title-row,
-.trial-tree-node-stats,
-.trial-tree-node-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.trial-tree-node-title-row {
-  align-items: center;
 }
 
 .trial-tree-node-title {
@@ -947,34 +906,10 @@ button {
   font-family: var(--font-mono), monospace;
 }
 
-.trial-tree-node-copy {
+.trial-tree-node-score {
   color: var(--muted);
   font-size: 0.76rem;
   line-height: 1.32;
-  overflow-wrap: anywhere;
-}
-
-.trial-tree-node-relations {
-  display: grid;
-  gap: 8px;
-}
-
-.trial-tree-relation-row {
-  display: grid;
-  grid-template-columns: minmax(88px, 112px) minmax(0, 1fr);
-  gap: 8px;
-  align-items: start;
-}
-
-.trial-tree-relation-label {
-  color: var(--muted);
-  font-size: 0.72rem;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-}
-
-.trial-tree-link-chip {
-  cursor: pointer;
 }
 
 .trial-notes,
@@ -1558,9 +1493,6 @@ button {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
-  .tree-metrics {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
 }
 
 @media (max-width: 900px) {
@@ -1588,14 +1520,9 @@ button {
     grid-template-columns: 1fr;
   }
 
-  .tree-metrics {
-    grid-template-columns: 1fr;
-  }
-
   .priority-item,
   .timeline-row,
-  .context-row,
-  .trial-tree-relation-row {
+  .context-row {
     grid-template-columns: 1fr;
     gap: 6px;
   }

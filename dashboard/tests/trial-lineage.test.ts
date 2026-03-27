@@ -40,7 +40,7 @@ function createTrial(overrides: Partial<TrialListItem>): TrialListItem {
 }
 
 describe("buildTrialLineageGraph", () => {
-  it("builds a fork tree from current-program parents and tracks inspiration links", () => {
+  it("builds a fork tree from current-program parents and ignores inspiration-only context", () => {
     const graph = buildTrialLineageGraph([
       createTrial({
         trialId: "trial_root",
@@ -80,7 +80,6 @@ describe("buildTrialLineageGraph", () => {
 
     expect(graph.nodeCount).toBe(4);
     expect(graph.forkEdgeCount).toBe(3);
-    expect(graph.inspirationEdgeCount).toBe(1);
     expect(graph.roots).toHaveLength(1);
 
     const root = graph.roots[0];
@@ -90,7 +89,6 @@ describe("buildTrialLineageGraph", () => {
     expect(root.children.map((child) => child.trial.trialId)).toEqual(["trial_child_a", "trial_child_b"]);
 
     const childA = root.children[0];
-    expect(childA.inspirationUseTrialIds).toEqual(["trial_child_b"]);
     expect(childA.directForkCount).toBe(1);
     expect(childA.children[0].trial.trialId).toBe("trial_grandchild");
   });
