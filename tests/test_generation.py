@@ -281,13 +281,14 @@ def test_openrouter_generation_uses_model_pool_round_robin(monkeypatch):
     assert first_result.provenance_json["candidate_kind"] == "strategy_v1"
     assert second_result.provenance_json["generation_config"]["temperature"] == 0.8
     assert first_result.provenance_json["request_messages"] == payloads[0]["messages"]
-    assert len(payloads[0]["messages"]) == 5
+    assert len(payloads[0]["messages"]) == 2
     assert (
         first_result.provenance_json["generation"]["system_prompt"]
         == payloads[0]["messages"][0]["content"]
     )
-    assert first_result.provenance_json["generation"]["user_prompt"] == "\n\n".join(
-        message["content"] for message in payloads[0]["messages"][1:]
+    assert (
+        first_result.provenance_json["generation"]["user_prompt"]
+        == payloads[0]["messages"][1]["content"]
     )
     assert (
         "return torch.zeros((x.shape[0], 10), dtype=torch.float32) + 0.1"
@@ -297,9 +298,6 @@ def test_openrouter_generation_uses_model_pool_round_robin(monkeypatch):
 
     system_prompt = payloads[0]["messages"][0]["content"]
     first_prompt = payloads[0]["messages"][1]["content"]
-    reference_appendix = payloads[0]["messages"][2]["content"]
-    negative_appendix = payloads[0]["messages"][3]["content"]
-    current_program_appendix = payloads[0]["messages"][4]["content"]
     assert "# EVOLVE-BLOCK-START" in system_prompt
     assert "# EVOLVE-BLOCK-END" in system_prompt
     assert "Return exactly:" in system_prompt
@@ -314,25 +312,20 @@ def test_openrouter_generation_uses_model_pool_round_robin(monkeypatch):
     assert "textually distinct from CURRENT_PROGRAM" in system_prompt
     assert "SEARCH must match exactly once in CURRENT_PROGRAM" in system_prompt
     assert not first_prompt.lstrip().startswith("{")
+    assert "OBJECTIVE:" in first_prompt
     assert "TASK CONTEXT:" in first_prompt
     assert "- dataset_id: mnist:v1" in first_prompt
     assert "- epochs: 5" in first_prompt
     assert "- split_sizes:" in first_prompt
     assert "- dataset_metadata:" in first_prompt
     assert "- num_classes: 10" in first_prompt
-    assert "OBJECTIVE:" in first_prompt
-    assert "Improve CURRENT_PROGRAM for higher val_acc." in first_prompt
-    assert "Only CURRENT_PROGRAM is editable." in first_prompt
-    assert "Later appendices are ordered as REFERENCE, NEGATIVE, CURRENT_PROGRAM." in (
-        first_prompt
-    )
+    assert "REFERENCE PROGRAMS:" in first_prompt
+    assert "AVOID THESE RECENT NEGATIVE TRIALS:" in first_prompt
+    assert "CURRENT PROGRAM:" in first_prompt
     assert "score:" not in first_prompt
-    assert reference_appendix == "REFERENCE APPENDIX\nNone."
-    assert negative_appendix == "NEGATIVE APPENDIX\nNone."
-    assert "CURRENT PROGRAM APPENDIX" in current_program_appendix
-    assert "CURRENT_PROGRAM val_acc=0.5 val_loss=n/a" in current_program_appendix
-    assert "# EVOLVE-BLOCK-START" in current_program_appendix
-    assert "# EVOLVE-BLOCK-END" in current_program_appendix
+    assert "val_acc: 0.5" in first_prompt
+    assert "val_loss: n/a" in first_prompt
+    assert first_prompt.rstrip().endswith("REPLACEMENTS:")
 
 
 def test_openrouter_generation_bumps_temperature_on_duplicate_retry(monkeypatch):
@@ -401,23 +394,21 @@ def test_openrouter_generation_prompt_includes_expected_sections(monkeypatch):
     )
 
     system_prompt = payloads[0]["messages"][0]["content"]
-    stable_prompt = payloads[0]["messages"][1]["content"]
-    reference_appendix = payloads[0]["messages"][2]["content"]
-    negative_appendix = payloads[0]["messages"][3]["content"]
-    current_program_appendix = payloads[0]["messages"][4]["content"]
+    prompt = payloads[0]["messages"][1]["content"]
     assert "# EVOLVE-BLOCK-START" in system_prompt
     assert "# EVOLVE-BLOCK-END" in system_prompt
-    assert "OBJECTIVE:" in stable_prompt
-    assert "TASK CONTEXT:" in stable_prompt
-    assert reference_appendix.startswith("REFERENCE APPENDIX")
-    assert negative_appendix.startswith("NEGATIVE APPENDIX")
-    assert current_program_appendix.startswith("CURRENT PROGRAM APPENDIX")
+    assert "OBJECTIVE:" in prompt
+    assert "TASK CONTEXT:" in prompt
+    assert "REFERENCE PROGRAMS:" in prompt
+    assert "AVOID THESE RECENT NEGATIVE TRIALS:" in prompt
+    assert "CURRENT PROGRAM:" in prompt
+    assert "REPLACEMENTS:" in prompt
 
 
 def test_openrouter_generation_prompt_compacts_prior_programs_before_current_program():
     backend = OpenRouterGenerationBackend(api_key="test-key")
 
-    prompt_messages = backend._build_prompt(
+    prompt = backend._build_user_prompt_text(
         _track_with_pool(),
         _manifest(),
         _context_with_prior_programs(),
@@ -425,16 +416,18 @@ def test_openrouter_generation_prompt_compacts_prior_programs_before_current_pro
         selected_config={"model": "test/model"},
     )
 
-    stable_prompt = prompt_messages[1]["content"]
-    prior_section = prompt_messages[2]["content"]
-    negative_section = prompt_messages[3]["content"]
-    current_section = prompt_messages[4]["content"]
+    prior_section, current_section = prompt.split("CURRENT PROGRAM:\n", maxsplit=1)
 
-    assert "OBJECTIVE:" in stable_prompt
-    assert "TASK CONTEXT:" in stable_prompt
-    assert "REFERENCE APPENDIX" in prior_section
-    assert "REFERENCE val_acc=0.998 val_loss=0.023" in prior_section
+    assert "OBJECTIVE:" in prior_section
+    assert "TASK CONTEXT:" in prior_section
+    assert "REFERENCE PROGRAMS:" in prior_section
+    assert "\n---\nval_acc: 0.998" in prior_section
+    assert (
+        "Reference programs show only the mutable evolve-block regions" in prior_section
+    )
     assert "score:" not in prior_section
+    assert "val_acc: 0.998" in prior_section
+    assert "val_loss: 0.023" in prior_section
     assert "[...]" not in prior_section
     assert "def forward(self, x):" in prior_section
     assert "from __future__ import annotations" not in prior_section
@@ -447,20 +440,29 @@ def test_openrouter_generation_prompt_compacts_prior_programs_before_current_pro
         "return torch.zeros((x.shape[0], 10), dtype=torch.float32) + 0.2"
         not in prior_section
     )
-    assert "CURRENT PROGRAM APPENDIX" in current_section
-    assert "CURRENT_PROGRAM val_acc=0.992 val_loss=0.1" in current_section
+    assert (
+        "CURRENT PROGRAM:\nPatch this program. SEARCH blocks must match text from CURRENT PROGRAM"
+        in prompt
+    )
     assert "score:" not in current_section
+    assert "val_acc: 0.992" in current_section
+    assert "val_loss: 0.1" in current_section
     assert "# EVOLVE-BLOCK-START" not in prior_section
     assert "# EVOLVE-BLOCK-END" not in prior_section
     assert "# EVOLVE-BLOCK-START" in current_section
     assert "# EVOLVE-BLOCK-END" in current_section
-    assert negative_section == "NEGATIVE APPENDIX\nNone."
+    assert (
+        "AVOID THESE RECENT NEGATIVE TRIALS:\n"
+        "Negative trials show only the mutable evolve-block regions, all "
+        "immutable scaffolding is purposely ommited.\nNone."
+    ) in prompt
+    assert prompt.rstrip().endswith("REPLACEMENTS:")
 
 
 def test_openrouter_generation_prompt_renders_recent_negative_trials():
     backend = OpenRouterGenerationBackend(api_key="test-key")
 
-    prompt_messages = backend._build_prompt(
+    prompt = backend._build_user_prompt_text(
         _track_with_pool(),
         _manifest(),
         _context_with_prior_programs(),
@@ -468,47 +470,30 @@ def test_openrouter_generation_prompt_renders_recent_negative_trials():
         selected_config={"model": "test/model"},
     )
 
-    negative_section = prompt_messages[3]["content"]
+    negative_section = prompt.split(
+        "AVOID THESE RECENT NEGATIVE TRIALS:\n", maxsplit=1
+    )[1].split("CURRENT PROGRAM:\n", maxsplit=1)[0]
 
-    assert negative_section.startswith("NEGATIVE APPENDIX")
-    assert "NEGATIVE reason=crashed detail=" in negative_section
-    assert "returncode=1" in negative_section
+    assert "AVOID THESE RECENT NEGATIVE TRIALS:" in prompt
+    assert "Negative trials show only the mutable evolve-block regions" in prompt
+    assert "outcome_reason: crashed" in negative_section
+    assert "- returncode: 1" in negative_section
     assert "mat1 and mat2 shapes cannot be multiplied" in negative_section
     assert "raise RuntimeError('bad candidate')" in negative_section
-    assert "```python" not in negative_section
     assert "class TrainScriptContractError(RuntimeError):" not in negative_section
-
-
-def test_openrouter_generation_prompt_forbids_copying_reference_or_negative_examples():
-    backend = OpenRouterGenerationBackend(api_key="test-key")
-
-    prompt_messages = backend._build_prompt(
-        _track_with_pool(),
-        _manifest(),
-        _context_with_prior_programs(),
-        negative_trials=_negative_trials(),
-        selected_config={"model": "test/model"},
-    )
-
-    system_prompt = prompt_messages[0]["content"]
-    assert "Never copy any shown REFERENCE or NEGATIVE example verbatim" in (
-        system_prompt
-    )
-    assert "Use REFERENCE appendices as inspiration only" in system_prompt
-    assert "textually distinct from CURRENT_PROGRAM" in system_prompt
 
 
 def test_openrouter_generation_prompt_keeps_stable_prefix_across_context_changes():
     backend = OpenRouterGenerationBackend(api_key="test-key")
 
-    first_prompt = backend._build_prompt(
+    first_prompt = backend._build_user_prompt_text(
         _track_with_pool(),
         _manifest(),
         _context_with_prior_programs(),
         negative_trials=_negative_trials(),
         selected_config={"model": "test/model"},
     )
-    second_prompt = backend._build_prompt(
+    second_prompt = backend._build_user_prompt_text(
         _track_with_pool(),
         _manifest(),
         _context_with_alternate_current_and_prior_programs(),
@@ -516,17 +501,16 @@ def test_openrouter_generation_prompt_keeps_stable_prefix_across_context_changes
         selected_config={"model": "test/model"},
     )
 
-    assert first_prompt[0]["content"] == second_prompt[0]["content"]
-    assert first_prompt[0]["content"] == second_prompt[0]["content"]
-    assert first_prompt[1]["content"] == second_prompt[1]["content"]
-    assert first_prompt[2]["content"] != second_prompt[2]["content"]
-    assert first_prompt[4]["content"] != second_prompt[4]["content"]
+    first_prefix = first_prompt.split("REFERENCE PROGRAMS:\n", maxsplit=1)[0]
+    second_prefix = second_prompt.split("REFERENCE PROGRAMS:\n", maxsplit=1)[0]
+    assert first_prefix == second_prefix
+    assert first_prompt != second_prompt
 
 
 def test_openrouter_generation_prompt_applies_render_budgets():
     backend = OpenRouterGenerationBackend(api_key="test-key")
 
-    prompt_messages = backend._build_prompt(
+    prompt = backend._build_user_prompt_text(
         _track_with_pool(),
         _manifest(),
         _context_with_many_prior_programs(),
@@ -534,17 +518,21 @@ def test_openrouter_generation_prompt_applies_render_budgets():
         selected_config={"model": "test/model"},
     )
 
-    reference_appendix = prompt_messages[2]["content"]
-    negative_appendix = prompt_messages[3]["content"]
+    reference_section = prompt.split("REFERENCE PROGRAMS:\n", maxsplit=1)[1].split(
+        "AVOID THESE RECENT NEGATIVE TRIALS:\n", maxsplit=1
+    )[0]
+    negative_section = prompt.split(
+        "AVOID THESE RECENT NEGATIVE TRIALS:\n", maxsplit=1
+    )[1].split("CURRENT PROGRAM:\n", maxsplit=1)[0]
 
-    assert reference_appendix.count("REFERENCE val_acc=") == 2
-    assert "trial_prior_2" not in reference_appendix
-    assert " + 0.5" not in reference_appendix
-    assert " + 0.3" in reference_appendix
-    assert " + 0.4" in reference_appendix
-    assert negative_appendix.count("NEGATIVE reason=") == 4
-    assert "bad candidate 2" in negative_appendix
-    assert "bad candidate 3" in negative_appendix
+    assert reference_section.count("val_acc:") == 2
+    assert "trial_prior_2" not in reference_section
+    assert " + 0.5" not in reference_section
+    assert " + 0.3" in reference_section
+    assert " + 0.4" in reference_section
+    assert negative_section.count("outcome_reason:") == 4
+    assert "bad candidate 2" in negative_section
+    assert "bad candidate 3" in negative_section
 
 
 def test_openrouter_generation_reports_missing_api_key(monkeypatch):
