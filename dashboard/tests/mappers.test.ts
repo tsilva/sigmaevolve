@@ -46,6 +46,7 @@ describe("dashboard row mappers", () => {
       accuracy: null,
       bestEvalEpoch: null,
       epochsCompleted: null,
+      evalCount: null,
       timeToBestEvalSec: null,
       timedOut: false,
       timeSinceLastEvalSec: null,
@@ -85,6 +86,7 @@ describe("dashboard row mappers", () => {
       accuracy: null,
       bestEvalEpoch: null,
       epochsCompleted: null,
+      evalCount: null,
       timeToBestEvalSec: null,
       timedOut: false,
       timeSinceLastEvalSec: null,
@@ -133,6 +135,7 @@ describe("dashboard row mappers", () => {
       accuracy: "0.875",
       bestEvalEpoch: "3",
       epochsCompleted: "5",
+      evalCount: "5",
       timeToBestEvalSec: "1.25",
       timedOut: false,
       timeSinceLastEvalSec: null,
@@ -155,6 +158,7 @@ describe("dashboard row mappers", () => {
     expect(mapped.accuracy).toBe(0.875);
     expect(mapped.bestEvalEpoch).toBe(3);
     expect(mapped.epochsCompleted).toBe(5);
+    expect(mapped.evalCount).toBe(5);
     expect(mapped.timeToBestEvalSec).toBe(1.25);
     expect(mapped.lastPhase).toBe("train");
     expect(mapped.durationSec).toBe(12.5);
@@ -171,6 +175,7 @@ describe("dashboard row mappers", () => {
       accuracy: "0.91",
       bestEvalEpoch: null,
       epochsCompleted: null,
+      evalCount: null,
       timeToBestEvalSec: "1.5",
       timedOut: false,
       timeSinceLastEvalSec: "2.0",
@@ -218,6 +223,7 @@ describe("dashboard row mappers", () => {
       accuracy: "0.927",
       bestEvalEpoch: "2",
       epochsCompleted: "4",
+      evalCount: "4",
       timeToBestEvalSec: "1.97",
       timedOut: false,
       timeSinceLastEvalSec: "4.19",

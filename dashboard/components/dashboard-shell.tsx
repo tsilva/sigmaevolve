@@ -95,11 +95,20 @@ function formatDuration(value: number | null): string {
   return `${minutes}m ${seconds}s`;
 }
 
-function formatBestEpoch(bestEvalEpoch: number | null, epochsCompleted: number | null): string {
-  if (bestEvalEpoch === null || epochsCompleted === null) {
+function formatBestEpoch(
+  bestEvalEpoch: number | null,
+  epochsCompleted: number | null,
+  evalCount: number | null,
+): string {
+  if (bestEvalEpoch === null) {
     return "—";
   }
-  return `${bestEvalEpoch}/${epochsCompleted}`;
+
+  const totalEpochs = epochsCompleted ?? evalCount;
+  if (totalEpochs === null) {
+    return String(bestEvalEpoch);
+  }
+  return `${bestEvalEpoch}/${totalEpochs}`;
 }
 
 function summarizeTaskDescription(value: string | null, maxLength = 160): string | null {
@@ -1840,7 +1849,7 @@ export function DashboardShell({
                         </td>
                         <td>{formatNumber(trial.score, 4)}</td>
                         <td>{formatNumber(trial.accuracy, 4)}</td>
-                        <td>{formatBestEpoch(trial.bestEvalEpoch, trial.epochsCompleted)}</td>
+                        <td>{formatBestEpoch(trial.bestEvalEpoch, trial.epochsCompleted, trial.evalCount)}</td>
                         <td>
                           <div className="trial-cell-primary">{trial.model ?? "unknown model"}</div>
                           <div className="trial-cell-secondary">{trial.backend ?? "unknown backend"}</div>

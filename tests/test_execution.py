@@ -11,6 +11,7 @@ from sigmaevolve import execution as strategy_runtime
 from sigmaevolve.core import CANDIDATE_KIND_STRATEGY_V1
 from sigmaevolve.execution import (
     RunnerService,
+    build_final_metrics_payload,
     collect_wandb_env,
     resolve_wandb_settings,
 )
@@ -253,6 +254,38 @@ def test_successful_run_produces_metrics_and_score(repository, dataset_manager):
     assert finished.metrics_json["best_eval_epoch"] == 1
     assert finished.score == finished.metrics_json["accuracy"]
     assert finished.error_json is None
+
+
+def test_build_final_metrics_payload_uses_debug_payload_for_epochs_completed():
+    metrics = build_final_metrics_payload(
+        artifacts=[
+            {
+                "metrics": {"accuracy": 0.9, "val_loss": 0.1},
+                "elapsed_time_sec": 1.5,
+                "eval_index": 2,
+                "epoch": 2,
+                "path": "/tmp/eval_0002.npz",
+            }
+        ],
+        progress_payload={
+            "phase": "finished",
+            "elapsed_time_sec": 1.6,
+            "last_completed_eval_sec": 1.5,
+            "eval_index": 2,
+            "epoch_index": 1,
+        },
+        process_elapsed_sec=1.6,
+        timed_out=False,
+        debug_payload={
+            "epochs_completed": 2,
+            "eval_count": 2,
+            "early_stopped": False,
+        },
+    )
+
+    assert metrics["best_eval_epoch"] == 2
+    assert metrics["epochs_completed"] == 2
+    assert metrics["eval_count"] == 1
 
 
 def test_successful_run_creates_wandb_experiment(

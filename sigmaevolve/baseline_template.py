@@ -23,8 +23,9 @@ from sigmaevolve.train_script_runtime import (
 
 logger = logging.getLogger(__name__)
 
+
 def make_experiment(device, train_ds, val_ds):
-# EVOLVE-BLOCK-START
+    # EVOLVE-BLOCK-START
     batch_size = 64
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
     val_loader = DataLoader(val_ds, batch_size=batch_size)
@@ -46,7 +47,8 @@ def make_experiment(device, train_ds, val_ds):
         logits = model(x)
         loss = F.cross_entropy(logits, y)
         return loss, logits, y
-# EVOLVE-BLOCK-END
+
+    # EVOLVE-BLOCK-END
 
     return {
         "model": model,
@@ -54,7 +56,7 @@ def make_experiment(device, train_ds, val_ds):
         "scheduler": None,
         "loss_fn": loss_fn,
         "train_loader": train_loader,
-        "val_loader": val_loader
+        "val_loader": val_loader,
     }
 
 
@@ -105,16 +107,18 @@ def run_epoch(
         "predictions": torch.cat(predictions, dim=0).numpy(),
     }
 
+
 def _read_split(path: Path) -> tuple[np.ndarray, np.ndarray | None]:
     payload = np.load(path)
     features = payload["features"].astype(np.float32)
     labels = payload["labels"].astype(np.int64) if "labels" in payload else None
     return features, labels
 
+
 def fit(config: dict[str, Any]) -> dict[str, Any]:
     # Set random seed
     device = seed_everything(config["random_seed"])
-    
+
     # Load dataset
     x_train, y_train = _read_split(config["train_split_path"])
     x_val, _ = _read_split(config["validation_split_path"])
@@ -160,6 +164,7 @@ def fit(config: dict[str, Any]) -> dict[str, Any]:
     last_eval_sec: float | None = None
     patience = 3
     early_stopped = False
+    epochs_completed = 0
     for epoch_index in range(config["num_epochs"]):
         # Update progress before running the next training epoch
         write_json_atomic(
@@ -199,8 +204,10 @@ def fit(config: dict[str, Any]) -> dict[str, Any]:
 
         # If scheduler is available take a step
         if scheduler is not None:
-            try: scheduler.step(val_result["loss"])
-            except TypeError: scheduler.step()
+            try:
+                scheduler.step(val_result["loss"])
+            except TypeError:
+                scheduler.step()
 
         # Persist the evaluation metrics and predictions for this epoch
         eval_index += 1
@@ -242,6 +249,7 @@ def fit(config: dict[str, Any]) -> dict[str, Any]:
 
         # Store the latest completed evaluation checkpoint in progress
         last_eval_sec = elapsed_after_eval
+        epochs_completed = epoch_index + 1
         write_json_atomic(
             config["progress_path"],
             {
@@ -249,7 +257,7 @@ def fit(config: dict[str, Any]) -> dict[str, Any]:
                 "elapsed_time_sec": float(elapsed_after_eval),
                 "last_completed_eval_sec": last_eval_sec,
                 "eval_index": eval_index,
-                "epoch_index": epoch_index + 1,
+                "epoch_index": epochs_completed,
             },
         )
 
@@ -268,7 +276,7 @@ def fit(config: dict[str, Any]) -> dict[str, Any]:
             patience
             and bad_epochs >= patience
             and epoch_index + 1 < config["num_epochs"]
-        ):  
+        ):
             early_stopped = True
             break
 
@@ -284,8 +292,19 @@ def fit(config: dict[str, Any]) -> dict[str, Any]:
             "elapsed_time_sec": float(time.monotonic() - start_time),
             "last_completed_eval_sec": last_eval_sec,
             "eval_index": eval_index,
-            "epoch_index": epoch_index,
-            "early_stopped" : early_stopped
+            "epoch_index": epochs_completed,
+            "early_stopped": early_stopped,
+        },
+    )
+
+    write_json_atomic(
+        config["debug_output_path"],
+        {
+            "timed_out": False,
+            "eval_count": eval_index,
+            "epochs_completed": epochs_completed,
+            "early_stopped": early_stopped,
+            "early_stopping_patience": patience,
         },
     )
 
@@ -307,6 +326,7 @@ def main(argv: list[str] | None = None) -> int:
         "progress_path": Path(config["progress_path"]),
         "eval_dir": Path(config["eval_dir"]),
         "best_model_path": Path(config["best_model_path"]),
+        "debug_output_path": Path(config["debug_output_path"]),
         "num_epochs": int(config["epochs"]),
         "random_seed": int(config["random_seed"]),
         "dataset_metadata": dict(config.get("dataset_metadata") or {}),

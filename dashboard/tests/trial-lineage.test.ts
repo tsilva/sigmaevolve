@@ -12,6 +12,7 @@ function createTrial(overrides: Partial<TrialListItem>): TrialListItem {
     accuracy: 0.9,
     bestEvalEpoch: null,
     epochsCompleted: null,
+    evalCount: null,
     timeToBestEvalSec: null,
     timedOut: false,
     timeSinceLastEvalSec: null,
