@@ -427,6 +427,41 @@ class CliReconcileReporter:
             f"{payload['slot_index'] + 1}/{max(self.requested, 1)} "
             f"(attempt {payload['duplicate_retry_count']}, generation_index={payload['generation_index']})."
         )
+        sampled_candidates = payload.get("sampled_candidates") or []
+        if sampled_candidates:
+            self._log(
+                "Sampled candidates:\n"
+                f"{self._render_sampled_candidates_table(sampled_candidates)}"
+            )
+
+    def _render_sampled_candidates_table(
+        self, sampled_candidates: list[dict[str, Any]]
+    ) -> str:
+        lines = [
+            "| rank | trial_id | score | p(current) | selected |",
+            "| ---: | --- | ---: | ---: | --- |",
+        ]
+        for row in sampled_candidates:
+            score = row.get("score")
+            selection_probability = row.get("selection_probability")
+            selected_role = row.get("selected_role") or "-"
+            rendered_score = (
+                f"{float(score):.4f}" if isinstance(score, (int, float)) else "-"
+            )
+            rendered_probability = (
+                f"{float(selection_probability):.4f}"
+                if isinstance(selection_probability, (int, float))
+                else "-"
+            )
+            lines.append(
+                "| "
+                f"{row['rank']} | "
+                f"{row['trial_id']} | "
+                f"{rendered_score} | "
+                f"{rendered_probability} | "
+                f"{selected_role} |"
+            )
+        return "\n".join(lines)
 
     def _handle_generation_progress(
         self, payload: dict[str, Any], message: str

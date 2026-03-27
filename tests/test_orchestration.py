@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -766,6 +767,79 @@ def forward(self, x):
         > current_counts[mid.trial_id]
         > current_counts[low.trial_id]
     )
+
+
+def test_schedule_generation_attempt_records_sampled_candidate_table(
+    repository, dataset_manager
+):
+    _prepare_repo_dataset(repository, dataset_manager)
+    system, runner = _build_system(
+        repository,
+        dataset_manager,
+        FixedGenerationBackend(source=build_baseline_train_script()),
+        None,
+    )
+    system.launcher = InlineRunnerLauncher(runner)
+    system.orchestrator.launcher = system.launcher
+    track = _create_track(system, {"sampling_seed": 7})
+
+    baseline = _finalize_baseline_success(repository, track.track_id, score=0.9)
+    mid_source = build_candidate_train_script(
+        build_model_block(
+            """
+def forward(self, x):
+    return torch.tensor([[0.0, 1.0]], dtype=torch.float32).repeat(x.shape[0], 1)
+"""
+        )
+    )
+    mid, _ = repository.create_queued_trial_if_absent(
+        track.track_id,
+        mid_source,
+        make_llm_provenance(
+            model="mid",
+            candidate_kind=CANDIDATE_KIND_STRATEGY_V1,
+            generation=make_generation_trace(mid_source),
+        ),
+    )
+    assert mid is not None
+    repository.finalize_trial(
+        trial_id=mid.trial_id,
+        runner_id=None,
+        outcome_reason="succeeded",
+        metrics={"accuracy": 0.3},
+        error_info=None,
+    )
+
+    dataset_manifest = dataset_manager.verify(track.dataset_id)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        scheduled = system.orchestrator.generation.schedule_generation_attempt(
+            executor,
+            track,
+            dataset_manifest,
+            7,
+            slot_index=0,
+            generation_index=0,
+            duplicate_retry_count=0,
+        )
+
+    assert scheduled is not None
+    _, attempt = scheduled
+    assert [row["trial_id"] for row in attempt.sampled_candidates] == [
+        baseline.trial_id,
+        mid.trial_id,
+    ]
+    sampled_by_id = {row["trial_id"]: row for row in attempt.sampled_candidates}
+    assert sampled_by_id[baseline.trial_id]["rank"] == 1
+    assert sampled_by_id[baseline.trial_id]["score"] == pytest.approx(0.9)
+    assert sampled_by_id[baseline.trial_id]["selection_probability"] == pytest.approx(
+        0.75
+    )
+    assert sampled_by_id[mid.trial_id]["selection_probability"] == pytest.approx(0.25)
+
+    current_trial_id = attempt.context_trials[0].trial_id
+    inspiration_trial_id = attempt.context_trials[1].trial_id
+    assert sampled_by_id[current_trial_id]["selected_role"] == "current"
+    assert sampled_by_id[inspiration_trial_id]["selected_role"] == "inspiration"
 
 
 def test_reconcile_never_passes_failed_trials_as_generation_context(

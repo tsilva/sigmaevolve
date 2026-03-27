@@ -329,6 +329,30 @@ def test_cli_reconcile_reporter_dispatch_table_logs_known_events_and_ignores_unk
     reporter = CliReconcileReporter()
 
     reporter(
+        "generation_scheduled",
+        {
+            "slot_index": 0,
+            "generation_index": 7,
+            "duplicate_retry_count": 0,
+            "sampled_candidates": [
+                {
+                    "rank": 1,
+                    "trial_id": "trial_high",
+                    "score": 0.9,
+                    "selection_probability": 0.75,
+                    "selected_role": "current",
+                },
+                {
+                    "rank": 2,
+                    "trial_id": "trial_mid",
+                    "score": 0.3,
+                    "selection_probability": 0.25,
+                    "selected_role": "inspiration",
+                },
+            ],
+        },
+    )
+    reporter(
         "generation_failed",
         {
             "slot_index": 0,
@@ -344,6 +368,15 @@ def test_cli_reconcile_reporter_dispatch_table_logs_known_events_and_ignores_unk
     )
     reporter("unknown_event", {"ignored": True})
 
+    assert any("Sampled candidates:" in message for message in messages)
+    assert any(
+        "| rank | trial_id | score | p(current) | selected |" in message
+        for message in messages
+    )
+    assert any(
+        "| 1 | trial_high | 0.9000 | 0.7500 | current |" in message
+        for message in messages
+    )
     assert any("Generation failed for slot 1" in message for message in messages)
     assert any("Queue fill [" in message for message in messages)
 
