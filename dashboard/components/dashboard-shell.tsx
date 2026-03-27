@@ -92,6 +92,23 @@ function formatDuration(value: number | null): string {
   return `${minutes}m ${seconds}s`;
 }
 
+function summarizeTaskDescription(value: string | null, maxLength = 160): string | null {
+  if (!value) {
+    return null;
+  }
+
+  const collapsed = value.replace(/\s+/g, " ").trim();
+  if (collapsed.length === 0) {
+    return null;
+  }
+
+  if (collapsed.length <= maxLength) {
+    return collapsed;
+  }
+
+  return `${collapsed.slice(0, maxLength - 1).trimEnd()}…`;
+}
+
 function formatJsonBlock(value: Record<string, unknown> | null): string {
   if (!value) {
     return "No payload recorded.";
@@ -1640,6 +1657,7 @@ export function DashboardShell({
                   <thead>
                     <tr>
                       <th scope="col">Trial</th>
+                      <th scope="col">Task</th>
                       <th scope="col">Status</th>
                       <th scope="col">Score</th>
                       <th scope="col">Accuracy</th>
@@ -1668,6 +1686,15 @@ export function DashboardShell({
                             {trial.hasError ? <span className="flag-chip flag-danger">error payload</span> : null}
                           </div>
                           <div className="trial-cell-secondary">{getTrialNarrative(trial)}</div>
+                        </td>
+                        <td>
+                          {trial.taskDescription ? (
+                            <div className="trial-task-snippet" title={trial.taskDescription}>
+                              {summarizeTaskDescription(trial.taskDescription)}
+                            </div>
+                          ) : (
+                            <span className="trial-cell-secondary">No task description</span>
+                          )}
                         </td>
                         <td>
                           <div className="trial-status-row">
