@@ -599,7 +599,7 @@ describe("DashboardShell", () => {
     ).toBeNull();
   });
 
-  it("puts task description and generated program first in the inspector card stack", () => {
+  it("puts error payload first in the inspector card stack when recorded", () => {
     const { container } = renderShell({
       detail: createDetail([
         createTrial({
@@ -617,9 +617,9 @@ describe("DashboardShell", () => {
     const inspectorGrid = container.querySelector(".inspector-grid");
     const cardHeadings = Array.from(inspectorGrid?.querySelectorAll("h3") ?? []).map((heading) => heading.textContent);
 
-    expect(cardHeadings[0]).toBe("Task description");
-    expect(cardHeadings[1]).toBe("Generated program");
-    expect(cardHeadings).toContain("Error payload");
+    expect(cardHeadings[0]).toBe("Error payload");
+    expect(cardHeadings[1]).toBe("Task description");
+    expect(cardHeadings[2]).toBe("Generated program");
   });
 
   it("shows reasoning trace before response in the inspector card stack", () => {

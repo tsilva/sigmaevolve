@@ -2,6 +2,7 @@ import json
 import logging
 import threading
 import time
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -431,9 +432,7 @@ def test_crash_finalizes_with_zero_score(repository, dataset_manager):
     assert finished.score == 0.0
 
 
-def test_invalid_experiment_contract_finalizes_as_crashed(
-    repository, dataset_manager
-):
+def test_invalid_experiment_contract_finalizes_as_crashed(repository, dataset_manager):
     system = build_inline_system(repository, dataset_manager)
     system.prepare_dataset("mnist:v1")
     track = _create_track(system)
@@ -502,6 +501,12 @@ def test_run_uses_unbuffered_python_for_child_process(
     def fake_run_streamed_subprocess(command, timeout):
         seen["command"] = command
         seen["timeout"] = timeout
+        train_script_path = Path(command[2])
+        runtime_dir = train_script_path.parent / "sigmaevolve"
+        seen["runtime_init_exists"] = (runtime_dir / "__init__.py").exists()
+        seen["runtime_module_exists"] = (
+            runtime_dir / "train_script_runtime.py"
+        ).exists()
         return type(
             "Completed",
             (),
@@ -520,6 +525,8 @@ def test_run_uses_unbuffered_python_for_child_process(
     assert isinstance(command, list)
     assert command[1] == "-u"
     assert str(command[2]).endswith("train.py")
+    assert seen["runtime_init_exists"] is True
+    assert seen["runtime_module_exists"] is True
 
 
 def test_active_run_persists_live_metrics_before_finalization(

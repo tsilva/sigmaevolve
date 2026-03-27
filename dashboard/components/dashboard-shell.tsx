@@ -1976,6 +1976,21 @@ export function DashboardShell({
                 </article>
 
                 <div className="inspector-grid">
+                  {selectedTrial.hasError ? (
+                    <article className="analysis-card wide-card">
+                      <CollapsibleSection
+                        id="trial-error-payload"
+                        expanded={isSectionExpanded("trial-error-payload")}
+                        onToggle={() => toggleSection("trial-error-payload")}
+                        title="Error payload"
+                        titleTag="h3"
+                        toggleClassName="analysis-card-header"
+                      >
+                        <HighlightedCode code={formatJsonBlock(selectedTrial.errorJson)} language="json" wrap />
+                      </CollapsibleSection>
+                    </article>
+                  ) : null}
+
                   <article className="analysis-card wide-card">
                     <CollapsibleSection
                       id="trial-task-description"
@@ -2020,21 +2035,6 @@ export function DashboardShell({
                       />
                     </CollapsibleSection>
                   </article>
-
-                  {selectedTrial.hasError ? (
-                    <article className="analysis-card wide-card">
-                      <CollapsibleSection
-                        id="trial-error-payload"
-                        expanded={isSectionExpanded("trial-error-payload")}
-                        onToggle={() => toggleSection("trial-error-payload")}
-                        title="Error payload"
-                        titleTag="h3"
-                        toggleClassName="analysis-card-header"
-                      >
-                        <HighlightedCode code={formatJsonBlock(selectedTrial.errorJson)} language="json" wrap />
-                      </CollapsibleSection>
-                    </article>
-                  ) : null}
 
                   <article className="analysis-card wide-card">
                     <CollapsibleSection

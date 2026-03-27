@@ -27,7 +27,7 @@ from sigmaevolve.core import (
     normalize_source,
 )
 
-_BASELINE_TEMPLATE_PATH = Path(__file__).with_name("baseline_template_new.py")
+_BASELINE_TEMPLATE_PATH = Path(__file__).with_name("baseline_template.py")
 
 
 def build_baseline_train_script() -> str:
