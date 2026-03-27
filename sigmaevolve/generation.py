@@ -60,6 +60,15 @@ class SearchReplaceBlock:
     replace: str
 
 
+@dataclass(frozen=True)
+class ParsedGenerationResponse:
+    task_description: str | None
+    patch_text: str
+
+
+TASK_DESCRIPTION_HEADER = "TASK_DESCRIPTION:"
+
+
 def _contains_evolve_block_marker_line(text: str) -> bool:
     for line in text.splitlines():
         stripped_line = line.strip()
@@ -222,8 +231,62 @@ def replace_evolve_block_payloads(
     )
 
 
-def parse_search_replace_blocks(response_text: str) -> list[SearchReplaceBlock]:
+def parse_generation_response(response_text: str) -> ParsedGenerationResponse:
     normalized = normalize_source(response_text)
+    stripped = normalized.strip()
+    if not stripped:
+        return ParsedGenerationResponse(task_description=None, patch_text=normalized)
+
+    starts_patch = stripped.startswith("<<<<<<< SEARCH")
+    is_no_changes = stripped == "NO_CHANGES"
+    if starts_patch or is_no_changes:
+        raise EvolveBlockError(
+            "generated response must begin with TASK_DESCRIPTION before "
+            "SEARCH/REPLACE blocks or NO_CHANGES"
+        )
+
+    lines = normalized.splitlines(keepends=True)
+    if lines[0].strip() != TASK_DESCRIPTION_HEADER:
+        return ParsedGenerationResponse(task_description=None, patch_text=normalized)
+
+    cursor = 1
+    description_lines: list[str] = []
+    while cursor < len(lines):
+        current_line = lines[cursor]
+        stripped_line = current_line.strip()
+        if current_line == "<<<<<<< SEARCH\n" or stripped_line == "NO_CHANGES":
+            break
+        description_lines.append(current_line)
+        cursor += 1
+
+    task_description = "".join(description_lines).strip()
+    if not task_description:
+        raise EvolveBlockError(
+            "generated response must include a non-empty TASK_DESCRIPTION before "
+            "SEARCH/REPLACE blocks or NO_CHANGES"
+        )
+
+    patch_text = normalize_source("".join(lines[cursor:]))
+    if not patch_text.strip():
+        raise EvolveBlockError(
+            "generated response must include SEARCH/REPLACE blocks or NO_CHANGES "
+            "after TASK_DESCRIPTION"
+        )
+    return ParsedGenerationResponse(
+        task_description=task_description,
+        patch_text=patch_text,
+    )
+
+
+def extract_task_description(response_text: str) -> str | None:
+    try:
+        return parse_generation_response(response_text).task_description
+    except EvolveBlockError:
+        return None
+
+
+def parse_search_replace_blocks(response_text: str) -> list[SearchReplaceBlock]:
+    normalized = parse_generation_response(response_text).patch_text
     if normalized.strip() == "NO_CHANGES":
         return []
 
@@ -311,7 +374,8 @@ def apply_search_replace_blocks(
 
 
 def materialize_candidate_source(current_source: str, generated_source: str) -> str:
-    normalized_generated = normalize_source(generated_source)
+    parsed_response = parse_generation_response(generated_source)
+    normalized_generated = parsed_response.patch_text
     stripped_generated = normalized_generated.strip()
 
     # Treat SEARCH/REPLACE input as a patch rather than a full program.
@@ -319,7 +383,7 @@ def materialize_candidate_source(current_source: str, generated_source: str) -> 
     if stripped_generated == "NO_CHANGES" or is_search_replace_patch:
         return apply_search_replace_blocks(
             current_source,
-            parse_search_replace_blocks(normalized_generated),
+            parse_search_replace_blocks(generated_source),
         )
 
     # Accept a full program only when both evolve-block markers are present.
@@ -767,7 +831,9 @@ class OpenRouterGenerationBackend:
         generation_index: int,
         duplicate_retry_count: int,
         provider_response_id: str | None = None,
+        task_description: str | None = None,
         response_text: str | None = None,
+        reasoning_text: str | None = None,
         response_metadata: dict[str, object] | None = None,
     ) -> dict[str, object]:
         # Preserve the prompt text and response metadata in a single provenance shape.
@@ -779,7 +845,9 @@ class OpenRouterGenerationBackend:
         generation_payload: dict[str, object] = {
             "system_prompt": system_prompt,
             "user_prompt": user_prompt,
+            "task_description": task_description,
             "response_text": response_text,
+            "reasoning_text": reasoning_text,
             "generated_source": None,
             "assertions_passed": False,
             "assertion_failures": [],
@@ -854,6 +922,42 @@ class OpenRouterGenerationBackend:
             return None
         return "\n".join(text_parts)
 
+    def _extract_reasoning_text(self, message: object) -> str | None:
+        # Capture provider reasoning text from either direct fields or structured traces.
+        if not isinstance(message, dict):
+            return None
+
+        direct_reasoning = message.get("reasoning")
+        if isinstance(direct_reasoning, str) and direct_reasoning.strip():
+            return direct_reasoning
+
+        reasoning_content = message.get("reasoning_content")
+        if isinstance(reasoning_content, str) and reasoning_content.strip():
+            return reasoning_content
+
+        reasoning_details = message.get("reasoning_details")
+        if not isinstance(reasoning_details, list):
+            return None
+
+        collected_parts: list[str] = []
+        for entry in reasoning_details:
+            if isinstance(entry, str) and entry.strip():
+                collected_parts.append(entry)
+                continue
+            if not isinstance(entry, dict):
+                continue
+            for field in ("text", "reasoning", "content"):
+                value = entry.get(field)
+                if isinstance(value, str) and value.strip():
+                    collected_parts.append(value)
+                    break
+
+        if collected_parts:
+            return "\n\n".join(collected_parts)
+
+        # Preserve some readable trace even when the provider only returned structured entries.
+        return json.dumps(reasoning_details, indent=2)
+
     def _missing_content_error_info(
         self,
         body: dict[str, object],
@@ -891,10 +995,10 @@ class OpenRouterGenerationBackend:
                     error_info["reasoning_tokens"] = reasoning_tokens
 
         # Detect whether the provider consumed its budget on hidden reasoning.
-        reasoning_present = False
-        if isinstance(message, dict):
-            reasoning = message.get("reasoning")
-            reasoning_present = isinstance(reasoning, str) and bool(reasoning.strip())
+        reasoning_text = self._extract_reasoning_text(message)
+        reasoning_present = isinstance(reasoning_text, str) and bool(
+            reasoning_text.strip()
+        )
         if reasoning_present:
             error_info["reasoning_present"] = True
 
@@ -930,7 +1034,9 @@ class OpenRouterGenerationBackend:
         source: str | None = None,
         error_info: dict[str, object],
         provider_response_id: str | None = None,
+        task_description: str | None = None,
         response_text: str | None = None,
+        reasoning_text: str | None = None,
         response_metadata: dict[str, object] | None = None,
     ) -> GenerationResult:
         # Wrap provider failures in the same provenance shape as successful results.
@@ -941,7 +1047,9 @@ class OpenRouterGenerationBackend:
                 generation_index=context.generation_index,
                 duplicate_retry_count=context.duplicate_retry_count,
                 provider_response_id=provider_response_id,
+                task_description=task_description,
                 response_text=response_text,
+                reasoning_text=reasoning_text,
                 response_metadata=response_metadata,
             ),
             error_info=dict(error_info) or None,
@@ -1050,11 +1158,17 @@ class OpenRouterGenerationBackend:
         choice = choices[0] if isinstance(choices[0], dict) else {}
         response_metadata = self._extract_response_metadata(body, choice)
         content = self._extract_message_content(message)
+        task_description = (
+            extract_task_description(content) if isinstance(content, str) else None
+        )
+        reasoning_text = self._extract_reasoning_text(message)
         if not isinstance(content, str) or not content.strip():
             return self._build_generation_result(
                 context=context,
                 provider_response_id=body.get("id"),
+                task_description=task_description,
                 response_text=content if isinstance(content, str) else None,
+                reasoning_text=reasoning_text,
                 response_metadata=response_metadata,
                 error_info=self._missing_content_error_info(
                     body,
@@ -1069,7 +1183,9 @@ class OpenRouterGenerationBackend:
             context=context,
             source=self._extract_source(content),
             provider_response_id=body.get("id"),
+            task_description=task_description,
             response_text=content,
+            reasoning_text=reasoning_text,
             response_metadata=response_metadata,
             error_info={},
         )
@@ -1203,6 +1319,8 @@ class GenerationCoordinator:
 
         # Record the generated candidate trace in one normalized generation block.
         generation_payload.setdefault("response_text", None)
+        generation_payload.setdefault("task_description", None)
+        generation_payload.setdefault("reasoning_text", None)
         generation_payload["generated_source"] = generated_source
         generation_payload["assertions_passed"] = assertions_passed
         generation_payload["assertion_failures"] = list(assertion_failures)
@@ -1255,7 +1373,9 @@ class GenerationCoordinator:
         generation_payload = {
             "system_prompt": system_prompt,
             "user_prompt": user_prompt,
+            "task_description": None,
             "response_text": None,
+            "reasoning_text": None,
             "generated_source": None,
             "assertions_passed": False,
             "assertion_failures": [],

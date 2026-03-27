@@ -235,7 +235,9 @@ export function mapTrialListItem(row: TrialRow): TrialListItem {
     hasError,
     errorType,
     source: row.source ?? "",
+    taskDescription: asNullableString(generation?.task_description as string | null | undefined),
     responseText: asNullableString(generation?.response_text as string | null | undefined),
+    reasoningText: asNullableString(generation?.reasoning_text as string | null | undefined),
     generatedSource: asNullableString(generation?.generated_source as string | null | undefined),
     generationAssertionsPassed:
       typeof generation?.assertions_passed === "boolean" ? (generation.assertions_passed as boolean) : null,

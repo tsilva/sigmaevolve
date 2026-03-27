@@ -257,7 +257,9 @@ def test_generation_attempt_trial_persists_slim_failure_provenance(repository):
             generation={
                 "system_prompt": "system",
                 "user_prompt": "user",
+                "task_description": "Describe the failed patch attempt.",
                 "response_text": "partial response",
+                "reasoning_text": "reasoning trace",
                 "generated_source": "print('x')\n",
                 "assertions_passed": False,
                 "assertion_failures": ["bad patch"],
@@ -293,7 +295,9 @@ def test_generation_attempt_trial_persists_slim_failure_provenance(repository):
         "request_messages": make_llm_provenance(model="worker")["request_messages"],
         "context_trial_ids": ["trial_parent"],
         "generation": {
+            "task_description": "Describe the failed patch attempt.",
             "response_text": "partial response",
+            "reasoning_text": "reasoning trace",
             "generated_source": "print('x')\n",
             "assertions_passed": False,
             "assertion_failures": ["bad patch"],
@@ -313,7 +317,9 @@ def test_queued_trial_persists_generation_trace(repository):
         provenance_json=make_llm_provenance(
             model="worker",
             generation={
+                "task_description": "Explain the candidate mutation before applying it.",
                 "response_text": raw_response,
+                "reasoning_text": "reasoning trace",
                 "generated_source": "print('candidate')\n",
                 "assertions_passed": True,
                 "assertion_failures": [],
@@ -325,7 +331,9 @@ def test_queued_trial_persists_generation_trace(repository):
     assert created is True
     assert trial is not None
     assert trial.provenance_json["generation"] == {
+        "task_description": "Explain the candidate mutation before applying it.",
         "response_text": raw_response,
+        "reasoning_text": "reasoning trace",
         "generated_source": "print('candidate')\n",
         "assertions_passed": True,
         "assertion_failures": [],
@@ -388,7 +396,9 @@ def test_record_trial_launcher_metadata_preserves_generation_trace(repository):
         provenance_json=make_llm_provenance(
             model="worker",
             generation={
+                "task_description": "Explain the candidate mutation before applying it.",
                 "response_text": raw_response,
+                "reasoning_text": "reasoning trace",
                 "generated_source": "print('candidate')\n",
                 "assertions_passed": True,
                 "assertion_failures": [],
@@ -411,7 +421,9 @@ def test_record_trial_launcher_metadata_preserves_generation_trace(repository):
 
     assert updated is not None
     assert updated.provenance_json["generation"] == {
+        "task_description": "Explain the candidate mutation before applying it.",
         "response_text": raw_response,
+        "reasoning_text": "reasoning trace",
         "generated_source": "print('candidate')\n",
         "assertions_passed": True,
         "assertion_failures": [],

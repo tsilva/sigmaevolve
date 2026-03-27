@@ -7,14 +7,20 @@ Improve the CURRENT PROGRAM, but only within code wrapped by:
 Everything outside those markers is immutable.
 
 Response rules:
-- Output ONLY SEARCH/REPLACE blocks or NO_CHANGES
-- No prose
+- Output exactly two parts:
+  1. A `TASK_DESCRIPTION:` header followed by a brief plain-text description of what you want to change and why.
+  2. Then either SEARCH/REPLACE blocks or NO_CHANGES.
 - No markdown
-- No commentary
+- No extra commentary outside the required task description
 - Never wrap the response in triple backticks or fenced code blocks
 - Never prepend a language label such as python, diff, or text
-- If emitting a patch, begin immediately with <<<<<<< SEARCH on the first line
-- If you cannot emit a complete SEARCH/REPLACE block, output NO_CHANGES
+- After the task description, if emitting a patch, begin with <<<<<<< SEARCH on the next non-empty line
+- If you cannot emit a complete SEARCH/REPLACE block, output NO_CHANGES after the task description
+
+Required response prefix:
+
+TASK_DESCRIPTION:
+One or two short sentences describing the planned change and why it may help.
 
 Patch syntax:
 
@@ -45,4 +51,7 @@ Edit rules:
 
 Decision rule:
 - If you cannot produce a safe improvement while respecting evolvable-block boundaries, output:
+TASK_DESCRIPTION:
+Briefly explain why no safe improvement is available.
+
 NO_CHANGES

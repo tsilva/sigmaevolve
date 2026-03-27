@@ -41,7 +41,9 @@ export type TrialListItem = {
   hasError: boolean;
   errorType: string | null;
   source: string;
+  taskDescription: string | null;
   responseText: string | null;
+  reasoningText: string | null;
   generatedSource: string | null;
   generationAssertionsPassed: boolean | null;
   generationAssertionFailures: string[];

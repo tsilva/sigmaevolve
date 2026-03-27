@@ -21,7 +21,9 @@ from sigmaevolve.generation import (
     build_model_block,
     build_optimization_block,
     extract_evolve_block_payloads,
+    extract_task_description,
     materialize_candidate_source,
+    parse_generation_response,
     parse_search_replace_blocks,
     replace_evolve_block_payloads,
 )
@@ -236,12 +238,13 @@ def test_openrouter_generation_uses_model_pool_round_robin(monkeypatch):
         in system_prompt
     )
     assert (
-        "If emitting a patch, begin immediately with <<<<<<< SEARCH on the first line"
+        "A `TASK_DESCRIPTION:` header followed by a brief plain-text description"
         in system_prompt
     )
     assert "If you cannot emit a complete SEARCH/REPLACE block, output NO_CHANGES" in (
         system_prompt
     )
+    assert "TASK_DESCRIPTION:" in system_prompt
     assert (
         "Do not emit leading spaces or tabs that only reflect surrounding block nesting"
         in system_prompt
@@ -526,6 +529,52 @@ def test_openrouter_generation_classifies_reasoning_budget_exhaustion(monkeypatc
     assert result.error_info["error_type"] == "generation_reasoning_tokens_exhausted"
     assert result.error_info["finish_reason"] == "length"
     assert result.error_info["reasoning_present"] is True
+    assert (
+        result.provenance_json["generation"]["reasoning_text"]
+        == "internal chain of thought"
+    )
+
+
+def test_openrouter_generation_persists_reasoning_trace(monkeypatch):
+    backend = OpenRouterGenerationBackend(api_key="test-key")
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps(
+                {
+                    "id": "resp_1",
+                    "choices": [
+                        {
+                            "message": {
+                                "content": _mutated_script(
+                                    "return torch.zeros((x.shape[0], 10), dtype=torch.float32) + 0.1"
+                                ),
+                                "reasoning": "I will modify only the evolve block.",
+                            },
+                        }
+                    ],
+                }
+            ).encode("utf-8")
+
+    monkeypatch.setattr(
+        "sigmaevolve.generation.request.urlopen", lambda req, timeout=0: FakeResponse()
+    )
+
+    result = backend.generate(
+        _track_with_pool(), _manifest(), _context(), generation_index=0
+    )
+
+    assert result.error_info is None
+    assert (
+        result.provenance_json["generation"]["reasoning_text"]
+        == "I will modify only the evolve block."
+    )
 
 
 def test_openrouter_generation_persists_finish_reason_for_contentful_response(
@@ -737,7 +786,10 @@ def test_assert_only_evolve_blocks_changed_rejects_immutable_changes():
 
 def test_materialize_candidate_source_applies_search_replace_blocks():
     source = build_baseline_train_script()
-    response = """<<<<<<< SEARCH
+    response = """TASK_DESCRIPTION:
+Reduce the forward output scale to temper logits and improve validation stability.
+
+<<<<<<< SEARCH
     def forward(self, x):
         return self.network(x)
 =======
@@ -754,7 +806,10 @@ def test_materialize_candidate_source_applies_search_replace_blocks():
 
 def test_materialize_candidate_source_matches_search_blocks_without_outer_indentation():
     source = build_baseline_train_script()
-    response = """<<<<<<< SEARCH
+    response = """TASK_DESCRIPTION:
+Adjust optimization defaults to try a smaller, more regularized update schedule.
+
+<<<<<<< SEARCH
     "learning_rate": 0.002,
     "weight_decay": 1e-4,
     "label_smoothing": 0.0,
@@ -776,7 +831,10 @@ def test_materialize_candidate_source_matches_search_blocks_without_outer_indent
 
 def test_assert_only_evolve_blocks_changed_accepts_outer_block_only_patch_layout():
     source = build_baseline_train_script()
-    response = """<<<<<<< SEARCH
+    response = """TASK_DESCRIPTION:
+Increase model width to add capacity while keeping the rest of the program unchanged.
+
+<<<<<<< SEARCH
 "model": {
     "hidden_dims": (256, 128),
 },
@@ -833,7 +891,10 @@ CONFIG = {
 
 def test_apply_search_replace_blocks_preserves_internal_indentation():
     source = build_baseline_train_script()
-    response = """<<<<<<< SEARCH
+    response = """TASK_DESCRIPTION:
+Raise early stopping patience slightly so the model can train longer before stopping.
+
+<<<<<<< SEARCH
 def configure_training_policy(*, num_epochs):
     del num_epochs
     training_policy = CONFIG["training_policy"]
@@ -863,14 +924,40 @@ def configure_training_policy(*, num_epochs):
 def test_parse_and_apply_search_replace_blocks_support_no_changes():
     source = build_baseline_train_script()
 
-    blocks = parse_search_replace_blocks("NO_CHANGES")
+    blocks = parse_search_replace_blocks(
+        "TASK_DESCRIPTION:\nNo safe change stands out over the current program.\n\nNO_CHANGES\n"
+    )
     updated = apply_search_replace_blocks(source, blocks)
 
     assert updated == source
 
 
+def test_parse_generation_response_extracts_task_description():
+    response = """TASK_DESCRIPTION:
+Increase hidden layer width to add capacity while preserving the current training loop.
+
+<<<<<<< SEARCH
+    "hidden_dims": (256, 128),
+=======
+    "hidden_dims": (512, 256),
+>>>>>>> REPLACE
+"""
+
+    parsed = parse_generation_response(response)
+
+    assert (
+        parsed.task_description
+        == "Increase hidden layer width to add capacity while preserving the current training loop."
+    )
+    assert parsed.patch_text.startswith("<<<<<<< SEARCH\n")
+    assert extract_task_description(response) == parsed.task_description
+
+
 def test_parse_search_replace_blocks_rejects_evolve_markers_in_search_text():
-    response = """<<<<<<< SEARCH
+    response = """TASK_DESCRIPTION:
+Try a replacement, but this one is invalid because it targets evolve markers.
+
+<<<<<<< SEARCH
 # EVOLVE-BLOCK-START
 =======
 replacement
@@ -885,7 +972,10 @@ replacement
 
 
 def test_parse_search_replace_blocks_rejects_evolve_markers_in_replace_text():
-    response = """<<<<<<< SEARCH
+    response = """TASK_DESCRIPTION:
+Try a replacement, but this one is invalid because it emits evolve markers.
+
+<<<<<<< SEARCH
 original
 =======
 # EVOLVE-BLOCK-END
@@ -905,3 +995,15 @@ def test_materialize_candidate_source_rejects_non_patch_without_full_program():
     # Reject plain text responses that do not include SEARCH/REPLACE blocks.
     with pytest.raises(EvolveBlockError, match="SEARCH/REPLACE blocks"):
         materialize_candidate_source(source, "return self.network(x)\n")
+
+
+def test_parse_search_replace_blocks_requires_task_description_prefix():
+    response = """<<<<<<< SEARCH
+original
+=======
+replacement
+>>>>>>> REPLACE
+"""
+
+    with pytest.raises(EvolveBlockError, match="TASK_DESCRIPTION"):
+        parse_search_replace_blocks(response)

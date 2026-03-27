@@ -57,14 +57,15 @@ describe("dashboard row mappers", () => {
       finishedAt: null,
       durationSec: null,
       hasError: true,
-      errorType: null,
       source: "print('hello')\n",
       errorJson: { reason: "candidate_materialization_failed", stderr: "boom" },
       provenanceJson: {
         model: "google/gemini",
         request_messages: [],
         generation: {
+          task_description: "Describe the patch goal before applying it.",
           response_text: "raw response",
+          reasoning_text: "reasoning trace",
           generated_source: "print('candidate')\n",
           assertions_passed: false,
           assertion_failures: ["candidate modified immutable text outside evolve blocks"],
@@ -95,7 +96,9 @@ describe("dashboard row mappers", () => {
       hasError: true,
       errorType: "generation_invalid_candidate",
       source: "print('hello')\n",
+      taskDescription: "Describe the patch goal before applying it.",
       responseText: "raw response",
+      reasoningText: "reasoning trace",
       generatedSource: "print('candidate')\n",
       generationAssertionsPassed: false,
       generationAssertionFailures: ["candidate modified immutable text outside evolve blocks"],
@@ -104,7 +107,9 @@ describe("dashboard row mappers", () => {
         model: "google/gemini",
         request_messages: [],
         generation: {
+          task_description: "Describe the patch goal before applying it.",
           response_text: "raw response",
+          reasoning_text: "reasoning trace",
           generated_source: "print('candidate')\n",
           assertions_passed: false,
           assertion_failures: ["candidate modified immutable text outside evolve blocks"],
@@ -135,7 +140,6 @@ describe("dashboard row mappers", () => {
       finishedAt: null,
       durationSec: "12.5",
       hasError: false,
-      errorType: null,
       source: "print('candidate')\n",
       errorJson: null,
       provenanceJson: { model: "test/model", request_messages: [] },
@@ -170,7 +174,6 @@ describe("dashboard row mappers", () => {
       finishedAt: "2026-03-20T15:02:00.000Z",
       durationSec: "60",
       hasError: false,
-      errorType: null,
       source: "print('ok')\n",
       errorJson: { stderr: "", eval_artifacts: ["/tmp/eval_0001.npz"] },
       provenanceJson: { model: "baseline", request_messages: [] },
@@ -180,6 +183,8 @@ describe("dashboard row mappers", () => {
     expect(mapped.modalRunUrl).toBe("https://modal.com/apps/test/runs/fc-123");
     expect(mapped.errorJson).toEqual({ stderr: "", eval_artifacts: ["/tmp/eval_0001.npz"] });
     expect(mapped.responseText).toBeNull();
+    expect(mapped.taskDescription).toBeNull();
+    expect(mapped.reasoningText).toBeNull();
     expect(mapped.generatedSource).toBeNull();
     expect(mapped.generationAssertionsPassed).toBeNull();
     expect(mapped.generationAssertionFailures).toEqual([]);
@@ -207,7 +212,6 @@ describe("dashboard row mappers", () => {
       finishedAt: "2026-03-20T15:02:00.000Z",
       durationSec: "60",
       hasError: "f" as unknown as boolean,
-      errorType: null,
       source: "print('ok')\n",
       errorJson: { stderr: "", eval_artifacts: ["/tmp/eval_0001.npz"] },
       provenanceJson: { model: "baseline", request_messages: [] },
