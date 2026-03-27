@@ -300,6 +300,25 @@ def test_successful_run_creates_wandb_experiment(
     assert 0.0 <= run.summary["train/acc"] <= 1.0
     assert run.summary["val/loss"] == pytest.approx(finished.metrics_json["val_loss"])
     assert run.summary["val/acc"] == pytest.approx(finished.metrics_json["accuracy"])
+    assert len(run.artifacts) == 1
+    artifact_entry = run.artifacts[0]
+    artifact = artifact_entry["artifact"]
+    assert artifact.name == f"{finished.trial_id}-best-model"
+    assert artifact.type == "model"
+    assert artifact.metadata["trial_id"] == finished.trial_id
+    assert artifact.metadata["track_id"] == finished.track_id
+    assert artifact.metadata["dataset_id"] == "mnist:v1"
+    assert artifact.metadata["accuracy"] == pytest.approx(
+        finished.metrics_json["accuracy"]
+    )
+    assert artifact_entry["aliases"] == ["best", "latest"]
+    assert artifact.files == [
+        {
+            "local_path": run.summary["best_model_artifact_path"],
+            "name": "best_model.pt",
+        }
+    ]
+    assert [event["kind"] for event in run.events][-2:] == ["artifact", "finish"]
     assert run.finished == {"exit_code": 0}
 
 
@@ -361,6 +380,28 @@ def test_timeout_with_completed_eval_keeps_best_score(repository, dataset_manage
     assert finished.metrics_json["had_unscored_work_at_timeout"] is True
     assert finished.metrics_json["time_since_last_eval_sec"] > 0.0
     assert finished.error_json is None
+
+
+def test_timeout_with_completed_eval_uploads_best_model_artifact(
+    repository, dataset_manager, fake_wandb
+):
+    system = build_inline_system(repository, dataset_manager, hard_timeout_sec=1.5)
+    system.prepare_dataset("mnist:v1")
+    track = _create_track(system, {"epochs": 4})
+    finalize_baseline(system, track.track_id)
+    finished = _run_trial(system, track.track_id, SALVAGED_TIMEOUT_BLOCK)
+
+    runs = fake_wandb["runs"]
+    assert isinstance(runs, list)
+    assert len(runs) == 1
+    run = runs[0]
+    assert finished.outcome_reason == "timeout"
+    assert len(run.artifacts) == 1
+    artifact = run.artifacts[0]["artifact"]
+    assert artifact.metadata["accuracy"] == pytest.approx(
+        finished.metrics_json["accuracy"]
+    )
+    assert [event["kind"] for event in run.events][-2:] == ["artifact", "finish"]
 
 
 def test_equal_accuracy_uses_lower_time_to_best_eval_as_tiebreaker(

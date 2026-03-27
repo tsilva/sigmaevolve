@@ -351,7 +351,7 @@ def test_openrouter_generation_prompt_includes_expected_sections(monkeypatch):
     assert "REPLACEMENTS:" in prompt
 
 
-def test_openrouter_generation_prompt_lists_full_prior_programs_before_current_program():
+def test_openrouter_generation_prompt_compacts_prior_programs_before_current_program():
     backend = OpenRouterGenerationBackend(api_key="test-key")
 
     prompt = backend._build_user_prompt_text(
@@ -365,12 +365,16 @@ def test_openrouter_generation_prompt_lists_full_prior_programs_before_current_p
     prior_section, current_section = prompt.split("CURRENT PROGRAM:\n", maxsplit=1)
     assert "OBJECTIVE:" in prior_section
     assert "TASK CONTEXT:" in prior_section
-    assert "REFERENCE PROGRAMS:\n---\nval_acc: 0.998" in prior_section
+    assert "REFERENCE PROGRAMS:" in prior_section
+    assert "\n---\nval_acc: 0.998" in prior_section
+    assert "Reference entries may omit unchanged immutable scaffolding" in prior_section
     assert "score:" not in prior_section
     assert "val_acc: 0.998" in prior_section
     assert "val_loss: 0.023" in prior_section
     assert "[...]" not in prior_section
     assert "def forward(self, x):" in prior_section
+    assert "from __future__ import annotations" not in prior_section
+    assert "class TrainScriptContractError(RuntimeError):" not in prior_section
     assert (
         "return torch.zeros((x.shape[0], 10), dtype=torch.float32) + 0.3"
         in prior_section
@@ -389,7 +393,11 @@ def test_openrouter_generation_prompt_lists_full_prior_programs_before_current_p
     assert "# EVOLVE-BLOCK-END" not in prior_section
     assert "# EVOLVE-BLOCK-START" in current_section
     assert "# EVOLVE-BLOCK-END" in current_section
-    assert "AVOID THESE RECENT NEGATIVE TRIALS:\nNone." in prompt
+    assert (
+        "AVOID THESE RECENT NEGATIVE TRIALS:\n"
+        "Negative trial snippets may also be compacted to the mutable "
+        "evolve-block contents.\nNone."
+    ) in prompt
     assert prompt.rstrip().endswith("REPLACEMENTS:")
 
 
@@ -404,11 +412,20 @@ def test_openrouter_generation_prompt_renders_recent_negative_trials():
         selected_config={"model": "test/model"},
     )
 
+    negative_section = prompt.split(
+        "AVOID THESE RECENT NEGATIVE TRIALS:\n", maxsplit=1
+    )[1].split("CURRENT PROGRAM:\n", maxsplit=1)[0]
+
     assert "AVOID THESE RECENT NEGATIVE TRIALS:" in prompt
-    assert "outcome_reason: crashed" in prompt
-    assert "- returncode: 1" in prompt
-    assert "mat1 and mat2 shapes cannot be multiplied" in prompt
-    assert "raise RuntimeError('bad candidate')" in prompt
+    assert (
+        "Negative trial snippets may also be compacted to the mutable evolve-block"
+        in prompt
+    )
+    assert "outcome_reason: crashed" in negative_section
+    assert "- returncode: 1" in negative_section
+    assert "mat1 and mat2 shapes cannot be multiplied" in negative_section
+    assert "raise RuntimeError('bad candidate')" in negative_section
+    assert "class TrainScriptContractError(RuntimeError):" not in negative_section
 
 
 def test_openrouter_generation_reports_missing_api_key(monkeypatch):

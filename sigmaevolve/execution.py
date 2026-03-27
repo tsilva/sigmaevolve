@@ -200,6 +200,45 @@ class WandbRunLogger:
             wandb_metadata,
         )
 
+    def upload_best_model_artifact(
+        self,
+        *,
+        best_model_path: Path | None,
+        metrics: dict[str, Any] | None,
+    ) -> None:
+        has_metrics = isinstance(metrics, dict) and bool(metrics)
+        if best_model_path is None or not best_model_path.exists() or not has_metrics:
+            return
+
+        wandb = _import_wandb()
+        artifact_metadata = {
+            "trial_id": self.trial.trial_id,
+            "track_id": self.track.track_id,
+            "dataset_id": self.track.dataset_id,
+            "runner_id": self.runner_id,
+            "score": float(compute_score(metrics)),
+        }
+        for key in (
+            "accuracy",
+            "val_loss",
+            "best_eval_epoch",
+            "best_eval_index",
+            "time_to_best_eval_sec",
+        ):
+            value = metrics.get(key)
+            if value is not None:
+                artifact_metadata[key] = value
+
+        artifact = wandb.Artifact(
+            name=f"{self.trial.trial_id}-best-model",
+            type="model",
+            metadata=artifact_metadata,
+        )
+        artifact.add_file(str(best_model_path), name="best_model.pt")
+        self.run.log_artifact(artifact, aliases=["best", "latest"])
+        self.run.summary["best_model_artifact_name"] = artifact.name
+        self.run.summary["best_model_artifact_path"] = str(best_model_path)
+
     def log_metrics(self, metrics: dict[str, Any], *, state: str) -> None:
         payload = _wandb_metric_aliases(metrics)
         payload["trial_state"] = state
@@ -212,6 +251,7 @@ class WandbRunLogger:
         outcome_reason: str,
         metrics: dict[str, Any] | None,
         error_info: dict[str, Any] | None,
+        best_model_path: Path | None,
     ) -> None:
         # Build the terminal log entry in the same field order the dashboards expect.
         score = float(compute_score(metrics))
@@ -246,6 +286,10 @@ class WandbRunLogger:
             if isinstance(detail, str) and detail:
                 self.run.summary["error_detail"] = detail
 
+        self.upload_best_model_artifact(
+            best_model_path=best_model_path,
+            metrics=metrics,
+        )
         exit_code = 0 if outcome_reason in {"succeeded", "timeout"} else 1
         self.run.finish(exit_code=exit_code)
 
@@ -861,6 +905,7 @@ class RunnerService:
         metrics: dict[str, Any] | None,
         error_info: dict[str, Any] | None,
         wandb_run_logger: WandbRunLogger | None,
+        best_model_path: Path | None = None,
     ) -> None:
         self.repository.finalize_trial(
             trial_id=trial_id,
@@ -876,6 +921,7 @@ class RunnerService:
                 outcome_reason=outcome_reason,
                 metrics=metrics,
                 error_info=error_info,
+                best_model_path=best_model_path,
             )
         except Exception:
             logger.warning(
@@ -916,6 +962,7 @@ class RunnerService:
                 config_path = temp_path / "run_config.json"
                 progress_path = temp_path / "progress.json"
                 eval_dir = temp_path / "evals"
+                best_model_path = temp_path / "best_model.pt"
                 debug_path = temp_path / "debug.json"
                 eval_dir.mkdir(parents=True, exist_ok=True)
                 train_script_path.write_text(trial.source)
@@ -928,6 +975,7 @@ class RunnerService:
                     "random_seed": 1234,
                     "progress_path": str(progress_path),
                     "eval_dir": str(eval_dir),
+                    "best_model_path": str(best_model_path),
                     "debug_output_path": str(debug_path),
                     "dataset_metadata": manifest.metadata,
                 }
@@ -946,6 +994,7 @@ class RunnerService:
                         metrics=metrics,
                         error_info=error_info,
                         wandb_run_logger=wandb_run_logger,
+                        best_model_path=best_model_path,
                     )
                     logger.info(
                         "Finalized trial %s with outcome=%s.",
@@ -1138,6 +1187,7 @@ class RunnerService:
                     metrics=metrics,
                     error_info=error_info,
                     wandb_run_logger=wandb_run_logger,
+                    best_model_path=best_model_path,
                 )
                 logger.info(
                     "Finalized trial %s with outcome=%s score=%.6f accuracy=%s.",

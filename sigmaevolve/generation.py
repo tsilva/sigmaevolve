@@ -710,17 +710,29 @@ class OpenRouterGenerationBackend:
         ]
         return "\n".join(filtered_lines) + ("\n" if source.endswith("\n") else "")
 
+    def _extract_compact_evolve_source(self, source: str) -> str:
+        try:
+            payloads = extract_evolve_block_payloads(source)
+        except EvolveBlockError:
+            return self._strip_evolve_block_tags(source)
+
+        compact_source = "\n\n".join(payloads).rstrip()
+        return f"{compact_source}\n" if compact_source else ""
+
     def _render_trial_prompt_block(
         self,
         trial: TrialSummary,
         *,
         strip_evolve_block_tags: bool = False,
+        compact_evolve_source: bool = False,
     ) -> list[str]:
         # Normalize the source snapshot before rendering the trial prompt block.
         source = self._prompt_trial_source(
             trial,
             strip_evolve_block_tags=strip_evolve_block_tags,
         )
+        if compact_evolve_source:
+            source = self._extract_compact_evolve_source(source)
         rendered = _render_prompt_template(
             "trial.md",
             val_acc=self._trial_prompt_metric(trial, "val_acc", "accuracy"),
@@ -732,9 +744,9 @@ class OpenRouterGenerationBackend:
     def _render_negative_trial_prompt_block(self, trial: TrialSummary) -> list[str]:
         source = self._prompt_trial_source(
             trial,
-            strip_evolve_block_tags=True,
             prefer_generated_source=True,
         )
+        source = self._extract_compact_evolve_source(source)
         lines = [
             "---",
             f"outcome_reason: {self._format_scalar(trial.outcome_reason or 'unknown')}",
@@ -788,7 +800,7 @@ class OpenRouterGenerationBackend:
         current_program = context_trials[0] if context_trials else None
         prior_programs = context_trials[1:] if len(context_trials) > 1 else []
 
-        # Render prior programs in full so they remain independent references.
+        # Compact prior programs to mutable payloads to avoid repeating boilerplate.
         if prior_programs:
             prior_program_blocks = []
             for trial in prior_programs:
@@ -796,7 +808,7 @@ class OpenRouterGenerationBackend:
                     "\n".join(
                         self._render_trial_prompt_block(
                             trial,
-                            strip_evolve_block_tags=True,
+                            compact_evolve_source=True,
                         )
                     )
                 )
@@ -804,7 +816,7 @@ class OpenRouterGenerationBackend:
         else:
             prior_programs_text = "None."
 
-        # Render the primary current program in full so the model has a base candidate.
+        # Keep the current program intact so SEARCH blocks match the real source.
         if current_program is not None:
             current_program_text = "\n".join(
                 self._render_trial_prompt_block(current_program)
