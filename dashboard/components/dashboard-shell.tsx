@@ -13,6 +13,7 @@ import {
 } from "react";
 
 import { HighlightedCode } from "@/components/highlighted-code";
+import { MarkdownContent } from "@/components/markdown-content";
 import { SourceDiff } from "@/components/source-diff";
 import { useTrackLiveUpdates } from "@/hooks/use-track-live-updates";
 import type {
@@ -2035,10 +2036,8 @@ export function DashboardShell({
                       titleTag="h3"
                       toggleClassName="analysis-card-header"
                     >
-                      <HighlightedCode
-                        code={selectedReasoningText ?? "No reasoning trace recorded."}
-                        language={detectPromptLanguage(selectedReasoningText ?? "")}
-                        wrap
+                      <MarkdownContent
+                        content={selectedReasoningText ?? "No reasoning trace recorded."}
                       />
                     </CollapsibleSection>
                   </article>
