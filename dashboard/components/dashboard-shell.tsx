@@ -1811,7 +1811,7 @@ export function DashboardShell({
                         role="button"
                         tabIndex={0}
                         aria-label={`Open trial ${trial.trialId}`}
-                        className={`trial-row tone-${getTrialTone(trial)} ${selectedTrial?.trialId === trial.trialId ? "active" : ""} ${isBestTrial(detail.track, trial.trialId) ? "best-trial" : ""}`}
+                        className={`trial-row tone-${getTrialTone(trial)} status-${trial.status} ${selectedTrial?.trialId === trial.trialId ? "active" : ""} ${isBestTrial(detail.track, trial.trialId) ? "best-trial" : ""}`}
                         onClick={() => openInspector(trial.trialId)}
                         onKeyDown={(event) => handleTrialKeyDown(event, trial.trialId)}
                       >

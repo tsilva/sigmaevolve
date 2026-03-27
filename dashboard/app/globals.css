@@ -734,9 +734,49 @@ button {
   transition: background 140ms ease;
 }
 
-.trial-row:hover,
-.trial-row.active {
-  background: rgba(255, 255, 255, 0.84);
+.trial-row.status-queued {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.72), rgba(216, 161, 66, 0.12));
+}
+
+.trial-row.status-dispatching {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.72), rgba(138, 102, 217, 0.12));
+}
+
+.trial-row.status-active {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.72), rgba(17, 128, 106, 0.12));
+}
+
+.trial-row.status-finished {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.72), rgba(49, 88, 157, 0.1));
+}
+
+.trial-row.status-error {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.72), rgba(179, 58, 45, 0.12));
+}
+
+.trial-row.status-queued:hover,
+.trial-row.status-queued.active {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.84), rgba(216, 161, 66, 0.18));
+}
+
+.trial-row.status-dispatching:hover,
+.trial-row.status-dispatching.active {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.84), rgba(138, 102, 217, 0.18));
+}
+
+.trial-row.status-active:hover,
+.trial-row.status-active.active {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.84), rgba(17, 128, 106, 0.18));
+}
+
+.trial-row.status-finished:hover,
+.trial-row.status-finished.active {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.84), rgba(49, 88, 157, 0.16));
+}
+
+.trial-row.status-error:hover,
+.trial-row.status-error.active {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.84), rgba(179, 58, 45, 0.18));
 }
 
 .trial-row:focus-visible {
@@ -890,6 +930,31 @@ button {
   cursor: pointer;
 }
 
+.trial-tree-node.status-queued {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(255, 245, 225, 0.94));
+  border-color: rgba(216, 161, 66, 0.22);
+}
+
+.trial-tree-node.status-dispatching {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(245, 240, 255, 0.94));
+  border-color: rgba(138, 102, 217, 0.22);
+}
+
+.trial-tree-node.status-active {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(234, 248, 244, 0.96));
+  border-color: rgba(17, 128, 106, 0.24);
+}
+
+.trial-tree-node.status-finished {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(238, 244, 255, 0.96));
+  border-color: rgba(49, 88, 157, 0.2);
+}
+
+.trial-tree-node.status-error {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(255, 241, 239, 0.96));
+  border-color: rgba(179, 58, 45, 0.22);
+}
+
 .trial-tree-node.active {
   border-color: rgba(31, 26, 20, 0.28);
   background: rgba(255, 255, 255, 0.94);
@@ -910,6 +975,25 @@ button {
   color: var(--muted);
   font-size: 0.76rem;
   line-height: 1.32;
+}
+
+.trial-tree-node-status {
+  color: var(--ink);
+  font-size: 0.68rem;
+  font-weight: 600;
+  line-height: 1.2;
+  text-transform: capitalize;
+}
+
+.trial-tree-node-task {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 0.68rem;
+  line-height: 1.32;
+  text-wrap: pretty;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 .trial-notes,
@@ -1032,7 +1116,7 @@ button {
 }
 
 .trial-row.best-trial {
-  box-shadow: inset 3px 0 0 rgba(181, 122, 23, 0.85);
+  box-shadow: inset 6px 0 0 rgba(26, 106, 64, 0.9);
   background:
     linear-gradient(90deg, rgba(201, 154, 57, 0.12), rgba(255, 255, 255, 0) 24%),
     rgba(255, 255, 255, 0.72);

@@ -194,14 +194,18 @@ describe("DashboardShell", () => {
       detail: createDetail([
         createTrial({
           trialId: "trial_root",
+          status: "finished",
           backend: "baseline",
           model: "baseline",
           createdAt: "2026-03-20T15:00:00.000Z",
+          taskDescription: "Keep the baseline program unchanged for comparison.",
           provenanceJson: { backend: "baseline", parent_trial_ids: [] },
         }),
         createTrial({
           trialId: "trial_child_a",
+          status: "active",
           createdAt: "2026-03-20T15:01:00.000Z",
+          taskDescription: "Broaden the hidden layers to add capacity.",
           provenanceJson: {
             backend: "openrouter",
             request_messages: [],
@@ -210,7 +214,10 @@ describe("DashboardShell", () => {
         }),
         createTrial({
           trialId: "trial_child_b",
+          status: "error",
           createdAt: "2026-03-20T15:02:00.000Z",
+          taskDescription:
+            "Adjust the optimizer schedule to recover late-epoch accuracy without changing the training loop.",
           provenanceJson: {
             backend: "openrouter",
             request_messages: [],
@@ -222,11 +229,21 @@ describe("DashboardShell", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Lineage tree" }));
 
-    expect(screen.getByRole("button", { name: "Open lineage node trial_root" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Open lineage node trial_child_a" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Open lineage node trial_child_b" })).toBeTruthy();
+    const rootNode = screen.getByRole("button", { name: "Open lineage node trial_root" });
+    const activeNode = screen.getByRole("button", { name: "Open lineage node trial_child_a" });
+    const errorNode = screen.getByRole("button", { name: "Open lineage node trial_child_b" });
+
+    expect(rootNode.className).toContain("status-finished");
+    expect(activeNode.className).toContain("status-active");
+    expect(errorNode.className).toContain("status-error");
     expect(screen.getAllByText("root")).toHaveLength(1);
     expect(screen.getAllByText("0.9100").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText("finished")).toBeTruthy();
+    expect(screen.getByText("active")).toBeTruthy();
+    expect(screen.getByText("error")).toBeTruthy();
+    expect(screen.getByText("Keep the baseline program unchanged for comparison.")).toBeTruthy();
+    expect(screen.getByText("Broaden the hidden layers to add capacity.")).toBeTruthy();
+    expect(screen.getByText(/^Adjust the optimizer schedule to recover late-epoch accuracy/)).toBeTruthy();
     expect(screen.queryByText("Inspired by")).toBeNull();
     expect(screen.queryByText("Inspires")).toBeNull();
   });
@@ -1012,6 +1029,7 @@ describe("DashboardShell", () => {
 
     const bestRow = screen.getByRole("button", { name: "Open trial trial_2" });
     expect(bestRow.className).toContain("best-trial");
+    expect(bestRow.className).toContain("status-finished");
     expect(container.querySelector('circle.score-point.best-point[aria-label^="trial_2"]')).toBeTruthy();
     expect(screen.getByText(/trial_2 is the best trial so far\./i)).toBeTruthy();
     expect(screen.getByText("best so far")).toBeTruthy();
