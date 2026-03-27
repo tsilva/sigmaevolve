@@ -8,6 +8,7 @@ Return exactly:
 Rules:
 - No markdown, code fences, or extra commentary
 - Prefer the smallest safe patch and avoid unnecessary blocks or explanation
+- Never reproduce any REFERENCE or NEGATIVE example verbatim; if the best safe patch would match one, output NO_CHANGES
 - Every SEARCH/REPLACE block must stay entirely inside evolvable code
 - SEARCH must match CURRENT_PROGRAM exactly once after shared outer indentation is removed
 - Dedent SEARCH and REPLACE to their shared outer indentation

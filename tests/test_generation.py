@@ -471,6 +471,28 @@ def test_openrouter_generation_prompt_renders_recent_negative_trials():
     assert "class TrainScriptContractError(RuntimeError):" not in negative_section
 
 
+def test_openrouter_generation_prompt_forbids_copying_reference_or_negative_examples():
+    backend = OpenRouterGenerationBackend(api_key="test-key")
+
+    prompt_messages = backend._build_prompt(
+        _track_with_pool(),
+        _manifest(),
+        _context_with_prior_programs(),
+        negative_trials=_negative_trials(),
+        selected_config={"model": "test/model"},
+    )
+
+    system_prompt = prompt_messages[0]["content"]
+    stable_prompt = prompt_messages[1]["content"]
+
+    assert "Never reproduce any REFERENCE or NEGATIVE example verbatim" in system_prompt
+    assert (
+        "Do not reproduce any REFERENCE or NEGATIVE candidate verbatim."
+        in stable_prompt
+    )
+    assert "textually distinct from CURRENT_PROGRAM" in stable_prompt
+
+
 def test_openrouter_generation_prompt_keeps_stable_prefix_across_context_changes():
     backend = OpenRouterGenerationBackend(api_key="test-key")
 
@@ -514,9 +536,9 @@ def test_openrouter_generation_prompt_applies_render_budgets():
     assert " + 0.5" not in reference_appendix
     assert " + 0.3" in reference_appendix
     assert " + 0.4" in reference_appendix
-    assert negative_appendix.count("NEGATIVE reason=") == 2
-    assert "bad candidate 2" not in negative_appendix
-    assert "bad candidate 3" not in negative_appendix
+    assert negative_appendix.count("NEGATIVE reason=") == 4
+    assert "bad candidate 2" in negative_appendix
+    assert "bad candidate 3" in negative_appendix
 
 
 def test_openrouter_generation_reports_missing_api_key(monkeypatch):

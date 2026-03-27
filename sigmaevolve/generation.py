@@ -61,10 +61,10 @@ class ParsedGenerationResponse:
 
 TASK_DESCRIPTION_HEADER = "TASK_DESCRIPTION:"
 MAX_CONTEXT_TRIALS = 4
-MAX_NEGATIVE_TRIALS = 4
+MAX_NEGATIVE_TRIALS = 8
 INSPIRATION_POOL_SIZE = 8
 MAX_RENDERED_INSPIRATIONS = 2
-MAX_RENDERED_NEGATIVE_TRIALS = 2
+MAX_RENDERED_NEGATIVE_TRIALS = 4
 MAX_NEGATIVE_DETAIL_CHARS = 120
 MAX_NEGATIVE_STDERR_CHARS = 120
 
@@ -767,7 +767,16 @@ class OpenRouterGenerationBackend:
                 break
             if line.startswith("- stderr excerpt: "):
                 detail = line.removeprefix("- stderr excerpt: ")
-        lines = [f"NEGATIVE reason={reason} detail={detail}"]
+        duplicate_count = None
+        if trial.error_json is not None:
+            raw_duplicate_count = trial.error_json.get("duplicate_count")
+            if isinstance(raw_duplicate_count, int) and raw_duplicate_count > 1:
+                duplicate_count = raw_duplicate_count
+
+        frequency_suffix = (
+            f" duplicate_count={duplicate_count}" if duplicate_count is not None else ""
+        )
+        lines = [f"NEGATIVE reason={reason} detail={detail}{frequency_suffix}"]
         if trial.error_json and trial.error_json.get("returncode") is not None:
             lines.append(
                 f"returncode={self._format_scalar(trial.error_json['returncode'])}"
@@ -1315,6 +1324,34 @@ class GenerationCoordinator:
         self.repository = repository
         self.generator = generator
 
+    def _negative_trial_key(self, trial: TrialSummary) -> str:
+        generation_payload = dict((trial.provenance_json or {}).get("generation") or {})
+        candidate_hash = generation_payload.get("candidate_hash")
+        if isinstance(candidate_hash, str) and candidate_hash:
+            return candidate_hash
+
+        generated_source = generation_payload.get("generated_source")
+        if isinstance(generated_source, str) and generated_source.strip():
+            return compute_script_hash(generated_source)
+        return compute_script_hash(trial.source)
+
+    def _with_duplicate_frequency(
+        self,
+        trial: TrialSummary,
+        *,
+        duplicate_count: int,
+    ) -> TrialSummary:
+        error_json = dict(trial.error_json or {})
+        error_json["duplicate_count"] = duplicate_count
+        return TrialSummary(
+            trial_id=trial.trial_id,
+            metrics_json=dict(trial.metrics_json) if trial.metrics_json else None,
+            source=trial.source,
+            provenance_json=dict(trial.provenance_json or {}),
+            outcome_reason=trial.outcome_reason,
+            error_json=error_json,
+        )
+
     def _build_sampled_candidate_rows(
         self,
         candidates: list[TrialSummary],
@@ -1432,12 +1469,39 @@ class GenerationCoordinator:
         *,
         limit: int = MAX_NEGATIVE_TRIALS,
     ) -> list[TrialSummary]:
-        # Surface recent duplicate attempts as negative examples for the prompt.
-        return self.repository.list_recent_trial_summaries(
+        # Rank duplicate negatives by repeated collisions, then fall back to recency.
+        recent_duplicates = self.repository.list_recent_trial_summaries(
             track_id,
             outcome_reasons={OUTCOME_DUPLICATE},
-            limit=limit,
+            limit=self.repository.count_trials(track_id),
         )
+        if not recent_duplicates:
+            return []
+
+        grouped_duplicates: dict[str, list[TrialSummary]] = {}
+        recency_rank: dict[str, int] = {}
+        for index, trial in enumerate(recent_duplicates):
+            duplicate_key = self._negative_trial_key(trial)
+            recency_rank.setdefault(duplicate_key, index)
+            grouped_duplicates.setdefault(duplicate_key, []).append(trial)
+
+        ranked_duplicate_keys = sorted(
+            grouped_duplicates,
+            key=lambda duplicate_key: (
+                -len(grouped_duplicates[duplicate_key]),
+                recency_rank[duplicate_key],
+            ),
+        )
+        sampled_negatives: list[TrialSummary] = []
+        for duplicate_key in ranked_duplicate_keys[:limit]:
+            duplicates = grouped_duplicates[duplicate_key]
+            sampled_negatives.append(
+                self._with_duplicate_frequency(
+                    duplicates[0],
+                    duplicate_count=len(duplicates),
+                )
+            )
+        return sampled_negatives
 
     def sample_generation_context_trials(
         self,
