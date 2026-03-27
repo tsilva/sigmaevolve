@@ -27,7 +27,7 @@ from sigmaevolve.core import (
     normalize_source,
 )
 
-_BASELINE_TEMPLATE_PATH = Path(__file__).with_name("baseline_template.py")
+_BASELINE_TEMPLATE_PATH = Path(__file__).with_name("baseline_template_new.py")
 
 
 def build_baseline_train_script() -> str:
@@ -39,14 +39,7 @@ EVOLVE_BLOCK_START = "# EVOLVE-BLOCK-START"
 EVOLVE_BLOCK_END = "# EVOLVE-BLOCK-END"
 
 _EVOLVE_BLOCK_PATTERN = re.compile(
-    rf"(?ms)^{re.escape(EVOLVE_BLOCK_START)}\n(.*?)^{re.escape(EVOLVE_BLOCK_END)}\n?"
-)
-_EVOLVE_PAYLOAD_START_PATTERNS = (
-    r"^CONFIG = \{\n",
-    r"^(?:import [^\n]+\n)+(?:\n)?class EvolvedModel\(torch\.nn\.Module\):\n|^class EvolvedModel\(torch\.nn\.Module\):\n",
-    r"^(?:import [^\n]+\n)+(?:\n)?def configure_data\(\*, train_x, train_y, validation_x, random_seed\):\n|^def configure_data\(\*, train_x, train_y, validation_x, random_seed\):\n",
-    r"^(?:import [^\n]+\n)+(?:\n)?def configure_optimization\(\*, model, train_loader, num_epochs, num_classes\):\n|^def configure_optimization\(\*, model, train_loader, num_epochs, num_classes\):\n",
-    r"^def configure_training_policy\(\*, num_epochs\):\n",
+    rf"(?ms)^[ \t]*{re.escape(EVOLVE_BLOCK_START)}\n(.*?)^[ \t]*{re.escape(EVOLVE_BLOCK_END)}\n?"
 )
 
 
@@ -151,47 +144,6 @@ def split_evolve_blocks(source: str) -> tuple[list[str], list[str]]:
     return immutable_parts, block_payloads
 
 
-def _split_payload_and_separator(segment: str) -> tuple[str, str]:
-    lines = segment.splitlines(keepends=True)
-    separator_start = len(lines)
-    while separator_start > 0 and lines[separator_start - 1].strip() == "":
-        separator_start -= 1
-    return "".join(lines[:separator_start]), "".join(lines[separator_start:])
-
-
-def _split_evolve_payload_sections(block_payload: str) -> tuple[list[str], list[str]]:
-    normalized = normalize_source(block_payload)
-    start_offsets: list[int] = []
-    for pattern in _EVOLVE_PAYLOAD_START_PATTERNS:
-        match = re.search(pattern, normalized, flags=re.MULTILINE)
-        if match is None:
-            raise EvolveBlockError(
-                "source must contain the expected evolve payload sections"
-            )
-        start_offsets.append(match.start())
-    if start_offsets != sorted(start_offsets):
-        raise EvolveBlockError(
-            "source must contain the expected evolve payload sections"
-        )
-    immutable_parts: list[str] = []
-    payloads: list[str] = []
-    immutable_parts.append(normalized[: start_offsets[0]])
-    for index, start in enumerate(start_offsets):
-        end = (
-            start_offsets[index + 1]
-            if index + 1 < len(start_offsets)
-            else len(normalized)
-        )
-        payload, separator = _split_payload_and_separator(normalized[start:end])
-        if not payload:
-            raise EvolveBlockError(
-                "source must contain the expected evolve payload sections"
-            )
-        payloads.append(payload)
-        immutable_parts.append(separator)
-    return immutable_parts, payloads
-
-
 def _merge_payloads(immutable_parts: list[str], payloads: list[str]) -> str:
     merged: list[str] = []
     for immutable_part, payload in zip(immutable_parts, payloads):
@@ -210,27 +162,25 @@ def _extract_outer_evolve_payload(source: str) -> tuple[list[str], str]:
 
 def extract_evolve_block_payloads(source: str) -> list[str]:
     _, outer_payload = _extract_outer_evolve_payload(source)
-    _, payloads = _split_evolve_payload_sections(outer_payload)
-    return payloads
+    return [normalize_source(outer_payload)]
 
 
 def replace_evolve_block_payloads(
     template_source: str, block_payloads: list[str]
 ) -> str:
-    outer_immutable_parts, outer_payload = _extract_outer_evolve_payload(
+    outer_immutable_parts, current_payload = _extract_outer_evolve_payload(
         template_source
     )
-    section_immutable_parts, current_payloads = _split_evolve_payload_sections(
-        outer_payload
-    )
-    if len(block_payloads) != len(current_payloads):
+    if len(block_payloads) != 1:
         raise EvolveBlockError(
-            f"expected {len(current_payloads)} evolve block payloads, "
-            f"received {len(block_payloads)}"
+            f"expected 1 evolve block payload, received {len(block_payloads)}"
         )
-    updated_outer_payload = _merge_payloads(section_immutable_parts, block_payloads)
+    current_lines = current_payload.splitlines(keepends=True)
+    replacement_lines = normalize_source(block_payloads[0]).splitlines(keepends=True)
+    block_indent = _common_indent(current_lines)
+    indented_replacement = "".join(_reindent_lines(replacement_lines, block_indent))
     return normalize_source(
-        _merge_payloads(outer_immutable_parts, [updated_outer_payload])
+        _merge_payloads(outer_immutable_parts, [indented_replacement])
     )
 
 
@@ -1708,13 +1658,6 @@ class GenerationCoordinator:
         }
 
 
-CONFIG_BLOCK_INDEX = 0
-MODEL_BLOCK_INDEX = 1
-DATA_BLOCK_INDEX = 2
-OPTIMIZATION_BLOCK_INDEX = 3
-TRAINING_POLICY_BLOCK_INDEX = 4
-
-
 def _normalize_payload(payload: str) -> str:
     return payload.strip("\n") + "\n"
 
@@ -1729,67 +1672,204 @@ def build_candidate_train_script(
     training_policy_block_payload: str | None = None,
 ) -> str:
     template_source = build_baseline_train_script()
-    payloads = extract_evolve_block_payloads(template_source)
-
-    replacements: dict[int, str | None] = {
-        CONFIG_BLOCK_INDEX: config_block_payload,
-        MODEL_BLOCK_INDEX: (
-            model_block_payload if model_block_payload is not None else block_payload
-        ),
-        DATA_BLOCK_INDEX: data_block_payload,
-        OPTIMIZATION_BLOCK_INDEX: optimization_block_payload,
-        TRAINING_POLICY_BLOCK_INDEX: training_policy_block_payload,
-    }
-    for index, payload in replacements.items():
-        if payload is not None:
-            payloads[index] = _normalize_payload(payload)
-
-    return replace_evolve_block_payloads(template_source, payloads)
+    replacement_payloads = [
+        payload
+        for payload in (
+            model_block_payload if model_block_payload is not None else block_payload,
+            config_block_payload,
+            data_block_payload,
+            optimization_block_payload,
+            training_policy_block_payload,
+        )
+        if payload is not None
+    ]
+    if len(replacement_payloads) > 1:
+        raise EvolveBlockError(
+            "single-block templates accept only one replacement payload at a time"
+        )
+    if not replacement_payloads:
+        return template_source
+    return replace_evolve_block_payloads(
+        template_source,
+        [_normalize_payload(replacement_payloads[0])],
+    )
 
 
 def build_config_block(body: str) -> str:
     return _normalize_payload(body)
 
 
+def _default_data_section() -> str:
+    return "\n".join(
+        (
+            "batch_size = 64",
+            "train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)",
+            "val_loader = DataLoader(val_ds, batch_size=batch_size)",
+        )
+    )
+
+
+def _default_model_section() -> str:
+    return "\n".join(
+        (
+            "flat_dim = int(train_ds[0][0].numel())",
+            "num_classes = int(",
+            "    torch.cat((train_ds.tensors[1], val_ds.tensors[1])).max().item()",
+            ") + 1",
+            "",
+            "model = nn.Sequential(",
+            "    nn.Flatten(),",
+            "    nn.Linear(flat_dim, 128),",
+            "    nn.ReLU(),",
+            "    nn.Linear(128, num_classes),",
+            ").to(device)",
+        )
+    )
+
+
+def _default_optimization_section() -> str:
+    return "\n".join(
+        (
+            "trainable_parameters = [",
+            "    parameter for parameter in model.parameters() if parameter.requires_grad",
+            "]",
+            "optimizer = None",
+            "if trainable_parameters:",
+            "    optimizer = torch.optim.Adam(trainable_parameters, lr=1e-3)",
+            "",
+            "scheduler = None",
+            "if optimizer is not None:",
+            "    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(",
+            '        optimizer, mode="min", factor=0.5, patience=1',
+            "    )",
+        )
+    )
+
+
+def _default_training_policy_section() -> str:
+    return "\n".join(
+        (
+            "early_stopping_patience = 2",
+            "min_delta = 0.0",
+        )
+    )
+
+
+def _default_loss_section() -> str:
+    return "\n".join(
+        (
+            "def loss_fn(batch):",
+            "    x, y = (tensor.to(device) for tensor in batch)",
+            "    logits = model(x)",
+            "    loss = F.cross_entropy(logits, y)",
+            "    return loss, logits, y",
+        )
+    )
+
+
+def _default_return_section() -> str:
+    return "\n".join(
+        (
+            "return {",
+            '    "model": model,',
+            '    "optimizer": optimizer,',
+            '    "scheduler": scheduler,',
+            '    "loss_fn": loss_fn,',
+            '    "train_loader": train_loader,',
+            '    "val_loader": val_loader,',
+            '    "early_stopping_patience": early_stopping_patience,',
+            '    "min_delta": min_delta,',
+            "}",
+        )
+    )
+
+
+def _assemble_experiment_block(
+    *,
+    imports: str = "",
+    data_section: str | None = None,
+    model_section: str | None = None,
+    optimization_section: str | None = None,
+    training_policy_section: str | None = None,
+) -> str:
+    parts: list[str] = []
+    normalized_imports = imports.strip()
+    if normalized_imports:
+        parts.append(normalized_imports)
+        parts.append("")
+    parts.append((data_section or _default_data_section()).strip("\n"))
+    parts.append("")
+    parts.append((model_section or _default_model_section()).strip("\n"))
+    parts.append("")
+    parts.append((optimization_section or _default_optimization_section()).strip("\n"))
+    parts.append("")
+    parts.append(
+        (training_policy_section or _default_training_policy_section()).strip("\n")
+    )
+    parts.append("")
+    parts.append(_default_loss_section())
+    parts.append("")
+    parts.append(_default_return_section())
+    parts.append("")
+    return "\n".join(parts)
+
+
 def build_model_block(
     body: str,
     *,
     imports: str = "import torch",
-    build_body: str = "return EvolvedModel()",
+    build_body: str = "return self.network(x)",
 ) -> str:
-    parts: list[str] = []
-    imports = imports.strip()
-    # Keep imports and class/function scaffolding readable in the generated block.
-    if imports:
-        parts.append(imports)
-        parts.append("")
-    parts.append("class EvolvedModel(torch.nn.Module):")
-    parts.append(indent(body.strip("\n"), "    "))
-    parts.append("")
-    parts.append("")
-    parts.append("def build_model(*, input_shape, num_classes):")
-    parts.append(indent(build_body.strip("\n"), "    "))
-    parts.append("")
-    return "\n".join(parts)
-
-
-def _build_function_block(
-    body: str,
-    *,
-    function_name: str,
-    signature: str,
-    imports: str = "",
-) -> str:
-    parts: list[str] = []
-    imports = imports.strip()
-    # Keep imports and function scaffolding readable in the generated block.
-    if imports:
-        parts.append(imports)
-        parts.append("")
-    parts.append(f"def {function_name}({signature}):")
-    parts.append(indent(body.strip("\n"), "    "))
-    parts.append("")
-    return "\n".join(parts)
+    model_section = "\n".join(
+        (
+            "flat_dim = int(train_ds[0][0].numel())",
+            "num_classes = int(",
+            "    torch.cat((train_ds.tensors[1], val_ds.tensors[1])).max().item()",
+            ") + 1",
+            "",
+            "class EvolvedModel(nn.Module):",
+            "    def __init__(self):",
+            "        super().__init__()",
+            "        self.network = nn.Sequential(",
+            "            nn.Flatten(),",
+            "            nn.Linear(flat_dim, 128),",
+            "            nn.ReLU(),",
+            "            nn.Linear(128, num_classes),",
+            "        )",
+            "",
+            indent(body.strip("\n"), "    "),
+            "",
+            "model = EvolvedModel().to(device)",
+        )
+    )
+    if body.strip() == "":
+        model_section = "\n".join(
+            (
+                "flat_dim = int(train_ds[0][0].numel())",
+                "num_classes = int(",
+                "    torch.cat((train_ds.tensors[1], val_ds.tensors[1])).max().item()",
+                ") + 1",
+                "",
+                "class EvolvedModel(nn.Module):",
+                "    def __init__(self):",
+                "        super().__init__()",
+                "        self.network = nn.Sequential(",
+                "            nn.Flatten(),",
+                "            nn.Linear(flat_dim, 128),",
+                "            nn.ReLU(),",
+                "            nn.Linear(128, num_classes),",
+                "        )",
+                "",
+                "    def forward(self, x):",
+                f"        {build_body}",
+                "",
+                "model = EvolvedModel().to(device)",
+            )
+        )
+    return _assemble_experiment_block(
+        imports=imports,
+        model_section=model_section,
+    )
 
 
 def build_data_block(
@@ -1797,11 +1877,9 @@ def build_data_block(
     *,
     imports: str = "import torch",
 ) -> str:
-    return _build_function_block(
-        body,
-        function_name="configure_data",
-        signature="*, train_x, train_y, validation_x, random_seed",
+    return _assemble_experiment_block(
         imports=imports,
+        data_section=body,
     )
 
 
@@ -1810,17 +1888,13 @@ def build_optimization_block(
     *,
     imports: str = "import torch",
 ) -> str:
-    return _build_function_block(
-        body,
-        function_name="configure_optimization",
-        signature="*, model, train_loader, num_epochs, num_classes",
+    return _assemble_experiment_block(
         imports=imports,
+        optimization_section=body,
     )
 
 
 def build_training_policy_block(body: str) -> str:
-    return _build_function_block(
-        body,
-        function_name="configure_training_policy",
-        signature="*, num_epochs",
+    return _assemble_experiment_block(
+        training_policy_section=body,
     )

@@ -728,9 +728,6 @@ class RunnerService:
     def _read_progress(self, progress_path: Path) -> dict[str, Any] | None:
         return self._read_json_object(progress_path)
 
-    def _read_debug_payload(self, debug_path: Path) -> dict[str, Any] | None:
-        return self._read_json_object(debug_path)
-
     def _load_eval_artifacts(
         self,
         eval_dir: Path,
@@ -791,13 +788,12 @@ class RunnerService:
         *,
         eval_dir: Path,
         progress_path: Path,
-        debug_path: Path,
         labels_path: str,
         started_at: float,
     ) -> dict[str, Any] | None:
-        # Load the latest progress, debug, and eval artifacts before building metrics.
+        # Load the latest progress and eval artifacts before building metrics.
         progress_payload = self._read_progress(progress_path)
-        debug_payload = self._read_debug_payload(debug_path)
+        debug_payload = progress_payload
         artifacts: list[dict[str, Any]] = []
         try:
             artifacts = self._load_eval_artifacts(
@@ -811,7 +807,7 @@ class RunnerService:
             )
 
         # Skip reporter updates until there is at least one source of metrics.
-        if not progress_payload and not debug_payload and not artifacts:
+        if not progress_payload and not artifacts:
             return None
 
         # Delegate the actual payload shaping to the shared runner-metrics helper.
@@ -828,7 +824,6 @@ class RunnerService:
         trial_id: str,
         runner_id: str,
         progress_path: Path,
-        debug_path: Path,
         eval_dir: Path,
         labels_path: str,
         started_at: float,
@@ -841,7 +836,6 @@ class RunnerService:
             metrics = self._collect_active_metrics_payload(
                 eval_dir=eval_dir,
                 progress_path=progress_path,
-                debug_path=debug_path,
                 labels_path=labels_path,
                 started_at=started_at,
             )
@@ -963,7 +957,6 @@ class RunnerService:
                 progress_path = temp_path / "progress.json"
                 eval_dir = temp_path / "evals"
                 best_model_path = temp_path / "best_model.pt"
-                debug_path = temp_path / "debug.json"
                 eval_dir.mkdir(parents=True, exist_ok=True)
                 train_script_path.write_text(trial.source)
                 run_config_payload = {
@@ -976,7 +969,6 @@ class RunnerService:
                     "progress_path": str(progress_path),
                     "eval_dir": str(eval_dir),
                     "best_model_path": str(best_model_path),
-                    "debug_output_path": str(debug_path),
                     "dataset_metadata": manifest.metadata,
                 }
                 config_path.write_text(json.dumps(run_config_payload, sort_keys=True))
@@ -1055,7 +1047,6 @@ class RunnerService:
                     trial_id=trial.trial_id,
                     runner_id=runner_id,
                     progress_path=progress_path,
-                    debug_path=debug_path,
                     eval_dir=eval_dir,
                     labels_path=manifest.validation_labels_path,
                     started_at=started_at,
@@ -1079,7 +1070,7 @@ class RunnerService:
                     process_elapsed_sec,
                 )
                 progress_payload = self._read_progress(progress_path)
-                debug_payload = self._read_debug_payload(debug_path)
+                debug_payload = progress_payload
                 timed_out = bool(timed_out or (debug_payload or {}).get("timed_out"))
 
                 # Classify a nonzero exit before looking at evaluation artifacts.
@@ -1173,7 +1164,6 @@ class RunnerService:
                     "stdout": stdout,
                     "stderr": stderr,
                     "debug": debug_payload,
-                    "debug_output_path": str(debug_path),
                     "progress": progress_payload,
                     "eval_dir": str(eval_dir),
                     "eval_artifacts": [artifact["path"] for artifact in artifacts],

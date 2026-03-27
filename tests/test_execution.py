@@ -49,17 +49,16 @@ SALVAGED_TIMEOUT_BLOCK = build_model_block(
     """
 def __init__(self):
     super().__init__()
-    self.epoch_index = 0
-
-def on_epoch_start(self, *, epoch_index, num_epochs):
-    self.epoch_index = epoch_index
+    self.train_calls = 0
 
 def forward(self, x):
+    if self.training:
+        self.train_calls += 1
     flat = x.reshape(x.shape[0], -1)
     scores = flat.sum(dim=1)
-    if self.training and self.epoch_index >= 2:
+    if self.training and self.train_calls >= 3:
         time.sleep(2.0)
-    if self.epoch_index == 0:
+    if self.train_calls == 1:
         return torch.zeros((x.shape[0], 2), dtype=torch.float32)
     return torch.stack((-scores, scores), dim=1)
 """,
@@ -70,16 +69,14 @@ TIEBREAKER_BLOCK = build_model_block(
     """
 def __init__(self):
     super().__init__()
-    self.epoch_index = 0
-
-def on_epoch_start(self, *, epoch_index, num_epochs):
-    self.epoch_index = epoch_index
+    self.train_calls = 0
 
 def forward(self, x):
     if self.training:
-        if self.epoch_index == 0:
+        self.train_calls += 1
+        if self.train_calls == 1:
             time.sleep(0.05)
-        elif self.epoch_index == 1:
+        elif self.train_calls == 2:
             time.sleep(0.1)
         else:
             time.sleep(2.0)
@@ -109,8 +106,6 @@ def forward(self, x):
 """
 )
 
-MISSING_EXPORT_BLOCK = "import torch\n"
-
 LOGGING_BLOCK = build_model_block(
     """
 def forward(self, x):
@@ -127,13 +122,12 @@ LIVE_METRICS_BLOCK = build_model_block(
     """
 def __init__(self):
     super().__init__()
-    self.epoch_index = 0
-
-def on_epoch_start(self, *, epoch_index, num_epochs):
-    self.epoch_index = epoch_index
+    self.train_calls = 0
 
 def forward(self, x):
-    if self.training and self.epoch_index >= 1:
+    if self.training:
+        self.train_calls += 1
+    if self.training and self.train_calls >= 2:
         time.sleep(1.3)
     flat = x.reshape(x.shape[0], -1)
     scores = flat.sum(dim=1)
@@ -145,34 +139,29 @@ def forward(self, x):
 SMALL_BATCH_DATA_BLOCK = build_data_block(
     """
 batch_size = 2
-return {
-    "batch_size": batch_size,
-    "train_loader": torch.utils.data.DataLoader(
-        torch.utils.data.TensorDataset(train_x, train_y),
-        batch_size=batch_size,
-        shuffle=False,
-    ),
-    "validation_loader": torch.utils.data.DataLoader(
-        torch.utils.data.TensorDataset(validation_x),
-        batch_size=1,
-        shuffle=False,
-    ),
-}
+train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=False)
+val_loader = DataLoader(val_ds, batch_size=1)
 """,
-    imports="import torch",
+    imports="from torch.utils.data import DataLoader",
 )
 
 NOOP_OPTIMIZATION_BLOCK = build_optimization_block(
     """
-return {
-    "trainable_parameters": [parameter for parameter in model.parameters() if parameter.requires_grad],
-    "optimizer": None,
-    "scheduler": None,
-    "label_smoothing": 0.0,
-    "grad_clip_norm": None,
-}
+optimizer = None
+scheduler = None
 """
 )
+
+INVALID_EXPERIMENT_BLOCK = """
+model = object()
+optimizer = None
+scheduler = None
+loss_fn = 123
+train_loader = None
+val_loader = None
+early_stopping_patience = 0
+min_delta = 0.0
+"""
 
 
 def build_inline_system(repository, dataset_manager, hard_timeout_sec=5.0):
@@ -442,18 +431,19 @@ def test_crash_finalizes_with_zero_score(repository, dataset_manager):
     assert finished.score == 0.0
 
 
-def test_missing_required_exports_finalizes_as_eval_failed(repository, dataset_manager):
+def test_invalid_experiment_contract_finalizes_as_crashed(
+    repository, dataset_manager
+):
     system = build_inline_system(repository, dataset_manager)
     system.prepare_dataset("mnist:v1")
     track = _create_track(system)
     finalize_baseline(system, track.track_id)
-    finished = _run_trial(system, track.track_id, MISSING_EXPORT_BLOCK)
+    finished = _run_trial(system, track.track_id, INVALID_EXPERIMENT_BLOCK)
     assert finished.status == "error"
-    assert finished.outcome_reason == "eval_failed"
-    assert finished.error_json["reason"] == "train_script_contract_violation"
+    assert finished.outcome_reason == "crashed"
     assert (
         classify_error_type(finished.outcome_reason or "", finished.error_json)
-        == "execution_contract_violation"
+        == "execution_crash"
     )
     assert finished.score == 0.0
 
@@ -619,7 +609,6 @@ def test_collect_active_metrics_payload_uses_eval_artifacts(
     eval_dir = dataset_manager.dataset_root / "active-metrics-evals"
     eval_dir.mkdir(parents=True)
     progress_path = eval_dir / "progress.json"
-    debug_path = eval_dir / "debug.json"
 
     labels = np.load(manifest.validation_labels_path)
     np.savez(
@@ -634,14 +623,19 @@ def test_collect_active_metrics_payload_uses_eval_artifacts(
         val_acc=1.0,
     )
     progress_path.write_text(
-        json.dumps({"phase": "eval", "eval_index": 1, "last_completed_eval_sec": 0.25})
+        json.dumps(
+            {
+                "phase": "eval",
+                "eval_index": 1,
+                "last_completed_eval_sec": 0.25,
+                "eval_count": 1,
+            }
+        )
     )
-    debug_path.write_text(json.dumps({"eval_count": 1}))
 
     metrics = runner._collect_active_metrics_payload(
         eval_dir=eval_dir,
         progress_path=progress_path,
-        debug_path=debug_path,
         labels_path=manifest.validation_labels_path,
         started_at=time.monotonic() - 0.3,
     )

@@ -20,6 +20,7 @@ from sigmaevolve.generation import (
     build_data_block,
     build_model_block,
     build_optimization_block,
+    build_training_policy_block,
     extract_evolve_block_payloads,
     extract_task_description,
     materialize_candidate_source,
@@ -367,7 +368,9 @@ def test_openrouter_generation_prompt_compacts_prior_programs_before_current_pro
     assert "TASK CONTEXT:" in prior_section
     assert "REFERENCE PROGRAMS:" in prior_section
     assert "\n---\nval_acc: 0.998" in prior_section
-    assert "Reference entries may omit unchanged immutable scaffolding" in prior_section
+    assert (
+        "Reference programs show only the mutable evolve-block regions" in prior_section
+    )
     assert "score:" not in prior_section
     assert "val_acc: 0.998" in prior_section
     assert "val_loss: 0.023" in prior_section
@@ -395,8 +398,8 @@ def test_openrouter_generation_prompt_compacts_prior_programs_before_current_pro
     assert "# EVOLVE-BLOCK-END" in current_section
     assert (
         "AVOID THESE RECENT NEGATIVE TRIALS:\n"
-        "Negative trial snippets may also be compacted to the mutable "
-        "evolve-block contents.\nNone."
+        "Negative trials show only the mutable evolve-block regions, all "
+        "immutable scaffolding is purposely ommited.\nNone."
     ) in prompt
     assert prompt.rstrip().endswith("REPLACEMENTS:")
 
@@ -417,10 +420,7 @@ def test_openrouter_generation_prompt_renders_recent_negative_trials():
     )[1].split("CURRENT PROGRAM:\n", maxsplit=1)[0]
 
     assert "AVOID THESE RECENT NEGATIVE TRIALS:" in prompt
-    assert (
-        "Negative trial snippets may also be compacted to the mutable evolve-block"
-        in prompt
-    )
+    assert "Negative trials show only the mutable evolve-block regions" in prompt
     assert "outcome_reason: crashed" in negative_section
     assert "- returncode: 1" in negative_section
     assert "mat1 and mat2 shapes cannot be multiplied" in negative_section
@@ -686,20 +686,16 @@ def test_replace_evolve_block_payloads_rewrites_only_block_contents():
     updated = replace_evolve_block_payloads(
         source,
         [
-            payloads[0],
             build_model_block(
                 """
 def forward(self, x):
     return torch.zeros((x.shape[0], 2), dtype=torch.float32)
 """,
             ),
-            payloads[2],
-            payloads[3],
-            payloads[4],
         ],
     )
 
-    assert len(payloads) == 5
+    assert len(payloads) == 1
     assert extract_evolve_block_payloads(updated) != payloads
     assert_only_evolve_blocks_changed(source, updated)
 
@@ -709,30 +705,28 @@ def test_baseline_template_uses_one_outer_evolve_block():
 
     assert source.count("# EVOLVE-BLOCK-START") == 1
     assert source.count("# EVOLVE-BLOCK-END") == 1
-    assert len(extract_evolve_block_payloads(source)) == 5
+    assert len(extract_evolve_block_payloads(source)) == 1
 
 
 def test_baseline_template_preserves_feature_shape_for_evolved_models():
     namespace: dict[str, object] = {}
     exec(build_baseline_train_script(), namespace)
 
-    prepare_feature_tensor = namespace["prepare_feature_tensor"]
-    build_model = namespace["build_model"]
+    build_tensor_datasets = namespace["build_tensor_datasets"]
+    make_experiment = namespace["make_experiment"]
 
-    input_shape, train_x = prepare_feature_tensor(
-        np.zeros((4, 28, 28), dtype=np.float32)
-    )
-    _, validation_x = prepare_feature_tensor(
+    train_ds, validation_ds = build_tensor_datasets(
+        np.zeros((4, 28, 28), dtype=np.float32),
+        np.array([0, 1, 0, 1], dtype=np.int64),
         np.zeros((2, 28, 28), dtype=np.float32),
-        input_shape=input_shape,
+        np.array([0, 1], dtype=np.int64),
     )
-    model = build_model(input_shape=input_shape, num_classes=10)
-    logits = model(validation_x)
+    experiment = make_experiment(torch.device("cpu"), train_ds, validation_ds)
+    logits = experiment["model"](validation_ds.tensors[0])
 
-    assert input_shape == (28, 28)
-    assert tuple(train_x.shape) == (4, 28, 28)
-    assert tuple(logits.shape) == (2, 10)
-    assert isinstance(model.network[0], torch.nn.Flatten)
+    assert tuple(train_ds.tensors[0].shape) == (4, 28, 28)
+    assert tuple(logits.shape) == (2, 2)
+    assert isinstance(experiment["model"][0], torch.nn.Flatten)
 
 
 def test_build_candidate_train_script_replaces_only_data_block():
@@ -741,28 +735,16 @@ def test_build_candidate_train_script_replaces_only_data_block():
     updated = build_candidate_train_script(
         data_block_payload=build_data_block("""
 batch_size = 8
-return {
-    "batch_size": batch_size,
-    "train_loader": torch.utils.data.DataLoader(
-        torch.utils.data.TensorDataset(train_x, train_y),
-        batch_size=batch_size,
-        shuffle=False,
-    ),
-    "validation_loader": torch.utils.data.DataLoader(
-        torch.utils.data.TensorDataset(validation_x),
-        batch_size=1,
-        shuffle=False,
-    ),
-}
+train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=False)
+val_loader = DataLoader(val_ds, batch_size=1)
 """)
     )
 
     updated_payloads = extract_evolve_block_payloads(updated)
-    assert updated_payloads[0] == source_payloads[0]
-    assert updated_payloads[1] == source_payloads[1]
-    assert updated_payloads[3] == source_payloads[3]
-    assert updated_payloads[4] == source_payloads[4]
-    assert "batch_size = 8" in updated_payloads[2]
+    assert len(source_payloads) == 1
+    assert "batch_size = 8" in updated_payloads[0]
+    assert "shuffle=False" in updated_payloads[0]
+    assert updated_payloads[0] != source_payloads[0]
     assert_only_evolve_blocks_changed(source, updated)
 
 
@@ -771,28 +753,21 @@ def test_build_candidate_train_script_replaces_only_optimization_block():
     source_payloads = extract_evolve_block_payloads(source)
     updated = build_candidate_train_script(
         optimization_block_payload=build_optimization_block("""
-return {
-    "trainable_parameters": [parameter for parameter in model.parameters() if parameter.requires_grad],
-    "optimizer": None,
-    "scheduler": None,
-    "label_smoothing": 0.0,
-    "grad_clip_norm": None,
-}
+optimizer = None
+scheduler = None
 """)
     )
 
     updated_payloads = extract_evolve_block_payloads(updated)
-    assert updated_payloads[0] == source_payloads[0]
-    assert updated_payloads[1] == source_payloads[1]
-    assert updated_payloads[2] == source_payloads[2]
-    assert updated_payloads[4] == source_payloads[4]
-    assert '"optimizer": None' in updated_payloads[3]
+    assert len(source_payloads) == 1
+    assert "optimizer = None" in updated_payloads[0]
+    assert "scheduler = None" in updated_payloads[0]
+    assert updated_payloads[0] != source_payloads[0]
     assert_only_evolve_blocks_changed(source, updated)
 
 
 def test_build_candidate_train_script_positional_model_payload_keeps_other_blocks():
     source = build_baseline_train_script()
-    source_payloads = extract_evolve_block_payloads(source)
     updated = build_candidate_train_script(
         build_model_block(
             """
@@ -803,12 +778,11 @@ def forward(self, x):
     )
 
     updated_payloads = extract_evolve_block_payloads(updated)
-    assert updated_payloads[0] == source_payloads[0]
+    assert len(updated_payloads) == 1
     assert (
         "return torch.zeros((x.shape[0], 2), dtype=torch.float32)"
-        in updated_payloads[1]
+        in updated_payloads[0]
     )
-    assert updated_payloads[2:] == source_payloads[2:]
     assert_only_evolve_blocks_changed(source, updated)
 
 
@@ -824,20 +798,20 @@ def test_assert_only_evolve_blocks_changed_rejects_immutable_changes():
 def test_materialize_candidate_source_applies_search_replace_blocks():
     source = build_baseline_train_script()
     response = """TASK_DESCRIPTION:
-Reduce the forward output scale to temper logits and improve validation stability.
+Add a hidden layer so the baseline model keeps a little more capacity.
 
 <<<<<<< SEARCH
-    def forward(self, x):
-        return self.network(x)
+    nn.Linear(128, num_classes),
 =======
-    def forward(self, x):
-        return self.network(x) * 0.5
+    nn.Linear(128, 64),
+    nn.ReLU(),
+    nn.Linear(64, num_classes),
 >>>>>>> REPLACE
 """
 
     updated = materialize_candidate_source(source, response)
 
-    assert "return self.network(x) * 0.5" in updated
+    assert "nn.Linear(128, 64)" in updated
     assert_only_evolve_blocks_changed(source, updated)
 
 
@@ -847,44 +821,40 @@ def test_materialize_candidate_source_matches_search_blocks_without_outer_indent
 Adjust optimization defaults to try a smaller, more regularized update schedule.
 
 <<<<<<< SEARCH
-    "learning_rate": 0.002,
-    "weight_decay": 1e-4,
-    "label_smoothing": 0.0,
-    "grad_clip_norm": 1.0,
+trainable_parameters = [
+    parameter for parameter in model.parameters() if parameter.requires_grad
+]
+optimizer = None
+if trainable_parameters:
+    optimizer = torch.optim.Adam(trainable_parameters, lr=1e-3)
 =======
-    "learning_rate": 0.001,
-    "weight_decay": 1e-5,
-    "label_smoothing": 0.1,
-    "grad_clip_norm": 0.5,
+optimizer = torch.optim.AdamW(model.parameters(), lr=5e-4, weight_decay=1e-4)
+scheduler = None
 >>>>>>> REPLACE
 """
 
     updated = materialize_candidate_source(source, response)
 
-    assert '"learning_rate": 0.001' in updated
-    assert '        "learning_rate": 0.001,' in updated
+    assert "torch.optim.AdamW" in updated
+    assert "scheduler = None" in updated
     assert_only_evolve_blocks_changed(source, updated)
 
 
 def test_assert_only_evolve_blocks_changed_accepts_outer_block_only_patch_layout():
     source = build_baseline_train_script()
     response = """TASK_DESCRIPTION:
-Increase model width to add capacity while keeping the rest of the program unchanged.
+Increase the batch size while keeping the rest of the program unchanged.
 
 <<<<<<< SEARCH
-"model": {
-    "hidden_dims": (256, 128),
-},
+batch_size = 64
 =======
-"model": {
-    "hidden_dims": (512, 256),
-},
+batch_size = 128
 >>>>>>> REPLACE
 """
 
     updated = materialize_candidate_source(source, response)
 
-    assert '"hidden_dims": (512, 256)' in updated
+    assert "batch_size = 128" in updated
     assert_only_evolve_blocks_changed(source, updated)
 
 
@@ -892,37 +862,19 @@ def test_build_candidate_train_script_replaces_only_config_block():
     source = build_baseline_train_script()
     source_payloads = extract_evolve_block_payloads(source)
     updated = build_candidate_train_script(
-        config_block_payload=build_config_block("""
-CONFIG = {
-    "normalization_std_floor": 1e-5,
-    "binary_probability_threshold": 0.55,
-    "binary_logit_threshold": 0.1,
-    "initial_best_accuracy": -1.0,
-    "accuracy_improvement_tol": 1e-8,
-    "model": {
-        "hidden_dims": (256, 128),
-    },
-    "data": {
-        "max_batch_size": 512,
-        "shuffle_train": True,
-        "shuffle_validation": False,
-    },
-    "optimization": {
-        "learning_rate": 0.002,
-        "weight_decay": 1e-4,
-        "label_smoothing": 0.0,
-        "grad_clip_norm": 1.0,
-    },
-    "training_policy": {
-        "early_stopping_patience": 2,
-    },
-}
-""")
+        config_block_payload=build_config_block(
+            build_training_policy_block(
+                """
+early_stopping_patience = 5
+min_delta = 0.1
+"""
+            )
+        )
     )
 
     updated_payloads = extract_evolve_block_payloads(updated)
-    assert '"binary_probability_threshold": 0.55' in updated_payloads[0]
-    assert updated_payloads[1:] == source_payloads[1:]
+    assert "early_stopping_patience = 5" in updated_payloads[0]
+    assert updated_payloads[0] != source_payloads[0]
     assert_only_evolve_blocks_changed(source, updated)
 
 
@@ -932,29 +884,18 @@ def test_apply_search_replace_blocks_preserves_internal_indentation():
 Raise early stopping patience slightly so the model can train longer before stopping.
 
 <<<<<<< SEARCH
-def configure_training_policy(*, num_epochs):
-    del num_epochs
-    training_policy = CONFIG["training_policy"]
-    return {
-        "early_stopping_patience": training_policy["early_stopping_patience"],
-    }
+early_stopping_patience = 2
+min_delta = 0.0
 =======
-def configure_training_policy(*, num_epochs):
-    del num_epochs
-    training_policy = CONFIG["training_policy"]
-    return {
-        "early_stopping_patience": training_policy["early_stopping_patience"] + 3,
-    }
+early_stopping_patience = 5
+min_delta = 0.0
 >>>>>>> REPLACE
 """
 
     updated = materialize_candidate_source(source, response)
 
-    assert (
-        '        "early_stopping_patience": training_policy["early_stopping_patience"] + 3,'
-        in updated
-    )
-    assert "    del num_epochs" in updated
+    assert "    early_stopping_patience = 5" in updated
+    assert "    min_delta = 0.0" in updated
     assert_only_evolve_blocks_changed(source, updated)
 
 
