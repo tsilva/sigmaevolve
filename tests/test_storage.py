@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 import sqlalchemy as sa
 
+from sigmaevolve.generation import build_baseline_train_script
 from sigmaevolve.storage import (
     classify_error_type,
     trials_table,
@@ -341,6 +342,62 @@ def test_queued_trial_persists_generation_trace(repository):
     }
 
 
+def test_queued_train_script_requires_generation_response_text(repository):
+    track = _create_track(repository)
+    source = build_baseline_train_script().replace(
+        '"max_batch_size": 512', '"max_batch_size": 256', 1
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"provenance_json\.generation",
+    ):
+        repository.create_queued_trial_if_absent(
+            track_id=track.track_id,
+            source=source,
+            provenance_json=make_llm_provenance(model="worker"),
+        )
+
+
+def test_queued_train_script_accepts_generation_trace(repository):
+    track = _create_track(repository)
+    source = build_baseline_train_script().replace(
+        '"max_batch_size": 512', '"max_batch_size": 256', 1
+    )
+    raw_response = (
+        "TASK_DESCRIPTION:\n"
+        "Lower the training batch size to test persisted generation trace enforcement.\n\n"
+        "<<<<<<< SEARCH\n"
+        '"max_batch_size": 512,\n'
+        "=======\n"
+        '"max_batch_size": 256,\n'
+        ">>>>>>> REPLACE\n"
+    )
+
+    trial, created = repository.create_queued_trial_if_absent(
+        track_id=track.track_id,
+        source=source,
+        provenance_json=make_llm_provenance(
+            model="worker",
+            generation={
+                "task_description": (
+                    "Lower the training batch size to test persisted generation "
+                    "trace enforcement."
+                ),
+                "response_text": raw_response,
+                "generated_source": source,
+                "assertions_passed": True,
+                "assertion_failures": [],
+            },
+        ),
+    )
+
+    assert created is True
+    assert trial is not None
+    assert trial.provenance_json["generation"]["response_text"] == raw_response
+    assert trial.provenance_json["generation"]["generated_source"] == source
+
+
 def test_record_trial_launcher_metadata_merges_filtered_keys_and_notifies(repository):
     notifications = _capture_dashboard_notifications(repository)
     track = _create_track(repository)
@@ -462,6 +519,53 @@ def test_record_trial_wandb_metadata_merges_filtered_keys_and_notifies(repositor
         "run_url": "https://wandb.example/sigmaevolve/wandb-run-1",
     }
     assert notifications[-1] == (track.track_id, "trial_changed")
+
+
+def test_record_trial_wandb_metadata_preserves_generation_trace(repository):
+    track = _create_track(repository)
+    raw_response = (
+        "<<<<<<< SEARCH\nprint('parent')\n=======\nprint('candidate')\n>>>>>>> REPLACE"
+    )
+    trial, created = repository.create_queued_trial_if_absent(
+        track_id=track.track_id,
+        source="print('candidate')\n",
+        provenance_json=make_llm_provenance(
+            model="worker",
+            generation={
+                "task_description": "Explain the candidate mutation before applying it.",
+                "response_text": raw_response,
+                "reasoning_text": "reasoning trace",
+                "generated_source": "print('candidate')\n",
+                "assertions_passed": True,
+                "assertion_failures": [],
+                "candidate_hash": "sha256:candidate",
+            },
+        ),
+    )
+    assert created is True
+    assert trial is not None
+
+    repository.record_trial_wandb_metadata(
+        trial.trial_id,
+        {
+            "project": "sigmaevolve",
+            "entity": "team",
+            "run_id": "wandb-run-1",
+            "run_url": "https://wandb.example/sigmaevolve/wandb-run-1",
+        },
+    )
+    updated = repository.get_trial(trial.trial_id)
+
+    assert updated is not None
+    assert updated.provenance_json["generation"] == {
+        "task_description": "Explain the candidate mutation before applying it.",
+        "response_text": raw_response,
+        "reasoning_text": "reasoning trace",
+        "generated_source": "print('candidate')\n",
+        "assertions_passed": True,
+        "assertion_failures": [],
+        "candidate_hash": "sha256:candidate",
+    }
 
 
 def test_trial_indexes_exist():
