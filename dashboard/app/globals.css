@@ -102,7 +102,8 @@ button {
 
 .track-column,
 .explorer-panel,
-.inspector-panel {
+.inspector-panel,
+.tree-panel {
   min-width: 0;
 }
 
@@ -627,7 +628,8 @@ button {
 }
 
 .explorer-panel,
-.inspector-panel {
+.inspector-panel,
+.tree-panel {
   display: grid;
   align-content: start;
   gap: 12px;
@@ -660,6 +662,12 @@ button {
 }
 
 .status-filter {
+  gap: 6px;
+}
+
+.workspace-view-switch {
+  display: flex;
+  flex-wrap: wrap;
   gap: 6px;
 }
 
@@ -816,6 +824,157 @@ button {
   text-wrap: pretty;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 3;
+}
+
+.tree-metrics {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.tree-loading-banner {
+  padding: 10px 12px;
+  border-radius: 14px;
+  border: 1px solid rgba(49, 88, 157, 0.16);
+  background: rgba(49, 88, 157, 0.08);
+  color: #274a83;
+  font-size: 0.82rem;
+}
+
+.trial-tree-shell {
+  overflow: auto;
+  padding: 4px;
+  border-radius: 16px;
+  border: 1px solid rgba(62, 50, 35, 0.08);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.86), rgba(244, 248, 255, 0.9)),
+    radial-gradient(circle at top left, rgba(51, 98, 183, 0.08), transparent 40%);
+}
+
+.trial-tree-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 12px;
+}
+
+.trial-tree-children {
+  margin-top: 10px;
+  margin-left: 18px;
+  padding-left: 18px;
+  border-left: 1px solid rgba(51, 98, 183, 0.18);
+}
+
+.trial-tree-item {
+  position: relative;
+}
+
+.trial-tree-item::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 24px;
+  width: 18px;
+  border-top: 1px solid rgba(51, 98, 183, 0.18);
+}
+
+.trial-tree-list > .trial-tree-item::before {
+  display: none;
+}
+
+.trial-tree-node {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border-radius: 16px;
+  border: 1px solid rgba(62, 50, 35, 0.08);
+  box-shadow: var(--shadow);
+}
+
+.trial-tree-node.best-trial {
+  box-shadow:
+    inset 3px 0 0 rgba(181, 122, 23, 0.85),
+    var(--shadow);
+}
+
+.trial-tree-node.active {
+  border-color: rgba(31, 26, 20, 0.28);
+  background: rgba(255, 255, 255, 0.94);
+}
+
+.trial-tree-node-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: flex-start;
+}
+
+.trial-tree-node-header > * {
+  min-width: 0;
+}
+
+.trial-tree-node-button {
+  display: grid;
+  gap: 4px;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.trial-tree-node-button:focus-visible,
+.trial-tree-link-chip:focus-visible {
+  outline: 2px solid rgba(51, 98, 183, 0.28);
+  outline-offset: 3px;
+}
+
+.trial-tree-node-title-row,
+.trial-tree-node-stats,
+.trial-tree-node-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.trial-tree-node-title-row {
+  align-items: center;
+}
+
+.trial-tree-node-title {
+  font-size: 0.86rem;
+  font-weight: 700;
+  font-family: var(--font-mono), monospace;
+}
+
+.trial-tree-node-copy {
+  color: var(--muted);
+  font-size: 0.76rem;
+  line-height: 1.32;
+  overflow-wrap: anywhere;
+}
+
+.trial-tree-node-relations {
+  display: grid;
+  gap: 8px;
+}
+
+.trial-tree-relation-row {
+  display: grid;
+  grid-template-columns: minmax(88px, 112px) minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+}
+
+.trial-tree-relation-label {
+  color: var(--muted);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.trial-tree-link-chip {
+  cursor: pointer;
 }
 
 .trial-notes,
@@ -1398,6 +1557,10 @@ button {
   .overview-snapshot-metrics {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
+
+  .tree-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 900px) {
@@ -1425,9 +1588,14 @@ button {
     grid-template-columns: 1fr;
   }
 
+  .tree-metrics {
+    grid-template-columns: 1fr;
+  }
+
   .priority-item,
   .timeline-row,
-  .context-row {
+  .context-row,
+  .trial-tree-relation-row {
     grid-template-columns: 1fr;
     gap: 6px;
   }
@@ -1444,5 +1612,14 @@ button {
 @media (max-width: 640px) {
   .overview-snapshot-metrics {
     grid-template-columns: 1fr;
+  }
+
+  .trial-tree-children {
+    margin-left: 12px;
+    padding-left: 12px;
+  }
+
+  .trial-tree-item::before {
+    width: 12px;
   }
 }

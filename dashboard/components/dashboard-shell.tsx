@@ -14,8 +14,10 @@ import {
 
 import { HighlightedCode } from "@/components/highlighted-code";
 import { MarkdownContent } from "@/components/markdown-content";
+import { TrialLineageTree } from "@/components/trial-lineage-tree";
 import { useTrackLiveUpdates } from "@/hooks/use-track-live-updates";
 import { buildSourceDiff } from "@/lib/source-diff";
+import { buildTrialLineageGraph } from "@/lib/trial-lineage";
 import type {
   PaginatedTrialsResponse,
   TrackDetailResponse,
@@ -364,8 +366,8 @@ function getGenerationPayload(value: Record<string, unknown> | null): Record<str
 }
 
 function getGenerationPrompt(value: Record<string, unknown> | null, field: "system_prompt" | "user_prompt"): string | null {
-    const generation = getGenerationPayload(value);
-    const prompt = generation?.[field];
+  const generation = getGenerationPayload(value);
+  const prompt = generation?.[field];
   if (typeof prompt === "string" && prompt.length > 0) {
     return prompt;
   }
@@ -375,6 +377,22 @@ function getGenerationPrompt(value: Record<string, unknown> | null, field: "syst
     return requestMessages[0]?.content ?? null;
   }
   return requestMessages[1]?.content ?? null;
+}
+
+function mergeUniqueTrials(current: TrialListItem[], incoming: TrialListItem[]): TrialListItem[] {
+  const mergedById = new Map(current.map((trial) => [trial.trialId, trial]));
+  for (const trial of incoming) {
+    mergedById.set(trial.trialId, trial);
+  }
+
+  return Array.from(mergedById.values()).sort((left, right) => {
+    const createdAtDelta = new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime();
+    if (createdAtDelta !== 0) {
+      return createdAtDelta;
+    }
+
+    return right.trialId.localeCompare(left.trialId);
+  });
 }
 
 function normalizeSourceSnippet(content: string): string {
@@ -889,7 +907,8 @@ type DashboardShellProps = {
   selectedTrackId: string;
 };
 
-type ActiveWorkspace = "explorer" | "inspector";
+type BrowseWorkspace = "explorer" | "tree";
+type ActiveWorkspace = BrowseWorkspace | "inspector";
 type ScoreChartPoint = {
   backend: string | null;
   createdAt: string;
@@ -919,6 +938,7 @@ const SCORE_CHART_PADDING = {
 const MIN_SCORE_CHART_RANGE = 0.02;
 const MIN_ZOOMED_SCORE_CHART_RANGE = 0.003;
 const MIN_ZOOMED_SCORE_PADDING = 0.0015;
+const LINEAGE_PAGE_SIZE = 100;
 
 function getScoreTickDigits(range: number): number {
   if (range < 0.002) {
@@ -1122,11 +1142,15 @@ export function DashboardShell({
   const [status, setStatus] = useState<TrialStatusFilter>("all");
   const [searchText, setSearchText] = useState("");
   const [isTracksCollapsed, setIsTracksCollapsed] = useState(false);
+  const [lastBrowseWorkspace, setLastBrowseWorkspace] = useState<BrowseWorkspace>("explorer");
   const [activeWorkspace, setActiveWorkspace] = useState<ActiveWorkspace>(
     initialSelectedTrialId ? "inspector" : "explorer",
   );
   const [selectedTrialId, setSelectedTrialId] = useState<string | null>(initialSelectedTrialId);
   const [urlTrialId, setUrlTrialId] = useState<string | null>(initialSelectedTrialId);
+  const [lineageTrials, setLineageTrials] = useState(initialDetail.trials);
+  const [lineageNextCursor, setLineageNextCursor] = useState<string | null>(initialDetail.nextCursor);
+  const [isLineageLoading, setIsLineageLoading] = useState(false);
   const [hoveredScorePoint, setHoveredScorePoint] = useState<ScoreChartPoint | null>(null);
   const [expandedSectionIds, setExpandedSectionIds] = useState<string[]>(DEFAULT_EXPANDED_SECTION_IDS);
   const [error, setError] = useState<string | null>(null);
@@ -1139,9 +1163,13 @@ export function DashboardShell({
     setStatus("all");
     setSearchText("");
     setIsTracksCollapsed(false);
+    setLastBrowseWorkspace("explorer");
     setActiveWorkspace(initialSelectedTrialId ? "inspector" : "explorer");
     setSelectedTrialId(initialSelectedTrialId);
     setUrlTrialId(initialSelectedTrialId);
+    setLineageTrials(initialDetail.trials);
+    setLineageNextCursor(initialDetail.nextCursor);
+    setIsLineageLoading(false);
     setHoveredScorePoint(null);
     setExpandedSectionIds(DEFAULT_EXPANDED_SECTION_IDS);
     setError(null);
@@ -1205,6 +1233,7 @@ export function DashboardShell({
   const coveragePercent = getCoveragePercent(detail.track);
   const attentionCount = getAttentionCount(detail.track);
   const scoreChart = buildScoreChart(visibleTrials, detail.track.bestTrialId);
+  const lineageGraph = buildTrialLineageGraph(lineageTrials);
   const bestTrialId =
     detail.track.bestTrialId ??
     (detail.trials.length === 0
@@ -1240,6 +1269,32 @@ export function DashboardShell({
     fetchJson<PaginatedTrialsResponse>(buildTrialsUrl(selectedTrackId, nextStatus, cursor, limit)),
   );
 
+  const hydrateLineageTrials = useEffectEvent(async () => {
+    if (isLineageLoading || !lineageNextCursor) {
+      return;
+    }
+
+    setIsLineageLoading(true);
+    try {
+      let nextCursor: string | null = lineageNextCursor;
+      let nextLineageTrials = lineageTrials;
+
+      while (nextCursor) {
+        const nextPage = await loadTrials("all", nextCursor, LINEAGE_PAGE_SIZE);
+        nextLineageTrials = mergeUniqueTrials(nextLineageTrials, nextPage.trials);
+        nextCursor = nextPage.nextCursor;
+      }
+
+      setLineageTrials(nextLineageTrials);
+      setLineageNextCursor(null);
+      setError(null);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Unable to load the lineage tree.");
+    } finally {
+      setIsLineageLoading(false);
+    }
+  });
+
   const refreshData = useEffectEvent(async () => {
     try {
       const [nextTracks, nextTrials] = await Promise.all([
@@ -1253,6 +1308,10 @@ export function DashboardShell({
         trials: nextTrials.trials,
         nextCursor: nextTrials.nextCursor,
       }));
+      if (status === "all") {
+        setLineageTrials(nextTrials.trials);
+        setLineageNextCursor(nextTrials.nextCursor);
+      }
       setError(null);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Unable to refresh dashboard data.");
@@ -1292,6 +1351,16 @@ export function DashboardShell({
     setSelectedTrialId(visibleTrials[0].trialId);
   }, [selectedTrialId, syncSelectedTrial, updateTrialUrl, urlTrialId, visibleTrials]);
 
+  useEffect(() => {
+    if (activeWorkspace !== "tree" || !lineageNextCursor || isLineageLoading) {
+      return;
+    }
+
+    startTransition(() => {
+      void hydrateLineageTrials();
+    });
+  }, [activeWorkspace, hydrateLineageTrials, isLineageLoading, lineageNextCursor, startTransition]);
+
   const liveMode = useTrackLiveUpdates({
     streamUrl: `/api/tracks/${selectedTrackId}/stream`,
     onRefresh: () => {
@@ -1312,6 +1381,10 @@ export function DashboardShell({
             trials: nextTrials.trials,
             nextCursor: nextTrials.nextCursor,
           }));
+          if (nextStatus === "all") {
+            setLineageTrials(nextTrials.trials);
+            setLineageNextCursor(nextTrials.nextCursor);
+          }
           setError(null);
         } catch (cause) {
           setError(cause instanceof Error ? cause.message : "Unable to update the trial filter.");
@@ -1334,6 +1407,10 @@ export function DashboardShell({
             trials: [...current.trials, ...nextTrials.trials],
             nextCursor: nextTrials.nextCursor,
           }));
+          if (status === "all") {
+            setLineageTrials((current) => mergeUniqueTrials(current, nextTrials.trials));
+            setLineageNextCursor(nextTrials.nextCursor);
+          }
           setError(null);
         } catch (cause) {
           setError(cause instanceof Error ? cause.message : "Unable to load more trials.");
@@ -1347,8 +1424,15 @@ export function DashboardShell({
     syncSelectedTrial(trialId);
   };
 
+  const openBrowseWorkspace = (workspace: BrowseWorkspace) => {
+    setLastBrowseWorkspace(workspace);
+    setActiveWorkspace(workspace);
+    updateTrialUrl(null);
+    setUrlTrialId(null);
+  };
+
   const returnToExplorer = () => {
-    setActiveWorkspace("explorer");
+    setActiveWorkspace(lastBrowseWorkspace);
     updateTrialUrl(null);
     setUrlTrialId(null);
   };
@@ -1626,6 +1710,31 @@ export function DashboardShell({
           </div>
         </section>
 
+        <div className="workspace-view-switch" role="tablist" aria-label="Track views">
+          <button
+            type="button"
+            className={`filter-chip ${activeWorkspace === "explorer" ? "active" : ""}`}
+            onClick={() => openBrowseWorkspace("explorer")}
+          >
+            Trial table
+          </button>
+          <button
+            type="button"
+            className={`filter-chip ${activeWorkspace === "tree" ? "active" : ""}`}
+            onClick={() => openBrowseWorkspace("tree")}
+          >
+            Lineage tree
+          </button>
+          <button
+            type="button"
+            className={`filter-chip ${activeWorkspace === "inspector" ? "active" : ""}`}
+            onClick={() => selectedTrial && openInspector(selectedTrial.trialId)}
+            disabled={!selectedTrial}
+          >
+            Inspector
+          </button>
+        </div>
+
         <div className={`workspace-stage workspace-stage-${activeWorkspace}`}>
           {activeWorkspace === "explorer" ? (
           <section className="workspace-card explorer-panel">
@@ -1751,6 +1860,20 @@ export function DashboardShell({
           </section>
           ) : null}
 
+          {activeWorkspace === "tree" ? (
+          <>
+            {error ? <div className="error-banner">{error}</div> : null}
+            <TrialLineageTree
+              bestTrialId={bestTrialId}
+              graph={lineageGraph}
+              isLoading={isLineageLoading}
+              onOpenTrial={openInspector}
+              selectedTrialId={selectedTrialId}
+              track={detail.track}
+            />
+          </>
+          ) : null}
+
           {activeWorkspace === "inspector" ? (
           <section className="workspace-card inspector-panel">
             <div className="section-heading">
@@ -1763,9 +1886,9 @@ export function DashboardShell({
                   type="button"
                   className="panel-toggle"
                   onClick={returnToExplorer}
-                  aria-label="Back to trial explorer"
+                  aria-label="Back to previous view"
                 >
-                  Back to trials
+                  Back to previous view
                 </button>
               </div>
               <p className="section-copy">
