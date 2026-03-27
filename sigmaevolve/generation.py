@@ -823,11 +823,66 @@ class OpenRouterGenerationBackend:
         negative_trials: list[TrialSummary],
         selected_config: dict[str, object],
     ) -> str:
-        del context_trials, negative_trials, selected_config
+        del selected_config
         task_context_text = self._build_prompt_context_text(track, dataset_manifest)
+
+        current_program = context_trials[0] if context_trials else None
+        prior_programs = context_trials[1:] if len(context_trials) > 1 else []
+        prior_programs_text = "None."
+        if prior_programs:
+            rendered_prior_programs = [
+                self._render_trial_prompt_block(
+                    trial,
+                    header=(
+                        f"---\n"
+                        f"val_acc: {self._trial_prompt_metric(trial, 'val_acc', 'accuracy')}\n"
+                        f"val_loss: {self._trial_prompt_metric(trial, 'val_loss')}\n"
+                        f"---"
+                    ),
+                    compact_evolve_source=True,
+                )
+                for trial in prior_programs[:MAX_RENDERED_INSPIRATIONS]
+            ]
+            prior_programs_text = "\n".join(rendered_prior_programs)
+
+        current_program_text = "None."
+        if current_program is not None:
+            current_program_text = self._render_trial_prompt_block(
+                current_program,
+                header=(
+                    f"---\n"
+                    f"val_acc: {self._trial_prompt_metric(current_program, 'val_acc', 'accuracy')}\n"
+                    f"val_loss: {self._trial_prompt_metric(current_program, 'val_loss')}\n"
+                    f"---"
+                ),
+            )
+
+        negative_trials_text = "None."
+        if negative_trials:
+            rendered_negative_trials = [
+                self._render_trial_prompt_block(
+                    trial,
+                    header=(
+                        f"outcome_reason: {self._format_scalar(trial.outcome_reason or 'unknown')}"
+                    ),
+                    strip_evolve_block_tags=True,
+                    compact_evolve_source=True,
+                )
+                + (
+                    ""
+                    if not trial.error_json
+                    else "\n" + "\n".join(self._summarize_error(trial.error_json))
+                )
+                for trial in negative_trials[:MAX_RENDERED_NEGATIVE_TRIALS]
+            ]
+            negative_trials_text = "\n".join(rendered_negative_trials)
+
         return _render_prompt_template(
             "user.md",
             task_context=task_context_text,
+            prior_programs=prior_programs_text,
+            negative_trials=negative_trials_text,
+            current_program=current_program_text,
         )
 
     def _build_reference_appendix_text(self, prior_programs: list[TrialSummary]) -> str:
@@ -879,7 +934,7 @@ class OpenRouterGenerationBackend:
         negative_trials: list[TrialSummary],
         selected_config: dict[str, object],
     ) -> list[dict[str, str]]:
-        # Build the final chat payload with a stable prefix before volatile content.
+        # Build the final two-message chat payload from the system and user prompts.
         system_prompt = self._build_system_prompt_text()
         user_prompt = self._build_user_prompt_text(
             track,
@@ -888,19 +943,9 @@ class OpenRouterGenerationBackend:
             negative_trials,
             selected_config,
         )
-        current_program = context_trials[0] if context_trials else None
-        prior_programs = context_trials[1:] if len(context_trials) > 1 else []
-        reference_appendix = self._build_reference_appendix_text(prior_programs)
-        negative_appendix = self._build_negative_appendix_text(negative_trials)
-        current_program_appendix = self._build_current_program_appendix_text(
-            current_program
-        )
         return [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
-            {"role": "user", "content": reference_appendix},
-            {"role": "user", "content": negative_appendix},
-            {"role": "user", "content": current_program_appendix},
         ]
 
     def _build_request_context(
