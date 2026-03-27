@@ -95,7 +95,7 @@ Optional persisted keys:
 | --- | --- |
 | `launcher` | Slim launcher metadata. Only `run_id` and `run_url` are persisted. |
 | `wandb` | Slim Weights & Biases metadata. Persisted keys are `project`, `entity`, `run_id`, `run_name`, and `run_url`. |
-| `generation` | Present when generation trace data was captured. Persisted keys are `task_description`, `response_text`, `reasoning_text`, `generated_source`, `assertions_passed`, `assertion_failures`, and `candidate_hash` when those values are available. |
+| `generation` | Present when generation trace data was captured. Persisted keys are `task_description`, `response_text`, `reasoning_text`, `generated_source`, `assertions_passed`, `assertion_failures`, and `candidate_hash` when those values are available. Runnable non-baseline queued `train.py` candidates that still contain evolve blocks must include non-empty `response_text` and `generated_source` before insertion. |
 
 Removed provenance fields are not persisted in the live schema, including `generation_index`, `duplicate_retry_count`, `provider_response_id`, duplicated prompt copies under `generation` such as `system_prompt` and `user_prompt`, provider metadata duplicates such as `provider` and `provider_model`, and launcher cancellation bookkeeping.
 

@@ -66,3 +66,21 @@ def make_llm_provenance(
     }
     payload.update(extra)
     return payload
+
+
+def make_generation_trace(
+    source: str,
+    *,
+    response_text: str | None = None,
+    task_description: str = "Record the generated candidate for test coverage.",
+    reasoning_text: str = "Selected the stored candidate for the test scenario.",
+    assertions_passed: bool = True,
+) -> dict[str, object]:
+    return {
+        "task_description": task_description,
+        "response_text": response_text or source,
+        "reasoning_text": reasoning_text,
+        "generated_source": source,
+        "assertions_passed": assertions_passed,
+        "assertion_failures": [],
+    }

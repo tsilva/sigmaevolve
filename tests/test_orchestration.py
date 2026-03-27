@@ -16,7 +16,11 @@ from sigmaevolve.generation import (
 )
 from sigmaevolve.orchestration import EvolutionSystem, InlineRunnerLauncher
 from sigmaevolve.storage import classify_error_type
-from tests.support import RecordingLauncherDouble, make_llm_provenance
+from tests.support import (
+    RecordingLauncherDouble,
+    make_generation_trace,
+    make_llm_provenance,
+)
 
 
 def _prepare_repo_dataset(
@@ -228,7 +232,10 @@ def forward(self, x):
 """
         )
     )
-    provenance = make_llm_provenance(candidate_kind=CANDIDATE_KIND_STRATEGY_V1)
+    provenance = make_llm_provenance(
+        candidate_kind=CANDIDATE_KIND_STRATEGY_V1,
+        generation=make_generation_trace(duplicate_source),
+    )
 
     original, created = system.repository.create_queued_trial_if_absent(
         first.track_id, duplicate_source, provenance
@@ -685,29 +692,39 @@ def test_weighted_successful_sampling_favors_higher_scores(repository, dataset_m
 
     trials = repository.list_trials(track.track_id)
     baseline = trials[0]
-    mid, _ = repository.create_queued_trial_if_absent(
-        track.track_id,
-        build_candidate_train_script(
-            build_model_block(
-                """
+    mid_source = build_candidate_train_script(
+        build_model_block(
+            """
 def forward(self, x):
     return torch.tensor([[0.0, 1.0]], dtype=torch.float32).repeat(x.shape[0], 1)
 """
-            )
-        ),
-        make_llm_provenance(model="mid", candidate_kind=CANDIDATE_KIND_STRATEGY_V1),
+        )
     )
-    low, _ = repository.create_queued_trial_if_absent(
+    mid, _ = repository.create_queued_trial_if_absent(
         track.track_id,
-        build_candidate_train_script(
-            build_model_block(
-                """
+        mid_source,
+        make_llm_provenance(
+            model="mid",
+            candidate_kind=CANDIDATE_KIND_STRATEGY_V1,
+            generation=make_generation_trace(mid_source),
+        ),
+    )
+    low_source = build_candidate_train_script(
+        build_model_block(
+            """
 def forward(self, x):
     return torch.tensor([[1.0, 0.0]], dtype=torch.float32).repeat(x.shape[0], 1)
 """
-            )
+        )
+    )
+    low, _ = repository.create_queued_trial_if_absent(
+        track.track_id,
+        low_source,
+        make_llm_provenance(
+            model="low",
+            candidate_kind=CANDIDATE_KIND_STRATEGY_V1,
+            generation=make_generation_trace(low_source),
         ),
-        make_llm_provenance(model="low", candidate_kind=CANDIDATE_KIND_STRATEGY_V1),
     )
     assert mid is not None and low is not None
 
@@ -814,11 +831,9 @@ def forward(self, x):
         metrics={"accuracy": 0.5},
         error_info={"stdout": "", "stderr": ""},
     )
-    failed, _ = repository.create_queued_trial_if_absent(
-        track.track_id,
-        build_candidate_train_script(
-            build_model_block(
-                """
+    failed_source = build_candidate_train_script(
+        build_model_block(
+            """
 def __init__(self):
     super().__init__()
     raise RuntimeError("broken")
@@ -826,10 +841,15 @@ def __init__(self):
 def forward(self, x):
     return torch.zeros((x.shape[0], 2), dtype=torch.float32)
 """
-            )
-        ),
+        )
+    )
+    failed, _ = repository.create_queued_trial_if_absent(
+        track.track_id,
+        failed_source,
         make_llm_provenance(
-            model="test/model", candidate_kind=CANDIDATE_KIND_STRATEGY_V1
+            model="test/model",
+            candidate_kind=CANDIDATE_KIND_STRATEGY_V1,
+            generation=make_generation_trace(failed_source),
         ),
     )
     assert failed is not None
@@ -1543,19 +1563,23 @@ def forward(self, x):
     track = _create_track(system, {"dispatch_ttl_sec": 0, "max_dispatch_retries": 2})
     _finalize_baseline_success(repository, track.track_id)
 
-    queued_trial, created = repository.create_queued_trial_if_absent(
-        track.track_id,
-        build_candidate_train_script(
-            build_model_block(
-                """
+    queued_source = build_candidate_train_script(
+        build_model_block(
+            """
 def forward(self, x):
     flat = x.reshape(x.shape[0], -1)
     scores = flat.sum(dim=1) + 9
     return torch.stack((-scores, scores), dim=1)
 """
-            )
+        )
+    )
+    queued_trial, created = repository.create_queued_trial_if_absent(
+        track.track_id,
+        queued_source,
+        make_llm_provenance(
+            model="queued-before-controller",
+            generation=make_generation_trace(queued_source),
         ),
-        make_llm_provenance(model="queued-before-controller"),
     )
     assert created is True
     assert queued_trial is not None
@@ -1615,19 +1639,23 @@ def test_reconcile_uses_launch_executor_so_blocking_launches_do_not_block_other_
         launcher,
     )
     track = _create_track(system)
-    second_trial, created = repository.create_queued_trial_if_absent(
-        track.track_id,
-        build_candidate_train_script(
-            build_model_block(
-                """
+    second_source = build_candidate_train_script(
+        build_model_block(
+            """
 def forward(self, x):
     flat = x.reshape(x.shape[0], -1)
     scores = flat.sum(dim=1) + 11
     return torch.stack((-scores, scores), dim=1)
 """
-            )
+        )
+    )
+    second_trial, created = repository.create_queued_trial_if_absent(
+        track.track_id,
+        second_source,
+        make_llm_provenance(
+            model="second-launchable",
+            generation=make_generation_trace(second_source),
         ),
-        make_llm_provenance(model="second-launchable"),
     )
     assert created is True
     assert second_trial is not None
