@@ -549,6 +549,69 @@ describe("DashboardShell", () => {
     expect(screen.getByText(/return 'improved'/)).toBeTruthy();
   });
 
+  it("diffs against the appendix current program when prompt sources are stored as appendices", () => {
+    const detail = createDetail([
+      createTrial({
+        trialId: "trial_appendix_diff",
+        source: ["def train():", "    return 'improved'", ""].join("\n"),
+        generatedSource: null,
+        provenanceJson: {
+          backend: "openrouter",
+          request_messages: [
+            {
+              role: "user",
+              content: [
+                "OBJECTIVE:",
+                "- Improve CURRENT_PROGRAM for higher val_acc.",
+                "Later appendices are ordered as REFERENCE, NEGATIVE, CURRENT_PROGRAM.",
+              ].join("\n"),
+            },
+            {
+              role: "user",
+              content: [
+                "REFERENCE APPENDIX",
+                "",
+                "REFERENCE val_acc=0.97 val_loss=0.10",
+                "def train():",
+                "    return 'reference'",
+              ].join("\n"),
+            },
+            {
+              role: "user",
+              content: [
+                "NEGATIVE APPENDIX",
+                "",
+                "NEGATIVE reason=duplicate detail=matched prior candidate",
+                "def train():",
+                "    return 'negative'",
+              ].join("\n"),
+            },
+            {
+              role: "user",
+              content: [
+                "CURRENT PROGRAM APPENDIX",
+                "",
+                "CURRENT_PROGRAM val_acc=0.95 val_loss=0.12",
+                "def train():",
+                "    return 'baseline'",
+              ].join("\n"),
+            },
+          ],
+        },
+      }),
+    ]);
+
+    renderShell({
+      detail,
+      initialSelectedTrialId: "trial_appendix_diff",
+      pathname: "/tracks/track_1/trials/trial_appendix_diff",
+    });
+
+    expect(screen.getByText("3 prompt sources • diffing CURRENT PROGRAM • +1 / -1 inline diff")).toBeTruthy();
+    expect(screen.getByText(/return 'baseline'/)).toBeTruthy();
+    expect(screen.getByText(/return 'improved'/)).toBeTruthy();
+  });
+
   it("renders generation trace fields and diagnostic-source fallback for failed generation attempts", () => {
     renderShell({
       detail: createDetail([
