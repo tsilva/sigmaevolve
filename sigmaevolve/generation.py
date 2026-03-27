@@ -1301,6 +1301,13 @@ class GenerationAttempt:
     generation_index: int
     duplicate_retry_count: int
     context_trials: list[TrialSummary]
+    sampled_candidates: list[dict[str, Any]]
+
+
+@dataclass(frozen=True)
+class GenerationContextSelection:
+    context_trials: list[TrialSummary]
+    sampled_candidates: list[dict[str, Any]]
 
 
 class GenerationCoordinator:
@@ -1308,12 +1315,35 @@ class GenerationCoordinator:
         self.repository = repository
         self.generator = generator
 
-    def sample_successful_context_trials(
+    def _build_sampled_candidate_rows(
+        self,
+        candidates: list[TrialSummary],
+        *,
+        current_program: TrialSummary,
+        inspirations: list[TrialSummary],
+        current_probabilities: dict[str, float],
+    ) -> list[dict[str, Any]]:
+        selected_roles = {current_program.trial_id: "current"}
+        selected_roles.update({trial.trial_id: "inspiration" for trial in inspirations})
+        rows: list[dict[str, Any]] = []
+        for rank, trial in enumerate(candidates, start=1):
+            rows.append(
+                {
+                    "rank": rank,
+                    "trial_id": trial.trial_id,
+                    "score": float(trial.score),
+                    "selection_probability": current_probabilities[trial.trial_id],
+                    "selected_role": selected_roles.get(trial.trial_id),
+                }
+            )
+        return rows
+
+    def sample_successful_context_selection(
         self,
         track_id: str,
         sampling_seed: int,
         generation_index: int,
-    ) -> list[TrialSummary]:
+    ) -> GenerationContextSelection:
         # Prefer finished strategy variants that already have scored metrics.
         candidates = self.repository.sample_trial_context(
             track_id,
@@ -1321,17 +1351,36 @@ class GenerationCoordinator:
             candidate_kind=CANDIDATE_KIND_STRATEGY_V1,
         )
         if not candidates:
-            return []
+            return GenerationContextSelection(context_trials=[], sampled_candidates=[])
         if len(candidates) == 1:
-            return [candidates[0]]
+            only_candidate = candidates[0]
+            return GenerationContextSelection(
+                context_trials=[only_candidate],
+                sampled_candidates=[
+                    {
+                        "rank": 1,
+                        "trial_id": only_candidate.trial_id,
+                        "score": float(only_candidate.score),
+                        "selection_probability": 1.0,
+                        "selected_role": "current",
+                    }
+                ],
+            )
 
         rng = random.Random(int(sampling_seed) + generation_index)
         remaining = list(candidates)
         remaining_weights = [max(float(trial.score), 0.0) for trial in remaining]
         total_weight = sum(remaining_weights)
         if total_weight <= 0.0:
+            current_probabilities = {
+                trial.trial_id: 1.0 / len(candidates) for trial in candidates
+            }
             selected_index = rng.randrange(len(remaining))
         else:
+            current_probabilities = {
+                trial.trial_id: weight / total_weight
+                for trial, weight in zip(candidates, remaining_weights, strict=True)
+            }
             selected_index = rng.choices(
                 range(len(remaining)),
                 weights=remaining_weights,
@@ -1354,7 +1403,28 @@ class GenerationCoordinator:
         inspirations.sort(
             key=lambda trial: (-float(trial.score), candidate_ranks[trial.trial_id])
         )
-        return [current_program, *inspirations]
+        return GenerationContextSelection(
+            context_trials=[current_program, *inspirations],
+            sampled_candidates=self._build_sampled_candidate_rows(
+                candidates,
+                current_program=current_program,
+                inspirations=inspirations,
+                current_probabilities=current_probabilities,
+            ),
+        )
+
+    def sample_successful_context_trials(
+        self,
+        track_id: str,
+        sampling_seed: int,
+        generation_index: int,
+    ) -> list[TrialSummary]:
+        selection = self.sample_successful_context_selection(
+            track_id,
+            sampling_seed,
+            generation_index,
+        )
+        return selection.context_trials
 
     def sample_negative_trials(
         self,
@@ -1375,14 +1445,27 @@ class GenerationCoordinator:
         sampling_seed: int,
         generation_index: int,
     ) -> list[TrialSummary]:
-        # Use successful strategy trials first whenever any exist.
-        successful_context = self.sample_successful_context_trials(
+        selection = self.sample_generation_context_selection(
             track_id,
             sampling_seed,
             generation_index,
         )
-        if successful_context:
-            return successful_context
+        return selection.context_trials
+
+    def sample_generation_context_selection(
+        self,
+        track_id: str,
+        sampling_seed: int,
+        generation_index: int,
+    ) -> GenerationContextSelection:
+        # Use successful strategy trials first whenever any exist.
+        successful_selection = self.sample_successful_context_selection(
+            track_id,
+            sampling_seed,
+            generation_index,
+        )
+        if successful_selection.context_trials:
+            return successful_selection
 
         # Avoid mixing in unfinished or failed context once scored trials exist.
         has_scored_history = self.repository.sample_trial_context(
@@ -1390,26 +1473,38 @@ class GenerationCoordinator:
             limit=self.repository.count_trials(track_id),
         )
         if has_scored_history:
-            return []
+            return GenerationContextSelection(context_trials=[], sampled_candidates=[])
 
         # Fall back to the seeded baseline when the track has no scored history yet.
         for trial in self.repository.list_trials(track_id):
             provenance = dict(trial.provenance_json or {})
             if provenance.get("backend") != "baseline":
                 continue
-            return [
-                TrialSummary(
-                    trial_id=trial.trial_id,
-                    metrics_json=dict(trial.metrics_json)
-                    if trial.metrics_json
-                    else None,
-                    source=trial.source,
-                    provenance_json=provenance,
-                    outcome_reason=trial.outcome_reason,
-                    error_json=dict(trial.error_json) if trial.error_json else None,
-                )
-            ]
-        return []
+            baseline_summary = TrialSummary(
+                trial_id=trial.trial_id,
+                metrics_json=dict(trial.metrics_json) if trial.metrics_json else None,
+                source=trial.source,
+                provenance_json=provenance,
+                outcome_reason=trial.outcome_reason,
+                error_json=dict(trial.error_json) if trial.error_json else None,
+            )
+            return GenerationContextSelection(
+                context_trials=[baseline_summary],
+                sampled_candidates=[
+                    {
+                        "rank": 1,
+                        "trial_id": baseline_summary.trial_id,
+                        "score": (
+                            float(baseline_summary.score)
+                            if baseline_summary.metrics_json is not None
+                            else None
+                        ),
+                        "selection_probability": 1.0,
+                        "selected_role": "current",
+                    }
+                ],
+            )
+        return GenerationContextSelection(context_trials=[], sampled_candidates=[])
 
     def with_generation_trace(
         self,
@@ -1583,11 +1678,12 @@ class GenerationCoordinator:
         duplicate_retry_count: int,
     ) -> tuple[Future[Any], GenerationAttempt] | None:
         # Skip scheduling when there is no valid context to generate from.
-        context_trials = self.sample_generation_context_trials(
+        selection = self.sample_generation_context_selection(
             track.track_id,
             sampling_seed,
             generation_index,
         )
+        context_trials = selection.context_trials
         if not context_trials:
             return None
         negative_trials = self.sample_negative_trials(track.track_id)
@@ -1598,6 +1694,7 @@ class GenerationCoordinator:
             generation_index=generation_index,
             duplicate_retry_count=duplicate_retry_count,
             context_trials=context_trials,
+            sampled_candidates=selection.sampled_candidates,
         )
         future = executor.submit(
             self.generator.generate,

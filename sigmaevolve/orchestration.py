@@ -354,6 +354,7 @@ class TrackController:
                 slot_index=attempt.slot_index,
                 generation_index=attempt.generation_index,
                 duplicate_retry_count=attempt.duplicate_retry_count,
+                sampled_candidates=attempt.sampled_candidates,
                 in_flight=self._pending_generation_count(),
             )
 
