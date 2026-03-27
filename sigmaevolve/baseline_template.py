@@ -34,9 +34,7 @@ def make_experiment(device, train_ds, val_ds):
 
     model = nn.Sequential(
         nn.Flatten(),
-        nn.Linear(flat_dim, 128),
-        nn.ReLU(),
-        nn.Linear(128, num_classes),
+        nn.Linear(flat_dim, num_classes),
     ).to(device)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
