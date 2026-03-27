@@ -304,21 +304,22 @@ def test_openrouter_generation_uses_model_pool_round_robin(monkeypatch):
     assert "# EVOLVE-BLOCK-END" in system_prompt
     assert "Return exactly:" in system_prompt
     assert "TASK_DESCRIPTION:" in system_prompt
-    assert "Prefer the smallest safe patch" in system_prompt
-    assert "SEARCH must match CURRENT_PROGRAM exactly once" in system_prompt
+    assert "Maximize val_acc" in system_prompt
+    assert "Use lower val_loss only to break ties" in system_prompt
+    assert "Appendix order: REFERENCE, NEGATIVE, CURRENT_PROGRAM" in (system_prompt)
+    assert "Randomly choose either a focused improvement or a broader revamp" in (
+        system_prompt
+    )
+    assert "Use REFERENCE appendices as inspiration only" in system_prompt
+    assert "textually distinct from CURRENT_PROGRAM" in system_prompt
+    assert "SEARCH must match exactly once in CURRENT_PROGRAM" in system_prompt
     assert not first_prompt.lstrip().startswith("{")
-    assert "OBJECTIVE:" in first_prompt
     assert "TASK CONTEXT:" in first_prompt
     assert "- dataset_id: mnist:v1" in first_prompt
     assert "- epochs: 5" in first_prompt
     assert "- split_sizes:" in first_prompt
     assert "- dataset_metadata:" in first_prompt
     assert "- num_classes: 10" in first_prompt
-    assert "Improve CURRENT_PROGRAM for higher val_acc." in first_prompt
-    assert "Only CURRENT_PROGRAM is editable." in first_prompt
-    assert "Later appendices are ordered as REFERENCE, NEGATIVE, CURRENT_PROGRAM." in (
-        first_prompt
-    )
     assert "score:" not in first_prompt
     assert reference_appendix == "REFERENCE APPENDIX\nNone."
     assert negative_appendix == "NEGATIVE APPENDIX\nNone."
@@ -400,7 +401,6 @@ def test_openrouter_generation_prompt_includes_expected_sections(monkeypatch):
     current_program_appendix = payloads[0]["messages"][4]["content"]
     assert "# EVOLVE-BLOCK-START" in system_prompt
     assert "# EVOLVE-BLOCK-END" in system_prompt
-    assert "OBJECTIVE:" in stable_prompt
     assert "TASK CONTEXT:" in stable_prompt
     assert reference_appendix.startswith("REFERENCE APPENDIX")
     assert negative_appendix.startswith("NEGATIVE APPENDIX")
@@ -423,7 +423,6 @@ def test_openrouter_generation_prompt_compacts_prior_programs_before_current_pro
     negative_section = prompt_messages[3]["content"]
     current_section = prompt_messages[4]["content"]
 
-    assert "OBJECTIVE:" in stable_prompt
     assert "TASK CONTEXT:" in stable_prompt
     assert "REFERENCE APPENDIX" in prior_section
     assert "REFERENCE val_acc=0.998 val_loss=0.023" in prior_section
@@ -483,14 +482,11 @@ def test_openrouter_generation_prompt_forbids_copying_reference_or_negative_exam
     )
 
     system_prompt = prompt_messages[0]["content"]
-    stable_prompt = prompt_messages[1]["content"]
-
-    assert "Never reproduce any REFERENCE or NEGATIVE example verbatim" in system_prompt
-    assert (
-        "Do not reproduce any REFERENCE or NEGATIVE candidate verbatim."
-        in stable_prompt
+    assert "Never copy any shown REFERENCE or NEGATIVE example verbatim" in (
+        system_prompt
     )
-    assert "textually distinct from CURRENT_PROGRAM" in stable_prompt
+    assert "Use REFERENCE appendices as inspiration only" in system_prompt
+    assert "textually distinct from CURRENT_PROGRAM" in system_prompt
 
 
 def test_openrouter_generation_prompt_keeps_stable_prefix_across_context_changes():
