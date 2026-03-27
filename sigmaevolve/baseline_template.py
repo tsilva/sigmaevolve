@@ -160,6 +160,35 @@ def write_eval_atomic(
     temp_path.replace(eval_dir / f"eval_{eval_index:04d}.npz")
 
 
+def write_best_model_atomic(
+    best_model_path,
+    *,
+    model,
+    metrics,
+    eval_index,
+    epoch,
+    elapsed_time_sec,
+):
+    best_model_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = best_model_path.with_suffix(best_model_path.suffix + ".tmp")
+    state_dict = {
+        key: value.detach().cpu() for key, value in model.state_dict().items()
+    }
+    payload = {
+        "state_dict": state_dict,
+        "metrics": {
+            key: float(value)
+            for key, value in (metrics or {}).items()
+            if value is not None
+        },
+        "eval_index": int(eval_index),
+        "epoch": int(epoch),
+        "elapsed_time_sec": float(elapsed_time_sec),
+    }
+    torch.save(payload, temp_path)
+    temp_path.replace(best_model_path)
+
+
 def seed_everything(seed):
     random.seed(seed)
     np.random.seed(seed)
@@ -327,6 +356,7 @@ def load_run_config(argv=None):
     return {
         "progress_path": Path(config["progress_path"]),
         "eval_dir": Path(config["eval_dir"]),
+        "best_model_path": Path(config["best_model_path"]),
         "debug_output_path": Path(config["debug_output_path"]),
         "num_epochs": int(config["epochs"]),
         "random_seed": int(config["random_seed"]),
@@ -625,6 +655,7 @@ def update_evaluation_state(
         }
     )
     return {
+        "improved_accuracy": improved_accuracy,
         "best_accuracy": best_accuracy,
         "stale_epochs": stale_epochs,
         "epochs_completed": epochs_completed,
@@ -724,6 +755,15 @@ def run_training_loop(config, runtime, debug_payload):
             best_accuracy=best_accuracy,
             stale_epochs=stale_epochs,
         )
+        if evaluation_state["improved_accuracy"]:
+            write_best_model_atomic(
+                config["best_model_path"],
+                model=model,
+                metrics=metrics,
+                eval_index=eval_index,
+                epoch=epoch_index + 1,
+                elapsed_time_sec=elapsed_after_eval,
+            )
         best_accuracy = evaluation_state["best_accuracy"]
         stale_epochs = evaluation_state["stale_epochs"]
         epochs_completed = evaluation_state["epochs_completed"]

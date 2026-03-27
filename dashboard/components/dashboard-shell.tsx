@@ -25,6 +25,7 @@ import type {
 } from "@/lib/types";
 
 const STATUS_OPTIONS: TrialStatusFilter[] = ["all", "queued", "dispatching", "active", "finished", "error"];
+const DISPLAY_METRIC_NAME = "val_acc";
 
 async function fetchJson<T>(input: string): Promise<T> {
   const response = await fetch(input, { cache: "no-store" });
@@ -572,6 +573,14 @@ function compactIdentifier(value: string, leading = 10, trailing = 6): string {
     return value;
   }
   return `${value.slice(0, leading)}…${value.slice(-trailing)}`;
+}
+
+function formatShortTrialId(value: string): string {
+  const trimmed = value.startsWith("trial_") ? value.slice("trial_".length) : value;
+  if (trimmed.length <= 6) {
+    return trimmed;
+  }
+  return `${trimmed.slice(0, 3)}${trimmed.slice(-3)}`;
 }
 
 function summarizeCrashDetails(value: string | null): string | null {
@@ -1667,7 +1676,7 @@ export function DashboardShell({
                       <th scope="col">Trial</th>
                       <th scope="col">Task</th>
                       <th scope="col">Score</th>
-                      <th scope="col">Accuracy</th>
+                      <th scope="col">{DISPLAY_METRIC_NAME}</th>
                       <th scope="col">Best Epoch</th>
                       <th scope="col">Model</th>
                     </tr>
@@ -1694,7 +1703,9 @@ export function DashboardShell({
                         </td>
                         <td>
                           <div className="trial-cell-title-row">
-                            <div className="trial-cell-primary">{trial.trialId}</div>
+                            <div className="trial-cell-primary" title={trial.trialId}>
+                              {formatShortTrialId(trial.trialId)}
+                            </div>
                             {isBestTrial(detail.track, trial.trialId) ? <span className="flag-chip flag-best">best so far</span> : null}
                             {trial.outcomeReason ? <span className="flag-chip">{trial.outcomeReason}</span> : null}
                             {trial.errorType ? <span className="flag-chip flag-danger">{trial.errorType}</span> : null}
@@ -1854,7 +1865,7 @@ export function DashboardShell({
                           <div className="context-stack">
                             {[
                               { label: "Score", value: formatNumber(selectedTrial.score, 4) },
-                              { label: "Accuracy", value: formatNumber(selectedTrial.accuracy, 4) },
+                              { label: DISPLAY_METRIC_NAME, value: formatNumber(selectedTrial.accuracy, 4) },
                               { label: "Time To Best Eval", value: formatDuration(selectedTrial.timeToBestEvalSec) },
                               { label: "Duration", value: formatDuration(selectedTrial.durationSec) },
                               { label: "Dispatch Attempts", value: selectedTrial.dispatchAttempts },

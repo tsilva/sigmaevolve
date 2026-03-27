@@ -46,14 +46,36 @@ def fake_wandb(monkeypatch):
             self.tags = kwargs.get("tags")
             self.job_type = kwargs.get("job_type")
             self.logged: list[dict[str, object]] = []
+            self.artifacts: list[dict[str, object]] = []
             self.summary: dict[str, object] = {}
             self.finished: dict[str, object] | None = None
+            self.events: list[dict[str, object]] = []
 
         def log(self, payload, step=None) -> None:
             self.logged.append({"payload": dict(payload), "step": step})
+            self.events.append({"kind": "log", "payload": dict(payload), "step": step})
+
+        def log_artifact(self, artifact, aliases=None) -> None:
+            entry = {
+                "artifact": artifact,
+                "aliases": list(aliases or []),
+            }
+            self.artifacts.append(entry)
+            self.events.append({"kind": "artifact", **entry})
 
         def finish(self, exit_code=None) -> None:
             self.finished = {"exit_code": exit_code}
+            self.events.append({"kind": "finish", "exit_code": exit_code})
+
+    class FakeArtifact:
+        def __init__(self, name, type, metadata=None) -> None:
+            self.name = name
+            self.type = type
+            self.metadata = dict(metadata or {})
+            self.files: list[dict[str, object]] = []
+
+        def add_file(self, local_path, name=None) -> None:
+            self.files.append({"local_path": local_path, "name": name})
 
     module = types.ModuleType("wandb")
 
@@ -72,6 +94,7 @@ def fake_wandb(monkeypatch):
 
     module.login = login  # type: ignore[attr-defined]
     module.init = init  # type: ignore[attr-defined]
+    module.Artifact = FakeArtifact  # type: ignore[attr-defined]
 
     monkeypatch.setitem(sys.modules, "wandb", module)
     monkeypatch.setenv("WANDB_API_KEY", "test-wandb-key")

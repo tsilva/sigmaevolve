@@ -317,7 +317,7 @@ describe("DashboardShell", () => {
     expect(screen.queryByRole("columnheader", { name: "Notes" })).toBeNull();
 
     const row = screen.getByRole("button", { name: "Open trial trial_noted" });
-    expect(row.textContent).toContain("trial_noted");
+    expect(row.textContent).toContain("noted");
     expect(row.textContent).toContain("duplicate");
     expect(row.textContent).toContain("generation_failed");
     expect(row.textContent).toContain("timed out");
@@ -914,7 +914,7 @@ describe("DashboardShell", () => {
     const { container } = renderShell();
 
     const headers = Array.from(container.querySelectorAll(".trial-table thead th")).map((cell) => cell.textContent);
-    expect(headers).toEqual(["Status", "Trial", "Task", "Score", "Accuracy", "Best Epoch", "Model"]);
+    expect(headers).toEqual(["Status", "Trial", "Task", "Score", "val_acc", "Best Epoch", "Model"]);
 
     const firstStatusCell = container.querySelector(".trial-table tbody td");
     expect(firstStatusCell?.querySelector(".status-badge")?.textContent).toContain("finished");
