@@ -102,7 +102,10 @@ def forward(self, x):
                 provenance_json=make_llm_provenance(
                     model="cold-start",
                     context_trial_ids=[trial.trial_id for trial in context_trials],
-                    generation={"response_text": self.source},
+                    generation={
+                        "task_description": "Apply the provided full-program candidate as-is.",
+                        "response_text": self.source,
+                    },
                 ),
             )
 
@@ -352,7 +355,10 @@ def test_reconcile_retries_duplicate_generation_with_incremented_retry_count(
                     "provenance_json": {
                         **make_llm_provenance(model="retry-capture"),
                         "duplicate_retry_count": duplicate_retry_count,
-                        "generation": {"response_text": response_text},
+                        "generation": {
+                            "task_description": "Retry the same candidate to test duplicate handling.",
+                            "response_text": response_text,
+                        },
                     },
                 },
             )()
@@ -927,7 +933,10 @@ def test_reconcile_applies_search_replace_response_before_queueing(
             generation_index=0,
             duplicate_retry_count=0,
         ):
-            response_text = """<<<<<<< SEARCH
+            response_text = """TASK_DESCRIPTION:
+Reduce the forward output scale to test SEARCH/REPLACE patch application.
+
+<<<<<<< SEARCH
     def forward(self, x):
         return self.network(x)
 =======
@@ -942,7 +951,10 @@ def test_reconcile_applies_search_replace_response_before_queueing(
                     "source": response_text,
                     "provenance_json": {
                         **make_llm_provenance(model="patch-generator"),
-                        "generation": {"response_text": response_text},
+                        "generation": {
+                            "task_description": "Reduce the forward output scale to test SEARCH/REPLACE patch application.",
+                            "response_text": response_text,
+                        },
                     },
                 },
             )()
@@ -970,6 +982,10 @@ def test_reconcile_applies_search_replace_response_before_queueing(
     assert len(result.generated_trial_ids) == 1
     assert created_trial is not None
     assert "return self.network(x) * 0.5" in created_trial.source
+    assert (
+        created_trial.provenance_json["generation"]["task_description"]
+        == "Reduce the forward output scale to test SEARCH/REPLACE patch application."
+    )
     assert "SEARCH" in created_trial.provenance_json["generation"]["response_text"]
 
 

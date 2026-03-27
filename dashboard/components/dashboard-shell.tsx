@@ -825,7 +825,9 @@ function matchesSearch(trial: TrialListItem, query: string): boolean {
     trial.model,
     trial.lastPhase,
     trial.source,
+    trial.taskDescription,
     trial.responseText,
+    trial.reasoningText,
     trial.generatedSource,
   ]
     .filter((value): value is string => typeof value === "string" && value.length > 0)
@@ -1125,7 +1127,9 @@ export function DashboardShell({
   const selectedCrashDetails = extractCrashDetails(selectedTrial?.errorJson ?? null);
   const selectedCrashSummary = summarizeCrashDetails(selectedCrashDetails);
   const selectedGeneratedSource = selectedTrial?.generatedSource ?? null;
+  const selectedTaskDescription = selectedTrial?.taskDescription ?? null;
   const selectedResponseText = selectedTrial?.responseText ?? null;
+  const selectedReasoningText = selectedTrial?.reasoningText ?? null;
   const selectedAssertionFailures = selectedTrial?.generationAssertionFailures ?? [];
   const selectedGenerationAssertionSummary = renderGenerationAssertionSummary(
     selectedTrial?.generationAssertionsPassed ?? null,
@@ -1990,6 +1994,23 @@ export function DashboardShell({
 
                   <article className="analysis-card wide-card">
                     <CollapsibleSection
+                      id="trial-task-description"
+                      expanded={isSectionExpanded("trial-task-description")}
+                      onToggle={() => toggleSection("trial-task-description")}
+                      title="Task description"
+                      titleTag="h3"
+                      toggleClassName="analysis-card-header"
+                    >
+                      <HighlightedCode
+                        code={selectedTaskDescription ?? "No task description recorded."}
+                        language={detectPromptLanguage(selectedTaskDescription ?? "")}
+                        wrap
+                      />
+                    </CollapsibleSection>
+                  </article>
+
+                  <article className="analysis-card wide-card">
+                    <CollapsibleSection
                       id="trial-raw-llm-response"
                       expanded={isSectionExpanded("trial-raw-llm-response")}
                       onToggle={() => toggleSection("trial-raw-llm-response")}
@@ -2000,6 +2021,23 @@ export function DashboardShell({
                       <HighlightedCode
                         code={selectedResponseText ?? "No raw response recorded."}
                         language={detectPromptLanguage(selectedResponseText ?? "")}
+                        wrap
+                      />
+                    </CollapsibleSection>
+                  </article>
+
+                  <article className="analysis-card wide-card">
+                    <CollapsibleSection
+                      id="trial-reasoning-trace"
+                      expanded={isSectionExpanded("trial-reasoning-trace")}
+                      onToggle={() => toggleSection("trial-reasoning-trace")}
+                      title="Reasoning trace"
+                      titleTag="h3"
+                      toggleClassName="analysis-card-header"
+                    >
+                      <HighlightedCode
+                        code={selectedReasoningText ?? "No reasoning trace recorded."}
+                        language={detectPromptLanguage(selectedReasoningText ?? "")}
                         wrap
                       />
                     </CollapsibleSection>

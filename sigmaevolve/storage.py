@@ -370,6 +370,20 @@ def slim_provenance_payload(
         if has_response_text:
             slim_generation["response_text"] = response_text
 
+        task_description = generation.get("task_description")
+        has_task_description = isinstance(task_description, str) and bool(
+            task_description.strip()
+        )
+        if has_task_description:
+            slim_generation["task_description"] = task_description
+
+        reasoning_text = generation.get("reasoning_text")
+        has_reasoning_text = isinstance(reasoning_text, str) and bool(
+            reasoning_text.strip()
+        )
+        if has_reasoning_text:
+            slim_generation["reasoning_text"] = reasoning_text
+
         generated_source = generation.get("generated_source")
         has_generated_source = isinstance(generated_source, str) and bool(
             generated_source.strip()

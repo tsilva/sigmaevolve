@@ -69,7 +69,9 @@ function createTrial(overrides: Partial<TrialListItem>): TrialListItem {
     hasError: false,
     errorType: null,
     source: "print('hello')\n",
+    taskDescription: null,
     responseText: null,
+    reasoningText: null,
     generatedSource: null,
     generationAssertionsPassed: null,
     generationAssertionFailures: [],
@@ -82,7 +84,6 @@ function createTrial(overrides: Partial<TrialListItem>): TrialListItem {
 const tracks: TrackListItem[] = [
   {
     trackId: "track_1",
-    name: "mnist-baseline",
     datasetId: "mnist:v1",
     createdAt: "2026-03-20T14:00:00.000Z",
     totalTrials: 2,
@@ -444,12 +445,16 @@ describe("DashboardShell", () => {
 
     toggleSection("System prompt");
     toggleSection("User prompt");
+    toggleSection("Task description");
     toggleSection("Raw LLM response");
+    toggleSection("Reasoning trace");
     toggleSection("Generation attempt");
 
     expect(screen.getByText("system prompt text")).toBeTruthy();
     expect(screen.getByText("user prompt text")).toBeTruthy();
+    expect(screen.getByText("No task description recorded.")).toBeTruthy();
     expect(screen.getByText("No raw response recorded.")).toBeTruthy();
+    expect(screen.getByText("No reasoning trace recorded.")).toBeTruthy();
     expect(screen.getByText("Generation attempt")).toBeTruthy();
     expect(screen.queryByText("Generated program")).toBeNull();
     expect(screen.queryByText("Mixed vs generated diff")).toBeNull();
@@ -494,6 +499,44 @@ describe("DashboardShell", () => {
     expect(screen.getByText("Raw LLM response")).toBeTruthy();
     expect(screen.getByText(/<<<<<<< SEARCH/)).toBeTruthy();
     expect(screen.queryByText("No raw response recorded.")).toBeNull();
+  });
+
+  it("shows the extracted task description when recorded", () => {
+    renderShell({
+      detail: createDetail([
+        createTrial({
+          trialId: "trial_task_description",
+          taskDescription: "Broaden the hidden layers to add capacity without changing the training loop.",
+        }),
+      ]),
+      initialSelectedTrialId: "trial_task_description",
+    });
+
+    toggleSection("Task description");
+
+    expect(screen.getByText("Task description")).toBeTruthy();
+    expect(
+      screen.getByText("Broaden the hidden layers to add capacity without changing the training loop."),
+    ).toBeTruthy();
+    expect(screen.queryByText("No task description recorded.")).toBeNull();
+  });
+
+  it("shows the persisted reasoning trace when recorded", () => {
+    renderShell({
+      detail: createDetail([
+        createTrial({
+          trialId: "trial_reasoning_trace",
+          reasoningText: "The model compared two candidate patches before choosing one.",
+        }),
+      ]),
+      initialSelectedTrialId: "trial_reasoning_trace",
+    });
+
+    toggleSection("Reasoning trace");
+
+    expect(screen.getByText("Reasoning trace")).toBeTruthy();
+    expect(screen.getByText("The model compared two candidate patches before choosing one.")).toBeTruthy();
+    expect(screen.queryByText("No reasoning trace recorded.")).toBeNull();
   });
 
   it("shows the error payload card at the front of the inspector card stack", () => {
