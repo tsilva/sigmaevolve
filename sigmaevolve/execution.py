@@ -975,6 +975,7 @@ class RunnerService:
                 progress_path = temp_path / "progress.json"
                 eval_dir = temp_path / "evals"
                 best_model_path = temp_path / "best_model.pt"
+                debug_output_path = temp_path / "debug.json"
                 eval_dir.mkdir(parents=True, exist_ok=True)
                 _stage_trial_runtime_package(temp_path)
                 train_script_path.write_text(trial.source)
@@ -988,6 +989,7 @@ class RunnerService:
                     "progress_path": str(progress_path),
                     "eval_dir": str(eval_dir),
                     "best_model_path": str(best_model_path),
+                    "debug_output_path": str(debug_output_path),
                     "dataset_metadata": manifest.metadata,
                 }
                 config_path.write_text(json.dumps(run_config_payload, sort_keys=True))
@@ -1089,7 +1091,7 @@ class RunnerService:
                     process_elapsed_sec,
                 )
                 progress_payload = self._read_progress(progress_path)
-                debug_payload = progress_payload
+                debug_payload = self._read_json_object(debug_output_path)
                 timed_out = bool(timed_out or (debug_payload or {}).get("timed_out"))
 
                 # Classify a nonzero exit before looking at evaluation artifacts.

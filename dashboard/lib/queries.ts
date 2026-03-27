@@ -217,6 +217,7 @@ export async function listTrials(
         nullif(metrics_json ->> 'accuracy', '')::double precision as accuracy,
         nullif(metrics_json ->> 'best_eval_epoch', '')::integer as "bestEvalEpoch",
         nullif(metrics_json ->> 'epochs_completed', '')::integer as "epochsCompleted",
+        nullif(metrics_json ->> 'eval_count', '')::integer as "evalCount",
         nullif(metrics_json ->> 'time_to_best_eval_sec', '')::double precision as "timeToBestEvalSec",
         coalesce((metrics_json ->> 'timed_out')::boolean, false) as "timedOut",
         nullif(metrics_json ->> 'time_since_last_eval_sec', '')::double precision as "timeSinceLastEvalSec",

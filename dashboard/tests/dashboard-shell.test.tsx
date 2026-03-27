@@ -58,6 +58,7 @@ function createTrial(overrides: Partial<TrialListItem>): TrialListItem {
     accuracy: 0.91,
     bestEvalEpoch: 3,
     epochsCompleted: 5,
+    evalCount: 5,
     timeToBestEvalSec: 12,
     timedOut: false,
     timeSinceLastEvalSec: 4,
@@ -1031,6 +1032,21 @@ describe("DashboardShell", () => {
     renderShell();
 
     expect(screen.getAllByText("3/5")).toHaveLength(2);
+  });
+
+  it("falls back to eval count when epochs completed is missing", () => {
+    renderShell({
+      detail: createDetail([
+        createTrial({
+          trialId: "trial_fallback",
+          bestEvalEpoch: 4,
+          epochsCompleted: null,
+          evalCount: 5,
+        }),
+      ]),
+    });
+
+    expect(screen.getByText("4/5")).toBeTruthy();
   });
 
   it("highlights the best-so-far trial in the inspector", () => {

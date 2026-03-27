@@ -29,6 +29,7 @@ type TrialRow = {
   accuracy: number | string | null;
   bestEvalEpoch: number | string | null;
   epochsCompleted: number | string | null;
+  evalCount: number | string | null;
   timeToBestEvalSec: number | string | null;
   timedOut: boolean | null;
   timeSinceLastEvalSec: number | string | null;
@@ -259,6 +260,7 @@ export function mapTrialListItem(row: TrialRow): TrialListItem {
     accuracy: asNullableNumber(row.accuracy),
     bestEvalEpoch: asNullableNumber(row.bestEvalEpoch),
     epochsCompleted: asNullableNumber(row.epochsCompleted),
+    evalCount: asNullableNumber(row.evalCount),
     timeToBestEvalSec: asNullableNumber(row.timeToBestEvalSec),
     timedOut: Boolean(row.timedOut),
     timeSinceLastEvalSec: asNullableNumber(row.timeSinceLastEvalSec),
