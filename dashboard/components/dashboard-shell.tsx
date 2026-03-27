@@ -421,8 +421,74 @@ function extractFencedSourceSnippets(content: string): string[] {
   return snippets;
 }
 
+function extractAppendixSourceSnippets(
+  content: string,
+  appendixHeader: string,
+  entryHeaderPattern: RegExp,
+): string[] {
+  if (!content.startsWith(appendixHeader)) {
+    return [];
+  }
+
+  const body = content.slice(appendixHeader.length).trim();
+  if (body.length === 0 || body === "None.") {
+    return [];
+  }
+
+  const lines = body.split("\n");
+  const snippets: string[] = [];
+  let currentSnippetLines: string[] | null = null;
+
+  for (const line of lines) {
+    if (entryHeaderPattern.test(line)) {
+      const snippet = normalizeSourceSnippet((currentSnippetLines ?? []).join("\n"));
+      if (snippet) {
+        snippets.push(snippet);
+      }
+      currentSnippetLines = [];
+      continue;
+    }
+
+    if (currentSnippetLines !== null) {
+      currentSnippetLines.push(line);
+    }
+  }
+
+  const trailingSnippet = normalizeSourceSnippet((currentSnippetLines ?? []).join("\n"));
+  if (trailingSnippet) {
+    snippets.push(trailingSnippet);
+  }
+
+  return snippets;
+}
+
+function extractAppendixPromptSnippets(content: string): {
+  snippets: string[];
+  currentProgramSnippet: string | null;
+} {
+  const currentProgramSnippets = extractAppendixSourceSnippets(
+    content,
+    "CURRENT PROGRAM APPENDIX",
+    /^CURRENT_PROGRAM\b/,
+  );
+  if (currentProgramSnippets.length > 0) {
+    return {
+      snippets: currentProgramSnippets,
+      currentProgramSnippet: currentProgramSnippets[0],
+    };
+  }
+
+  return {
+    snippets: [
+      ...extractAppendixSourceSnippets(content, "REFERENCE APPENDIX", /^REFERENCE\b/),
+      ...extractAppendixSourceSnippets(content, "NEGATIVE APPENDIX", /^NEGATIVE\b/),
+    ],
+    currentProgramSnippet: null,
+  };
+}
+
 function extractCurrentProgramSnippet(content: string): string | null {
-  const sectionMatch = content.match(/CURRENT PROGRAM:\n([\s\S]*?)(?:\nREPLACEMENTS:|$)/);
+  const sectionMatch = content.match(/CURRENT(?: |_)PROGRAM:\n([\s\S]*?)(?:\nREPLACEMENTS:|$)/);
   if (!sectionMatch) {
     return null;
   }
@@ -436,6 +502,15 @@ function extractMixedSourceSnapshot(messages: PromptMessage[]): MixedSourceSnaps
   let currentProgramSnippet: string | null = null;
 
   for (const message of messages) {
+    const appendixPromptSnippets = extractAppendixPromptSnippets(message.content);
+    snippets.push(...appendixPromptSnippets.snippets);
+    if (
+      currentProgramSnippet === null &&
+      appendixPromptSnippets.currentProgramSnippet !== null
+    ) {
+      currentProgramSnippet = appendixPromptSnippets.currentProgramSnippet;
+    }
+
     if (currentProgramSnippet === null) {
       currentProgramSnippet = extractCurrentProgramSnippet(message.content);
     }
