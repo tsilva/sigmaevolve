@@ -15,4 +15,4 @@ Negative trials show only the mutable evolve-block regions, all immutable scaffo
 CURRENT PROGRAM:
 Patch this program. SEARCH blocks must match text from CURRENT PROGRAM, not from REFERENCE PROGRAMS.
 {{current_program}}
-REPLACEMENTS:
+PATCHES:
