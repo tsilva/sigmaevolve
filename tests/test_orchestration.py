@@ -69,6 +69,16 @@ def test_reconcile_generates_from_queued_baseline_before_first_result(
     class CapturingGenerator:
         def __init__(self):
             self.context_trials = None
+            self.source = build_candidate_train_script(
+                build_model_block(
+                    """
+def forward(self, x):
+    flat = x.reshape(x.shape[0], -1)
+    scores = flat.sum(dim=1)
+    return torch.stack((-scores, scores), dim=1)
+"""
+                )
+            )
 
         def generate(
             self,
@@ -88,19 +98,11 @@ def test_reconcile_generates_from_queued_baseline_before_first_result(
             )
             self.context_trials = context_trials
             return GenerationResult(
-                source=build_candidate_train_script(
-                    build_model_block(
-                        """
-def forward(self, x):
-    flat = x.reshape(x.shape[0], -1)
-    scores = flat.sum(dim=1)
-    return torch.stack((-scores, scores), dim=1)
-"""
-                    )
-                ),
+                source=self.source,
                 provenance_json=make_llm_provenance(
                     model="cold-start",
                     context_trial_ids=[trial.trial_id for trial in context_trials],
+                    generation={"response_text": self.source},
                 ),
             )
 
@@ -123,6 +125,92 @@ def forward(self, x):
     assert len(trials) == 2
     assert trials[0].trial_id == baseline.trial_id
     assert trials[0].status == "queued"
+    generated_trial = repository.get_trial(result.generated_trial_ids[0])
+    assert generated_trial is not None
+    assert generated_trial.provenance_json["generation"]["response_text"] == (
+        generator.source
+    )
+    assert generated_trial.provenance_json["generation"]["generated_source"] == (
+        generated_trial.source
+    )
+
+
+def test_reconcile_rejects_accepted_candidate_without_generation_trace(
+    repository, dataset_manager
+):
+    class MissingTraceGenerator:
+        def generate(
+            self,
+            track,
+            dataset_manifest,
+            context_trials,
+            negative_trials=None,
+            generation_index=0,
+            duplicate_retry_count=0,
+        ):
+            del (
+                track,
+                dataset_manifest,
+                negative_trials,
+                generation_index,
+                duplicate_retry_count,
+            )
+            return GenerationResult(
+                source=build_candidate_train_script(
+                    build_model_block(
+                        """
+def forward(self, x):
+    flat = x.reshape(x.shape[0], -1)
+    scores = flat.sum(dim=1)
+    return torch.stack((-scores, scores), dim=1)
+"""
+                    )
+                ),
+                provenance_json=make_llm_provenance(
+                    model="missing-trace",
+                    context_trial_ids=[trial.trial_id for trial in context_trials],
+                ),
+            )
+
+    _prepare_repo_dataset(repository, dataset_manager)
+    system, _ = _build_system(
+        repository,
+        dataset_manager,
+        MissingTraceGenerator(),
+        RecordingLauncherDouble(),
+    )
+    track = _create_track(system)
+
+    baseline = repository.list_trials(track.track_id)[0]
+    result = system.reconcile_track(
+        track.track_id, ready_queue_threshold=2, max_parallelism=0
+    )
+    trials = repository.list_trials(track.track_id)
+
+    assert result.generated_trial_ids == []
+    assert len(result.failed_generation_trial_ids) == 2
+    assert len(trials) == 3
+    assert trials[0].trial_id == baseline.trial_id
+    failed_trials = [
+        repository.get_trial(trial_id)
+        for trial_id in result.failed_generation_trial_ids
+    ]
+    assert all(trial is not None for trial in failed_trials)
+    assert all(
+        trial.outcome_reason == "generation_failed"
+        for trial in failed_trials
+        if trial is not None
+    )
+    assert all(
+        trial.error_json["reason"] == "missing_generation_trace"
+        for trial in failed_trials
+        if trial is not None
+    )
+    assert all(
+        "response_text" in trial.error_json["detail"]
+        for trial in failed_trials
+        if trial is not None
+    )
 
 
 def test_same_source_is_deduped_within_track_and_allowed_across_tracks(system):
@@ -255,6 +343,7 @@ def test_reconcile_retries_duplicate_generation_with_incremented_retry_count(
             duplicate_retry_count=0,
         ):
             self.retry_counts.append(duplicate_retry_count)
+            response_text = self.source
             return type(
                 "Generated",
                 (),
@@ -263,6 +352,7 @@ def test_reconcile_retries_duplicate_generation_with_incremented_retry_count(
                     "provenance_json": {
                         **make_llm_provenance(model="retry-capture"),
                         "duplicate_retry_count": duplicate_retry_count,
+                        "generation": {"response_text": response_text},
                     },
                 },
             )()
@@ -315,6 +405,7 @@ def test_reconcile_persists_successful_retry_generation_params(
                 if duplicate_retry_count == 0
                 else self.unique_source
             )
+            response_text = source
             return type(
                 "Generated",
                 (),
@@ -329,6 +420,7 @@ def test_reconcile_persists_successful_retry_generation_params(
                             "temperature": 0.2 + (0.1 * duplicate_retry_count),
                             "max_tokens": 1500,
                         },
+                        "generation": {"response_text": response_text},
                     },
                 },
             )()
@@ -374,7 +466,10 @@ def forward(self, x):
     assert created_trial.provenance_json["generation_config"][
         "temperature"
     ] == pytest.approx(0.3)
-    assert "generation" not in created_trial.provenance_json
+    assert created_trial.provenance_json["generation"]["response_text"] == unique_source
+    assert created_trial.provenance_json["generation"]["generated_source"] == (
+        created_trial.source
+    )
 
 
 def test_expired_dispatch_is_marked_stale_when_retries_exhausted(system):
@@ -832,20 +927,22 @@ def test_reconcile_applies_search_replace_response_before_queueing(
             generation_index=0,
             duplicate_retry_count=0,
         ):
-            return type(
-                "Generated",
-                (),
-                {
-                    "source": """<<<<<<< SEARCH
+            response_text = """<<<<<<< SEARCH
     def forward(self, x):
         return self.network(x)
 =======
     def forward(self, x):
         return self.network(x) * 0.5
 >>>>>>> REPLACE
-""",
+"""
+            return type(
+                "Generated",
+                (),
+                {
+                    "source": response_text,
                     "provenance_json": {
                         **make_llm_provenance(model="patch-generator"),
+                        "generation": {"response_text": response_text},
                     },
                 },
             )()
@@ -873,6 +970,7 @@ def test_reconcile_applies_search_replace_response_before_queueing(
     assert len(result.generated_trial_ids) == 1
     assert created_trial is not None
     assert "return self.network(x) * 0.5" in created_trial.source
+    assert "SEARCH" in created_trial.provenance_json["generation"]["response_text"]
 
 
 def test_reconcile_rejects_search_replace_mutations_outside_evolve_blocks(
@@ -1219,24 +1317,26 @@ def test_reconcile_generates_requested_candidates_in_parallel(
                 self.max_active = max(self.max_active, self.active)
             try:
                 time.sleep(0.05)
-                return type(
-                    "Generated",
-                    (),
-                    {
-                        "source": build_candidate_train_script(
-                            build_model_block(
-                                f"""
+                source = build_candidate_train_script(
+                    build_model_block(
+                        f"""
 def forward(self, x):
     flat = x.reshape(x.shape[0], -1)
     scores = flat.sum(dim=1) + {generation_index}
     return torch.stack((-scores, scores), dim=1)
 """
-                            )
-                        ),
+                    )
+                )
+                return type(
+                    "Generated",
+                    (),
+                    {
+                        "source": source,
                         "provenance_json": {
                             **make_llm_provenance(model="parallel-capture"),
                             "generation_index": generation_index,
                             "duplicate_retry_count": 0,
+                            "generation": {"response_text": source},
                         },
                     },
                 )()
@@ -1304,21 +1404,25 @@ def test_reconcile_launches_first_ready_candidate_before_slower_generation_finis
                 self.fast_started.wait(timeout=1.0)
                 time.sleep(0.20)
             self.finished_at[generation_index] = time.monotonic()
-            return type(
-                "Generated",
-                (),
-                {
-                    "source": build_candidate_train_script(
-                        build_model_block(
-                            f"""
+            source = build_candidate_train_script(
+                build_model_block(
+                    f"""
 def forward(self, x):
     flat = x.reshape(x.shape[0], -1)
     scores = flat.sum(dim=1) + {generation_index}
     return torch.stack((-scores, scores), dim=1)
 """
-                        )
+                )
+            )
+            return type(
+                "Generated",
+                (),
+                {
+                    "source": source,
+                    "provenance_json": make_llm_provenance(
+                        model="staggered-generator",
+                        generation={"response_text": source},
                     ),
-                    "provenance_json": make_llm_provenance(model="staggered-generator"),
                 },
             )()
 

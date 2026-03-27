@@ -143,6 +143,10 @@ function renderShell(options?: {
   );
 }
 
+function toggleSection(title: string) {
+  fireEvent.click(screen.getByRole("button", { name: new RegExp(title, "i") }));
+}
+
 describe("DashboardShell", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -353,6 +357,8 @@ describe("DashboardShell", () => {
       pathname: "/tracks/track_1/trials/trial_diff",
     });
 
+    toggleSection("Mixed vs generated diff");
+
     expect(screen.getByText("Mixed vs generated diff")).toBeTruthy();
     expect(screen.getByText("2 prompt sources")).toBeTruthy();
     expect(screen.getByText("+1 additions")).toBeTruthy();
@@ -401,6 +407,8 @@ describe("DashboardShell", () => {
       pathname: "/tracks/track_1/trials/trial_structured_diff",
     });
 
+    toggleSection("Mixed vs generated diff");
+
     expect(screen.getByText("2 prompt sources • diffing CURRENT PROGRAM")).toBeTruthy();
     expect(screen.getByText("+1 additions")).toBeTruthy();
     expect(screen.getByText("-1 removals")).toBeTruthy();
@@ -433,6 +441,12 @@ describe("DashboardShell", () => {
       ]),
       initialSelectedTrialId: "trial_generation_failed",
     });
+
+    toggleSection("Run timeline");
+    toggleSection("System prompt");
+    toggleSection("User prompt");
+    toggleSection("Raw LLM response");
+    toggleSection("Generation attempt");
 
     expect(screen.getByText("system prompt text")).toBeTruthy();
     expect(screen.getByText("user prompt text")).toBeTruthy();
@@ -476,6 +490,8 @@ describe("DashboardShell", () => {
       initialSelectedTrialId: "trial_success_raw_response",
     });
 
+    toggleSection("Raw LLM response");
+
     expect(screen.getByText("Raw LLM response")).toBeTruthy();
     expect(screen.getByText(/<<<<<<< SEARCH/)).toBeTruthy();
     expect(screen.queryByText("No raw response recorded.")).toBeNull();
@@ -515,6 +531,8 @@ describe("DashboardShell", () => {
       initialSelectedTrialId: "trial_generation_passed",
     });
 
+    toggleSection("Run timeline");
+
     expect(screen.getByText("Generation assertions")).toBeTruthy();
     expect(screen.getByText("Passed")).toBeTruthy();
     expect(screen.queryByText("Assertion failures")).toBeNull();
@@ -541,6 +559,8 @@ describe("DashboardShell", () => {
       ]),
       initialSelectedTrialId: "trial_provenance",
     });
+
+    toggleSection("Generation provenance");
 
     expect(screen.getByText("Generation provenance")).toBeTruthy();
     const subsectionLabels = Array.from(container.querySelectorAll(".trial-summary-subsection-label")).map(
@@ -580,6 +600,8 @@ describe("DashboardShell", () => {
       initialSelectedTrialId: "trial_launcher",
     });
 
+    toggleSection("Generation provenance");
+
     const subsectionLabels = Array.from(container.querySelectorAll(".trial-summary-subsection-label")).map(
       (element) => element.textContent,
     );
@@ -614,6 +636,8 @@ describe("DashboardShell", () => {
       initialSelectedTrialId: "trial_wandb",
     });
 
+    toggleSection("Generation provenance");
+
     expect(screen.queryByText("Wandb Project")).toBeNull();
     expect(screen.queryByText("sigmaevolve")).toBeNull();
     expect(screen.queryByText("Wandb Entity")).toBeNull();
@@ -630,6 +654,24 @@ describe("DashboardShell", () => {
     const wandbLink = screen.getByRole("link", { name: "Open Weights & Biases run for trial_wandb" });
     expect(wandbLink.getAttribute("href")).toBe("https://wandb.ai/tsilva/sigmaevolve/runs/knro5y92");
     expect(wandbLink.textContent).toBe("W&B");
+  });
+
+  it("renders inspector sections collapsed by default and lets them expand", () => {
+    renderShell({
+      initialSelectedTrialId: "trial_2",
+    });
+
+    expect(screen.queryByText("Trial ID")).toBeNull();
+    expect(screen.queryByText("Queued")).toBeNull();
+    expect(screen.queryByText("No raw response recorded.")).toBeNull();
+
+    toggleSection("Overview");
+    toggleSection("Run timeline");
+    toggleSection("Raw LLM response");
+
+    expect(screen.getByText("Trial ID")).toBeTruthy();
+    expect(screen.getByText("Queued")).toBeTruthy();
+    expect(screen.getByText("No raw response recorded.")).toBeTruthy();
   });
 
   it("keeps the explorer visible when a filter changes the visible trial set", async () => {

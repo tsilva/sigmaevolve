@@ -360,6 +360,63 @@ button {
   font-size: 0.84rem;
 }
 
+.collapsible-section-toggle {
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.collapsible-section-copy {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.collapsible-section-title {
+  font-size: 0.84rem;
+  font-weight: 600;
+}
+
+.collapsible-section-summary {
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+
+.collapsible-section-indicator {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  min-width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.72);
+  color: var(--muted);
+  font-size: 1rem;
+  line-height: 1;
+  transition: transform 140ms ease, background 140ms ease, border-color 140ms ease;
+}
+
+.collapsible-section-indicator.expanded {
+  transform: rotate(90deg);
+  border-color: var(--line-strong);
+  background: rgba(255, 255, 255, 0.92);
+}
+
+.collapsible-section-toggle:focus-visible {
+  outline: 2px solid rgba(51, 98, 183, 0.35);
+  outline-offset: 4px;
+}
+
+.collapsible-section-body {
+  display: grid;
+  gap: 8px;
+}
+
 .analysis-card-header span {
   color: var(--muted);
   font-size: 0.76rem;
@@ -883,6 +940,10 @@ button {
   border-radius: 14px;
   border: 1px solid rgba(62, 50, 35, 0.08);
   background: rgba(255, 255, 255, 0.68);
+}
+
+.trial-summary-section-toggle {
+  align-items: center;
 }
 
 .trial-summary-group-stack {
