@@ -650,6 +650,23 @@ def _run_streamed_subprocess(
     )
 
 
+def _stage_trial_runtime_package(run_dir: Path) -> None:
+    package_dir = run_dir / "sigmaevolve"
+    package_dir.mkdir(parents=True, exist_ok=True)
+
+    source_dir = Path(__file__).resolve().parent
+    init_source = (source_dir / "__init__.py").read_text(encoding="utf-8")
+    runtime_source = (source_dir / "train_script_runtime.py").read_text(
+        encoding="utf-8"
+    )
+
+    (package_dir / "__init__.py").write_text(init_source, encoding="utf-8")
+    (package_dir / "train_script_runtime.py").write_text(
+        runtime_source,
+        encoding="utf-8",
+    )
+
+
 class RunnerService:
     def __init__(
         self,
@@ -958,6 +975,7 @@ class RunnerService:
                 eval_dir = temp_path / "evals"
                 best_model_path = temp_path / "best_model.pt"
                 eval_dir.mkdir(parents=True, exist_ok=True)
+                _stage_trial_runtime_package(temp_path)
                 train_script_path.write_text(trial.source)
                 run_config_payload = {
                     "train_split_path": manifest.train_split_path,
