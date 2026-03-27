@@ -40,9 +40,11 @@ vi.mock("@/hooks/use-track-live-updates", () => ({
 vi.mock("@/components/highlighted-code", () => ({
   HighlightedCode: ({
     code,
+    diffBefore,
   }: {
     code: string;
-  }) => <pre>{code}</pre>,
+    diffBefore?: string | null;
+  }) => <pre>{diffBefore ? `${diffBefore}\n${code}` : code}</pre>,
 }));
 
 function createTrial(overrides: Partial<TrialListItem>): TrialListItem {
@@ -324,7 +326,7 @@ describe("DashboardShell", () => {
     expect(wandbLink.textContent).toBe("W&B");
   });
 
-  it("shows a mixed-source diff for the selected trial when prompt snippets are recorded", () => {
+  it("embeds the prompt-source diff into the generated program when snippets are recorded", () => {
     const detail = createDetail([
       createTrial({
         trialId: "trial_diff",
@@ -358,15 +360,11 @@ describe("DashboardShell", () => {
       pathname: "/tracks/track_1/trials/trial_diff",
     });
 
-    toggleSection("Mixed vs generated diff");
-
-    expect(screen.getByText("Mixed vs generated diff")).toBeTruthy();
-    expect(screen.getByText("2 prompt sources")).toBeTruthy();
-    expect(screen.getByText("+1 additions")).toBeTruthy();
-    expect(screen.getByText("-3 removals")).toBeTruthy();
-    expect(screen.getAllByText("print('new candidate')").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("print('old parent')").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("print('bad candidate')").length).toBeGreaterThan(0);
+    expect(screen.getByText("Generated program")).toBeTruthy();
+    expect(screen.getByText("2 prompt sources • +1 / -3 inline diff")).toBeTruthy();
+    expect(screen.getByText(/print\('new candidate'\)/)).toBeTruthy();
+    expect(screen.getByText(/print\('old parent'\)/)).toBeTruthy();
+    expect(screen.getByText(/print\('bad candidate'\)/)).toBeTruthy();
   });
 
   it("diffs against the current program instead of reference programs when the prompt is structured", () => {
@@ -408,14 +406,10 @@ describe("DashboardShell", () => {
       pathname: "/tracks/track_1/trials/trial_structured_diff",
     });
 
-    toggleSection("Mixed vs generated diff");
-
-    expect(screen.getByText("2 prompt sources • diffing CURRENT PROGRAM")).toBeTruthy();
-    expect(screen.getByText("+1 additions")).toBeTruthy();
-    expect(screen.getByText("-1 removals")).toBeTruthy();
+    expect(screen.getByText("2 prompt sources • diffing CURRENT PROGRAM • +1 / -1 inline diff")).toBeTruthy();
     expect(screen.queryByText("return 'reference'")).toBeNull();
-    expect(screen.getAllByText("return 'baseline'").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("return 'improved'").length).toBeGreaterThan(0);
+    expect(screen.getByText(/return 'baseline'/)).toBeTruthy();
+    expect(screen.getByText(/return 'improved'/)).toBeTruthy();
   });
 
   it("renders generation trace fields and diagnostic-source fallback for failed generation attempts", () => {
@@ -445,10 +439,8 @@ describe("DashboardShell", () => {
 
     toggleSection("System prompt");
     toggleSection("User prompt");
-    toggleSection("Task description");
     toggleSection("Raw LLM response");
     toggleSection("Reasoning trace");
-    toggleSection("Generation attempt");
 
     expect(screen.getByText("system prompt text")).toBeTruthy();
     expect(screen.getByText("user prompt text")).toBeTruthy();
@@ -512,8 +504,6 @@ describe("DashboardShell", () => {
       initialSelectedTrialId: "trial_task_description",
     });
 
-    toggleSection("Task description");
-
     expect(screen.getByText("Task description")).toBeTruthy();
     expect(
       screen.getByText("Broaden the hidden layers to add capacity without changing the training loop."),
@@ -563,7 +553,7 @@ describe("DashboardShell", () => {
     ).toBeNull();
   });
 
-  it("shows the error payload card at the front of the inspector card stack", () => {
+  it("puts task description and generated program first in the inspector card stack", () => {
     const { container } = renderShell({
       detail: createDetail([
         createTrial({
@@ -581,8 +571,9 @@ describe("DashboardShell", () => {
     const inspectorGrid = container.querySelector(".inspector-grid");
     const cardHeadings = Array.from(inspectorGrid?.querySelectorAll("h3") ?? []).map((heading) => heading.textContent);
 
-    expect(cardHeadings[0]).toBe("Error payload");
-    expect(cardHeadings).toContain("Mixed vs generated diff");
+    expect(cardHeadings[0]).toBe("Task description");
+    expect(cardHeadings[1]).toBe("Generated program");
+    expect(cardHeadings).toContain("Error payload");
   });
 
   it("merges the assertion status and empty failure state into one row", () => {
@@ -714,7 +705,7 @@ describe("DashboardShell", () => {
     expect(wandbLink.textContent).toBe("W&B");
   });
 
-  it("keeps the summary sections open and only collapses the lower inspector cards by default", () => {
+  it("keeps the summary sections open and defaults only task description and generated program to expanded", () => {
     renderShell({
       detail: createDetail([
         createTrial({
@@ -733,6 +724,8 @@ describe("DashboardShell", () => {
     expect(screen.getByText("Dispatch Attempts")).toBeTruthy();
     expect(screen.getByText("Queued")).toBeTruthy();
     expect(screen.getByText("No provenance payload recorded.")).toBeTruthy();
+    expect(screen.getByText("No task description recorded.")).toBeTruthy();
+    expect(screen.getByText("print('hello')")).toBeTruthy();
     expect(screen.queryByText("No raw response recorded.")).toBeNull();
 
     toggleSection("Raw LLM response");

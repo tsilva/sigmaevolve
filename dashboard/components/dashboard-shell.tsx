@@ -14,8 +14,8 @@ import {
 
 import { HighlightedCode } from "@/components/highlighted-code";
 import { MarkdownContent } from "@/components/markdown-content";
-import { SourceDiff } from "@/components/source-diff";
 import { useTrackLiveUpdates } from "@/hooks/use-track-live-updates";
+import { buildSourceDiff } from "@/lib/source-diff";
 import type {
   PaginatedTrialsResponse,
   TrackDetailResponse,
@@ -865,6 +865,8 @@ type ScoreChartPoint = {
   y: number;
 };
 
+const DEFAULT_EXPANDED_SECTION_IDS = ["trial-task-description", "trial-generated-program"];
+
 const SCORE_CHART_WIDTH = 960;
 const SCORE_CHART_HEIGHT = 124;
 const SCORE_CHART_PADDING = {
@@ -1085,7 +1087,7 @@ export function DashboardShell({
   const [selectedTrialId, setSelectedTrialId] = useState<string | null>(initialSelectedTrialId);
   const [urlTrialId, setUrlTrialId] = useState<string | null>(initialSelectedTrialId);
   const [hoveredScorePoint, setHoveredScorePoint] = useState<ScoreChartPoint | null>(null);
-  const [expandedSectionIds, setExpandedSectionIds] = useState<string[]>([]);
+  const [expandedSectionIds, setExpandedSectionIds] = useState<string[]>(DEFAULT_EXPANDED_SECTION_IDS);
   const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
   const deferredSearchText = useDeferredValue(searchText.trim().toLowerCase());
@@ -1100,7 +1102,7 @@ export function DashboardShell({
     setSelectedTrialId(initialSelectedTrialId);
     setUrlTrialId(initialSelectedTrialId);
     setHoveredScorePoint(null);
-    setExpandedSectionIds([]);
+    setExpandedSectionIds(DEFAULT_EXPANDED_SECTION_IDS);
     setError(null);
   }, [initialDetail, initialSelectedTrialId, initialTracks, selectedTrackId]);
 
@@ -1109,7 +1111,7 @@ export function DashboardShell({
   }, [routeTrialId]);
 
   useEffect(() => {
-    setExpandedSectionIds([]);
+    setExpandedSectionIds(DEFAULT_EXPANDED_SECTION_IDS);
   }, [selectedTrialId]);
 
   const visibleTrials = detail.trials.filter((trial) => matchesSearch(trial, deferredSearchText));
@@ -1147,9 +1149,17 @@ export function DashboardShell({
   const selectedShowsDiagnosticSource = Boolean(
     selectedTrial && selectedGeneratedSource && selectedGeneratedSource !== selectedTrial.source,
   );
-  const selectedCanCompareMixedSource = Boolean(
-    !selectedIsGenerationFailure && selectedGeneratedProgram && selectedGeneratedProgram.length > 0,
+  const selectedProgramDiff =
+    !selectedIsGenerationFailure && selectedGeneratedProgram && selectedMixedSource
+      ? buildSourceDiff(selectedMixedSource.source, selectedGeneratedProgram)
+      : null;
+  const selectedHasInlineProgramDiff = Boolean(
+    selectedProgramDiff &&
+      (selectedProgramDiff.summary.added > 0 || selectedProgramDiff.summary.removed > 0),
   );
+  const selectedGeneratedProgramSummary = selectedHasInlineProgramDiff
+    ? `${formatMixedSourceSummary(selectedMixedSource)} • +${selectedProgramDiff?.summary.added} / -${selectedProgramDiff?.summary.removed} inline diff`
+    : undefined;
   const progressPercent = getProgressPercent(detail.track);
   const coveragePercent = getCoveragePercent(detail.track);
   const attentionCount = getAttentionCount(detail.track);
@@ -1924,6 +1934,51 @@ export function DashboardShell({
                 </article>
 
                 <div className="inspector-grid">
+                  <article className="analysis-card wide-card">
+                    <CollapsibleSection
+                      id="trial-task-description"
+                      expanded={isSectionExpanded("trial-task-description")}
+                      onToggle={() => toggleSection("trial-task-description")}
+                      title="Task description"
+                      titleTag="h3"
+                      toggleClassName="analysis-card-header"
+                    >
+                      <HighlightedCode
+                        code={selectedTaskDescription ?? "No task description recorded."}
+                        language={detectPromptLanguage(selectedTaskDescription ?? "")}
+                        wrap
+                      />
+                    </CollapsibleSection>
+                  </article>
+
+                  <article className="analysis-card wide-card">
+                    <CollapsibleSection
+                      id="trial-generated-program"
+                      expanded={isSectionExpanded("trial-generated-program")}
+                      onToggle={() => toggleSection("trial-generated-program")}
+                      title={selectedIsGenerationFailure ? "Generation attempt" : "Generated program"}
+                      titleTag="h3"
+                      summary={selectedGeneratedProgramSummary}
+                      toggleClassName="analysis-card-header"
+                    >
+                      {selectedShowsDiagnosticSource ? (
+                        <p className="section-copy">
+                          This trial never became runnable. The stored row source is diagnostic-only; this is the
+                          attempted candidate captured from generation.
+                        </p>
+                      ) : null}
+                      <HighlightedCode
+                        code={
+                          selectedGeneratedProgram ??
+                          (selectedIsGenerationFailure ? "No generation attempt recorded." : "No generated program recorded.")
+                        }
+                        diffBefore={selectedHasInlineProgramDiff ? selectedMixedSource?.source : null}
+                        language="python"
+                        wrap
+                      />
+                    </CollapsibleSection>
+                  </article>
+
                   {selectedTrial.hasError ? (
                     <article className="analysis-card wide-card">
                       <CollapsibleSection
@@ -1935,26 +1990,6 @@ export function DashboardShell({
                         toggleClassName="analysis-card-header"
                       >
                         <HighlightedCode code={formatJsonBlock(selectedTrial.errorJson)} language="json" wrap />
-                      </CollapsibleSection>
-                    </article>
-                  ) : null}
-
-                  {selectedCanCompareMixedSource ? (
-                    <article className="analysis-card wide-card">
-                      <CollapsibleSection
-                        id="trial-mixed-source-diff"
-                        expanded={isSectionExpanded("trial-mixed-source-diff")}
-                        onToggle={() => toggleSection("trial-mixed-source-diff")}
-                        title="Mixed vs generated diff"
-                        titleTag="h3"
-                        summary={formatMixedSourceSummary(selectedMixedSource)}
-                        toggleClassName="analysis-card-header"
-                      >
-                        {selectedMixedSource ? (
-                          <SourceDiff before={selectedMixedSource.source} after={selectedGeneratedProgram ?? ""} />
-                        ) : (
-                          <p className="section-copy">No prompt-embedded source snippets were recorded for this trial.</p>
-                        )}
                       </CollapsibleSection>
                     </article>
                   ) : null}
@@ -1995,23 +2030,6 @@ export function DashboardShell({
 
                   <article className="analysis-card wide-card">
                     <CollapsibleSection
-                      id="trial-task-description"
-                      expanded={isSectionExpanded("trial-task-description")}
-                      onToggle={() => toggleSection("trial-task-description")}
-                      title="Task description"
-                      titleTag="h3"
-                      toggleClassName="analysis-card-header"
-                    >
-                      <HighlightedCode
-                        code={selectedTaskDescription ?? "No task description recorded."}
-                        language={detectPromptLanguage(selectedTaskDescription ?? "")}
-                        wrap
-                      />
-                    </CollapsibleSection>
-                  </article>
-
-                  <article className="analysis-card wide-card">
-                    <CollapsibleSection
                       id="trial-raw-llm-response"
                       expanded={isSectionExpanded("trial-raw-llm-response")}
                       onToggle={() => toggleSection("trial-raw-llm-response")}
@@ -2038,32 +2056,6 @@ export function DashboardShell({
                     >
                       <MarkdownContent
                         content={selectedReasoningText ?? "No reasoning trace recorded."}
-                      />
-                    </CollapsibleSection>
-                  </article>
-
-                  <article className="analysis-card wide-card">
-                    <CollapsibleSection
-                      id="trial-generated-program"
-                      expanded={isSectionExpanded("trial-generated-program")}
-                      onToggle={() => toggleSection("trial-generated-program")}
-                      title={selectedIsGenerationFailure ? "Generation attempt" : "Generated program"}
-                      titleTag="h3"
-                      toggleClassName="analysis-card-header"
-                    >
-                      {selectedShowsDiagnosticSource ? (
-                        <p className="section-copy">
-                          This trial never became runnable. The stored row source is diagnostic-only; this is the
-                          attempted candidate captured from generation.
-                        </p>
-                      ) : null}
-                      <HighlightedCode
-                        code={
-                          selectedGeneratedProgram ??
-                          (selectedIsGenerationFailure ? "No generation attempt recorded." : "No generated program recorded.")
-                        }
-                        language="python"
-                        wrap
                       />
                     </CollapsibleSection>
                   </article>
