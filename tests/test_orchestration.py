@@ -1024,6 +1024,89 @@ def forward(self, x):
     ]
 
 
+def test_negative_sampling_dedupes_repeated_duplicate_hashes_and_ranks_by_frequency(
+    repository, dataset_manager
+):
+    _prepare_repo_dataset(repository, dataset_manager)
+    system, _ = _build_system(
+        repository,
+        dataset_manager,
+        FixedGenerationBackend(source=build_baseline_train_script()),
+        RecordingLauncherDouble(),
+    )
+    track = _create_track(system)
+    baseline = _finalize_baseline_success(repository, track.track_id, score=0.5)
+
+    duplicate_source_a = build_candidate_train_script(
+        build_model_block(
+            """
+def forward(self, x):
+    return torch.zeros((x.shape[0], 2), dtype=torch.float32)
+"""
+        )
+    )
+    duplicate_source_b = build_candidate_train_script(
+        build_model_block(
+            """
+def forward(self, x):
+    return torch.ones((x.shape[0], 2), dtype=torch.float32)
+"""
+        )
+    )
+
+    for model in ("dup-a-1", "dup-a-2", "dup-a-3"):
+        repository.create_generation_attempt_trial(
+            track_id=track.track_id,
+            provenance_json=make_llm_provenance(
+                model=model,
+                context_trial_ids=[baseline.trial_id],
+                generation=make_generation_trace(duplicate_source_a),
+            ),
+            outcome_reason="duplicate",
+            error_json={
+                "reason": "duplicate_candidate",
+                "detail": "Candidate source already exists as trial_existing_a.",
+                "existing_trial_id": "trial_existing_a",
+                "candidate_hash": "sha256:duplicate-a",
+            },
+        )
+
+    repository.create_generation_attempt_trial(
+        track_id=track.track_id,
+        provenance_json=make_llm_provenance(
+            model="dup-b-1",
+            context_trial_ids=[baseline.trial_id],
+            generation=make_generation_trace(duplicate_source_b),
+        ),
+        outcome_reason="duplicate",
+        error_json={
+            "reason": "duplicate_candidate",
+            "detail": "Candidate source already exists as trial_existing_b.",
+            "existing_trial_id": "trial_existing_b",
+            "candidate_hash": "sha256:duplicate-b",
+        },
+    )
+
+    negative_trials = system.orchestrator.generation.sample_negative_trials(
+        track.track_id,
+        limit=8,
+    )
+
+    assert len(negative_trials) == 2
+    assert negative_trials[0].error_json is not None
+    assert negative_trials[0].error_json["duplicate_count"] == 3
+    assert negative_trials[1].error_json is not None
+    assert negative_trials[1].error_json["duplicate_count"] == 1
+    assert (
+        negative_trials[0].provenance_json["generation"]["generated_source"]
+        == duplicate_source_a
+    )
+    assert (
+        negative_trials[1].provenance_json["generation"]["generated_source"]
+        == duplicate_source_b
+    )
+
+
 def test_reconcile_rejects_mutations_outside_evolve_blocks(repository, dataset_manager):
     class InvalidGenerator:
         def generate(
