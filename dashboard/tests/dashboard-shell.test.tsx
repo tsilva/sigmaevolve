@@ -298,6 +298,31 @@ describe("DashboardShell", () => {
     expect(screen.queryByRole("link", { name: "Open launcher run for trial_modal" })).toBeNull();
   });
 
+  it("renders note badges in the trial cell and removes the notes column", () => {
+    renderShell({
+      detail: createDetail([
+        createTrial({
+          trialId: "trial_noted",
+          outcomeReason: "duplicate",
+          errorType: "generation_failed",
+          timedOut: true,
+          hadUnscoredWorkAtTimeout: true,
+          hasError: true,
+        }),
+      ]),
+    });
+
+    expect(screen.queryByRole("columnheader", { name: "Notes" })).toBeNull();
+
+    const row = screen.getByRole("button", { name: "Open trial trial_noted" });
+    expect(row.textContent).toContain("trial_noted");
+    expect(row.textContent).toContain("duplicate");
+    expect(row.textContent).toContain("generation_failed");
+    expect(row.textContent).toContain("timed out");
+    expect(row.textContent).toContain("unevaluated work");
+    expect(row.textContent).toContain("error payload");
+  });
+
   it("shows launcher and wandb badges in the inspector when the selected trial has remote run URLs", () => {
     renderShell({
       detail: createDetail([
@@ -439,7 +464,7 @@ describe("DashboardShell", () => {
 
     toggleSection("System prompt");
     toggleSection("User prompt");
-    toggleSection("Raw LLM response");
+    toggleSection("Response");
     toggleSection("Reasoning trace");
 
     expect(screen.getByText("system prompt text")).toBeTruthy();
@@ -486,9 +511,9 @@ describe("DashboardShell", () => {
       initialSelectedTrialId: "trial_success_raw_response",
     });
 
-    toggleSection("Raw LLM response");
+    toggleSection("Response");
 
-    expect(screen.getByText("Raw LLM response")).toBeTruthy();
+    expect(screen.getByText("Response")).toBeTruthy();
     expect(screen.getByText(/<<<<<<< SEARCH/)).toBeTruthy();
     expect(screen.queryByText("No raw response recorded.")).toBeNull();
   });
@@ -574,6 +599,29 @@ describe("DashboardShell", () => {
     expect(cardHeadings[0]).toBe("Task description");
     expect(cardHeadings[1]).toBe("Generated program");
     expect(cardHeadings).toContain("Error payload");
+  });
+
+  it("shows reasoning trace before response in the inspector card stack", () => {
+    const { container } = renderShell({
+      detail: createDetail([
+        createTrial({
+          trialId: "trial_reasoning_before_response",
+          reasoningText: "Reasoning content",
+          responseText: "Response content",
+        }),
+      ]),
+      initialSelectedTrialId: "trial_reasoning_before_response",
+    });
+
+    const cardHeadings = Array.from(container.querySelectorAll(".inspector-grid h3")).map(
+      (heading) => heading.textContent,
+    );
+    const reasoningIndex = cardHeadings.indexOf("Reasoning trace");
+    const responseIndex = cardHeadings.indexOf("Response");
+
+    expect(reasoningIndex).toBeGreaterThan(-1);
+    expect(responseIndex).toBeGreaterThan(-1);
+    expect(reasoningIndex).toBeLessThan(responseIndex);
   });
 
   it("merges the assertion status and empty failure state into one row", () => {
@@ -728,7 +776,7 @@ describe("DashboardShell", () => {
     expect(screen.getByText("print('hello')")).toBeTruthy();
     expect(screen.queryByText("No raw response recorded.")).toBeNull();
 
-    toggleSection("Raw LLM response");
+    toggleSection("Response");
 
     expect(screen.getByText("No raw response recorded.")).toBeTruthy();
   });

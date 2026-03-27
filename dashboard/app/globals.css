@@ -796,6 +796,7 @@ button {
   flex-wrap: wrap;
   align-items: center;
   gap: 6px;
+  row-gap: 4px;
 }
 
 .trial-cell-secondary {
@@ -811,6 +812,10 @@ button {
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
+}
+
+.trial-cell-title-row .trial-notes {
+  display: inline-flex;
 }
 
 .flag-chip {

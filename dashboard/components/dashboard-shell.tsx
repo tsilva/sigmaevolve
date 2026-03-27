@@ -1644,7 +1644,6 @@ export function DashboardShell({
                       <th scope="col">Score</th>
                       <th scope="col">Accuracy</th>
                       <th scope="col">Model</th>
-                      <th scope="col">Notes</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1662,6 +1661,11 @@ export function DashboardShell({
                           <div className="trial-cell-title-row">
                             <div className="trial-cell-primary">{trial.trialId}</div>
                             {isBestTrial(detail.track, trial.trialId) ? <span className="flag-chip flag-best">best so far</span> : null}
+                            {trial.outcomeReason ? <span className="flag-chip">{trial.outcomeReason}</span> : null}
+                            {trial.errorType ? <span className="flag-chip flag-danger">{trial.errorType}</span> : null}
+                            {trial.timedOut ? <span className="flag-chip flag-warning">timed out</span> : null}
+                            {trial.hadUnscoredWorkAtTimeout ? <span className="flag-chip flag-warning">unevaluated work</span> : null}
+                            {trial.hasError ? <span className="flag-chip flag-danger">error payload</span> : null}
                           </div>
                           <div className="trial-cell-secondary">{getTrialNarrative(trial)}</div>
                         </td>
@@ -1679,15 +1683,6 @@ export function DashboardShell({
                         <td>
                           <div className="trial-cell-primary">{trial.model ?? "unknown model"}</div>
                           <div className="trial-cell-secondary">{trial.backend ?? "unknown backend"}</div>
-                        </td>
-                        <td>
-                          <div className="trial-notes">
-                            {trial.outcomeReason ? <span className="flag-chip">{trial.outcomeReason}</span> : null}
-                            {trial.errorType ? <span className="flag-chip flag-danger">{trial.errorType}</span> : null}
-                            {trial.timedOut ? <span className="flag-chip flag-warning">timed out</span> : null}
-                            {trial.hadUnscoredWorkAtTimeout ? <span className="flag-chip flag-warning">unevaluated work</span> : null}
-                            {trial.hasError ? <span className="flag-chip flag-danger">error payload</span> : null}
-                          </div>
                         </td>
                       </tr>
                     ))}
@@ -2030,23 +2025,6 @@ export function DashboardShell({
 
                   <article className="analysis-card wide-card">
                     <CollapsibleSection
-                      id="trial-raw-llm-response"
-                      expanded={isSectionExpanded("trial-raw-llm-response")}
-                      onToggle={() => toggleSection("trial-raw-llm-response")}
-                      title="Raw LLM response"
-                      titleTag="h3"
-                      toggleClassName="analysis-card-header"
-                    >
-                      <HighlightedCode
-                        code={selectedResponseText ?? "No raw response recorded."}
-                        language={detectPromptLanguage(selectedResponseText ?? "")}
-                        wrap
-                      />
-                    </CollapsibleSection>
-                  </article>
-
-                  <article className="analysis-card wide-card">
-                    <CollapsibleSection
                       id="trial-reasoning-trace"
                       expanded={isSectionExpanded("trial-reasoning-trace")}
                       onToggle={() => toggleSection("trial-reasoning-trace")}
@@ -2056,6 +2034,23 @@ export function DashboardShell({
                     >
                       <MarkdownContent
                         content={selectedReasoningText ?? "No reasoning trace recorded."}
+                      />
+                    </CollapsibleSection>
+                  </article>
+
+                  <article className="analysis-card wide-card">
+                    <CollapsibleSection
+                      id="trial-raw-llm-response"
+                      expanded={isSectionExpanded("trial-raw-llm-response")}
+                      onToggle={() => toggleSection("trial-raw-llm-response")}
+                      title="Response"
+                      titleTag="h3"
+                      toggleClassName="analysis-card-header"
+                    >
+                      <HighlightedCode
+                        code={selectedResponseText ?? "No raw response recorded."}
+                        language={detectPromptLanguage(selectedResponseText ?? "")}
+                        wrap
                       />
                     </CollapsibleSection>
                   </article>
