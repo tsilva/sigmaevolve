@@ -750,7 +750,6 @@ def forward(self, x):
         error_info=None,
     )
 
-    draw_counts = {baseline.trial_id: 0, mid.trial_id: 0, low.trial_id: 0}
     current_counts = {baseline.trial_id: 0, mid.trial_id: 0, low.trial_id: 0}
     for generation_index in range(300):
         sampled = system.orchestrator._sample_successful_context_trials(
@@ -758,18 +757,10 @@ def forward(self, x):
             7,
             generation_index,
         )
-        assert len(sampled) == 2
-        assert sampled[0].trial_id != sampled[1].trial_id
-        assert sampled[0].score >= sampled[1].score
-        for trial in sampled:
-            draw_counts[trial.trial_id] += 1
+        assert len(sampled) == 3
+        assert len({trial.trial_id for trial in sampled}) == 3
         current_counts[sampled[0].trial_id] += 1
 
-    assert (
-        draw_counts[baseline.trial_id]
-        > draw_counts[mid.trial_id]
-        > draw_counts[low.trial_id]
-    )
     assert (
         current_counts[baseline.trial_id]
         > current_counts[mid.trial_id]
@@ -870,6 +861,93 @@ def forward(self, x):
     assert [trial.trial_id for trial in generator.context_trials] == [baseline.trial_id]
     assert generator.negative_trials is not None
     assert generator.negative_trials == []
+
+
+def test_reconcile_passes_recent_duplicates_as_negative_trials(
+    repository, dataset_manager
+):
+    class CapturingGenerator:
+        def __init__(self):
+            self.context_trials = None
+            self.negative_trials = None
+
+        def generate(
+            self,
+            track,
+            dataset_manifest,
+            context_trials,
+            negative_trials=None,
+            generation_index=0,
+            duplicate_retry_count=0,
+        ):
+            del track, dataset_manifest, generation_index, duplicate_retry_count
+            self.context_trials = context_trials
+            self.negative_trials = negative_trials or []
+            source = build_candidate_train_script(
+                build_model_block(
+                    """
+def forward(self, x):
+    flat = x.reshape(x.shape[0], -1)
+    scores = flat.sum(dim=1)
+    return torch.stack((-scores, scores), dim=1)
+"""
+                )
+            )
+            return type(
+                "Generated",
+                (),
+                {
+                    "source": source,
+                    "provenance_json": {
+                        **make_llm_provenance(model="capture-negatives"),
+                        "generation": {
+                            "task_description": "Return a unique candidate while capturing duplicate negatives.",
+                            "response_text": source,
+                        },
+                    },
+                },
+            )()
+
+    _prepare_repo_dataset(repository, dataset_manager)
+    generator = CapturingGenerator()
+    system, _ = _build_system(
+        repository, dataset_manager, generator, RecordingLauncherDouble()
+    )
+    track = _create_track(system)
+    baseline = _finalize_baseline_success(repository, track.track_id, score=0.5)
+
+    duplicate_source = build_candidate_train_script(
+        build_model_block(
+            """
+def forward(self, x):
+    return torch.zeros((x.shape[0], 2), dtype=torch.float32)
+"""
+        )
+    )
+    repository.create_generation_attempt_trial(
+        track_id=track.track_id,
+        provenance_json=make_llm_provenance(
+            model="duplicate-source",
+            context_trial_ids=[baseline.trial_id],
+            generation=make_generation_trace(duplicate_source),
+        ),
+        outcome_reason="duplicate",
+        error_json={
+            "reason": "duplicate_candidate",
+            "detail": "Candidate source already exists as trial_existing.",
+            "existing_trial_id": "trial_existing",
+            "candidate_hash": "sha256:duplicate",
+        },
+    )
+
+    system.reconcile_track(track.track_id)
+
+    assert generator.context_trials is not None
+    assert [trial.trial_id for trial in generator.context_trials] == [baseline.trial_id]
+    assert generator.negative_trials is not None
+    assert [trial.outcome_reason for trial in generator.negative_trials] == [
+        "duplicate"
+    ]
 
 
 def test_reconcile_rejects_mutations_outside_evolve_blocks(repository, dataset_manager):

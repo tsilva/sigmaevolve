@@ -92,6 +92,13 @@ function formatDuration(value: number | null): string {
   return `${minutes}m ${seconds}s`;
 }
 
+function formatBestEpoch(bestEvalEpoch: number | null, epochsCompleted: number | null): string {
+  if (bestEvalEpoch === null || epochsCompleted === null) {
+    return "—";
+  }
+  return `${bestEvalEpoch}/${epochsCompleted}`;
+}
+
 function summarizeTaskDescription(value: string | null, maxLength = 160): string | null {
   if (!value) {
     return null;
@@ -1656,11 +1663,12 @@ export function DashboardShell({
                 <table className="trial-table">
                   <thead>
                     <tr>
+                      <th scope="col">Status</th>
                       <th scope="col">Trial</th>
                       <th scope="col">Task</th>
-                      <th scope="col">Status</th>
                       <th scope="col">Score</th>
                       <th scope="col">Accuracy</th>
+                      <th scope="col">Best Epoch</th>
                       <th scope="col">Model</th>
                     </tr>
                   </thead>
@@ -1675,6 +1683,15 @@ export function DashboardShell({
                         onClick={() => openInspector(trial.trialId)}
                         onKeyDown={(event) => handleTrialKeyDown(event, trial.trialId)}
                       >
+                        <td>
+                          <div className="trial-status-row">
+                            <span className={`status-badge status-${trial.status}`}>
+                              <span className={`status-indicator ${trial.status}`} />
+                              {formatStatusLabel(trial.status)}
+                            </span>
+                            <span className="trial-status-duration">{formatDuration(trial.durationSec)}</span>
+                          </div>
+                        </td>
                         <td>
                           <div className="trial-cell-title-row">
                             <div className="trial-cell-primary">{trial.trialId}</div>
@@ -1696,17 +1713,9 @@ export function DashboardShell({
                             <span className="trial-cell-secondary">No task description</span>
                           )}
                         </td>
-                        <td>
-                          <div className="trial-status-row">
-                            <span className={`status-badge status-${trial.status}`}>
-                              <span className={`status-indicator ${trial.status}`} />
-                              {formatStatusLabel(trial.status)}
-                            </span>
-                            <span className="trial-status-duration">{formatDuration(trial.durationSec)}</span>
-                          </div>
-                        </td>
                         <td>{formatNumber(trial.score, 4)}</td>
                         <td>{formatNumber(trial.accuracy, 4)}</td>
+                        <td>{formatBestEpoch(trial.bestEvalEpoch, trial.epochsCompleted)}</td>
                         <td>
                           <div className="trial-cell-primary">{trial.model ?? "unknown model"}</div>
                           <div className="trial-cell-secondary">{trial.backend ?? "unknown backend"}</div>

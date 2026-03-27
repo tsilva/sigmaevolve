@@ -56,6 +56,8 @@ function createTrial(overrides: Partial<TrialListItem>): TrialListItem {
     modalRunUrl: null,
     score: 0.91,
     accuracy: 0.91,
+    bestEvalEpoch: 3,
+    epochsCompleted: 5,
     timeToBestEvalSec: 12,
     timedOut: false,
     timeSinceLastEvalSec: 4,
@@ -906,6 +908,23 @@ describe("DashboardShell", () => {
     expect(container.querySelector('circle.score-point.best-point[aria-label^="trial_2"]')).toBeTruthy();
     expect(screen.getByText(/trial_2 is the best trial so far\./i)).toBeTruthy();
     expect(screen.getByText("best so far")).toBeTruthy();
+  });
+
+  it("shows status as the first table column and stacks duration below the badge", () => {
+    const { container } = renderShell();
+
+    const headers = Array.from(container.querySelectorAll(".trial-table thead th")).map((cell) => cell.textContent);
+    expect(headers).toEqual(["Status", "Trial", "Task", "Score", "Accuracy", "Best Epoch", "Model"]);
+
+    const firstStatusCell = container.querySelector(".trial-table tbody td");
+    expect(firstStatusCell?.querySelector(".status-badge")?.textContent).toContain("finished");
+    expect(firstStatusCell?.querySelector(".trial-status-duration")?.textContent).toBe("1m 0s");
+  });
+
+  it("shows best epoch in best/total format in the trials table", () => {
+    renderShell();
+
+    expect(screen.getAllByText("3/5")).toHaveLength(2);
   });
 
   it("highlights the best-so-far trial in the inspector", () => {

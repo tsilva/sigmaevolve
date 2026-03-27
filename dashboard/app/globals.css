@@ -744,14 +744,14 @@ button {
 
 .trial-status-row {
   display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
 }
 
 .trial-status-duration {
   color: var(--muted);
-  font-size: 0.76rem;
+  font-size: 0.68rem;
   white-space: nowrap;
 }
 

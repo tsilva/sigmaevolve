@@ -123,8 +123,10 @@ def test_update_active_trial_metrics_updates_only_matching_active_runner_and_not
         metrics={
             "accuracy": 0.5,
             "eval_count": 1,
+            "epochs_completed": 1,
             "last_phase": "train",
             "best_accuracy": 0.5,
+            "best_eval_epoch": 1,
         },
     )
     updated = repository.get_trial(claimed.trial_id)
@@ -132,6 +134,8 @@ def test_update_active_trial_metrics_updates_only_matching_active_runner_and_not
     assert updated.metrics_json == {
         "accuracy": 0.5,
         "eval_count": 1,
+        "epochs_completed": 1,
+        "best_eval_epoch": 1,
         "last_phase": "train",
     }
     assert notifications[-1] == (track.track_id, "trial_changed")
@@ -140,7 +144,13 @@ def test_update_active_trial_metrics_updates_only_matching_active_runner_and_not
     repository.update_active_trial_metrics(
         trial_id=claimed.trial_id,
         runner_id="runner-1",
-        metrics={"accuracy": 0.5, "eval_count": 1, "last_phase": "train"},
+        metrics={
+            "accuracy": 0.5,
+            "eval_count": 1,
+            "epochs_completed": 1,
+            "best_eval_epoch": 1,
+            "last_phase": "train",
+        },
     )
     assert len(notifications) == notify_count
 
@@ -154,6 +164,8 @@ def test_update_active_trial_metrics_updates_only_matching_active_runner_and_not
     assert unchanged.metrics_json == {
         "accuracy": 0.5,
         "eval_count": 1,
+        "epochs_completed": 1,
+        "best_eval_epoch": 1,
         "last_phase": "train",
     }
 
@@ -188,6 +200,8 @@ def test_finalize_trial_overwrites_interim_metrics_and_slims_payload(repository)
         metrics={
             "accuracy": 0.75,
             "eval_count": 2,
+            "epochs_completed": 2,
+            "best_eval_epoch": 2,
             "timed_out": False,
             "best_eval_index": 2,
             "process_elapsed_sec": 12.0,
@@ -201,6 +215,8 @@ def test_finalize_trial_overwrites_interim_metrics_and_slims_payload(repository)
     assert updated.metrics_json == {
         "accuracy": 0.75,
         "eval_count": 2,
+        "epochs_completed": 2,
+        "best_eval_epoch": 2,
         "timed_out": False,
     }
     assert updated.score == 0.75

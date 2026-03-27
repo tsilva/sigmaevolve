@@ -346,6 +346,7 @@ def test_openrouter_generation_prompt_includes_expected_sections(monkeypatch):
     assert "OBJECTIVE:" in prompt
     assert "TASK CONTEXT:" in prompt
     assert "REFERENCE PROGRAMS:" in prompt
+    assert "AVOID THESE RECENT NEGATIVE TRIALS:" in prompt
     assert "CURRENT PROGRAM:" in prompt
     assert "REPLACEMENTS:" in prompt
 
@@ -388,7 +389,26 @@ def test_openrouter_generation_prompt_lists_full_prior_programs_before_current_p
     assert "# EVOLVE-BLOCK-END" not in prior_section
     assert "# EVOLVE-BLOCK-START" in current_section
     assert "# EVOLVE-BLOCK-END" in current_section
+    assert "AVOID THESE RECENT NEGATIVE TRIALS:\nNone." in prompt
     assert prompt.rstrip().endswith("REPLACEMENTS:")
+
+
+def test_openrouter_generation_prompt_renders_recent_negative_trials():
+    backend = OpenRouterGenerationBackend(api_key="test-key")
+
+    prompt = backend._build_user_prompt_text(
+        _track_with_pool(),
+        _manifest(),
+        _context_with_prior_programs(),
+        negative_trials=_negative_trials(),
+        selected_config={"model": "test/model"},
+    )
+
+    assert "AVOID THESE RECENT NEGATIVE TRIALS:" in prompt
+    assert "outcome_reason: crashed" in prompt
+    assert "- returncode: 1" in prompt
+    assert "mat1 and mat2 shapes cannot be multiplied" in prompt
+    assert "raise RuntimeError('bad candidate')" in prompt
 
 
 def test_openrouter_generation_reports_missing_api_key(monkeypatch):

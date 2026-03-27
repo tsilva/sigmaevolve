@@ -67,6 +67,9 @@ class ParsedGenerationResponse:
 
 
 TASK_DESCRIPTION_HEADER = "TASK_DESCRIPTION:"
+MAX_CONTEXT_TRIALS = 4
+MAX_NEGATIVE_TRIALS = 4
+INSPIRATION_POOL_SIZE = 8
 
 
 def _contains_evolve_block_marker_line(text: str) -> bool:
@@ -651,6 +654,17 @@ class OpenRouterGenerationBackend:
         if returncode is not None:
             lines.append(f"- returncode: {self._format_scalar(returncode)}")
 
+        # Include duplicate bookkeeping when the row points at an existing candidate.
+        existing_trial_id = error_json.get("existing_trial_id")
+        if existing_trial_id is not None:
+            lines.append(
+                f"- existing trial id: {self._format_scalar(existing_trial_id)}"
+            )
+
+        candidate_hash = error_json.get("candidate_hash")
+        if candidate_hash is not None:
+            lines.append(f"- candidate hash: {self._format_scalar(candidate_hash)}")
+
         # Capture the last stderr line as the shortest useful excerpt.
         stderr = error_json.get("stderr")
         if isinstance(stderr, str) and stderr.strip():
@@ -666,6 +680,29 @@ class OpenRouterGenerationBackend:
                 return self._format_scalar(metrics[name])
         return "n/a"
 
+    def _prompt_trial_source(
+        self,
+        trial: TrialSummary,
+        *,
+        strip_evolve_block_tags: bool = False,
+        prefer_generated_source: bool = False,
+    ) -> str:
+        source = trial.source
+        if prefer_generated_source:
+            generation_payload = dict(
+                (trial.provenance_json or {}).get("generation") or {}
+            )
+            generated_source = generation_payload.get("generated_source")
+            has_generated_source = isinstance(generated_source, str) and bool(
+                generated_source.strip()
+            )
+            if has_generated_source:
+                source = generated_source
+
+        if strip_evolve_block_tags:
+            source = self._strip_evolve_block_tags(source)
+        return source
+
     def _strip_evolve_block_tags(self, source: str) -> str:
         lines = source.splitlines()
         filtered_lines = [
@@ -680,9 +717,10 @@ class OpenRouterGenerationBackend:
         strip_evolve_block_tags: bool = False,
     ) -> list[str]:
         # Normalize the source snapshot before rendering the trial prompt block.
-        source = trial.source
-        if strip_evolve_block_tags:
-            source = self._strip_evolve_block_tags(source)
+        source = self._prompt_trial_source(
+            trial,
+            strip_evolve_block_tags=strip_evolve_block_tags,
+        )
         rendered = _render_prompt_template(
             "trial.md",
             val_acc=self._trial_prompt_metric(trial, "val_acc", "accuracy"),
@@ -690,6 +728,20 @@ class OpenRouterGenerationBackend:
             source=source.rstrip(),
         )
         return rendered.splitlines()
+
+    def _render_negative_trial_prompt_block(self, trial: TrialSummary) -> list[str]:
+        source = self._prompt_trial_source(
+            trial,
+            strip_evolve_block_tags=True,
+            prefer_generated_source=True,
+        )
+        lines = [
+            "---",
+            f"outcome_reason: {self._format_scalar(trial.outcome_reason or 'unknown')}",
+        ]
+        lines.extend(self._summarize_error(trial.error_json))
+        lines.extend(("```python", source.rstrip(), "```"))
+        return lines
 
     def _build_system_prompt_text(self) -> str:
         return _render_prompt_template(
@@ -729,7 +781,7 @@ class OpenRouterGenerationBackend:
         negative_trials: list[TrialSummary],
         selected_config: dict[str, object],
     ) -> str:
-        del negative_trials, selected_config
+        del selected_config
         task_context_text = self._build_prompt_context_text(track, dataset_manifest)
 
         # Split the context into the current program and optional prior examples.
@@ -759,10 +811,18 @@ class OpenRouterGenerationBackend:
             )
         else:
             current_program_text = "None."
+        if negative_trials:
+            negative_trials_text = "\n".join(
+                "\n".join(self._render_negative_trial_prompt_block(trial))
+                for trial in negative_trials
+            )
+        else:
+            negative_trials_text = "None."
         return _render_prompt_template(
             "user.md",
             task_context=task_context_text,
             prior_programs=prior_programs_text,
+            negative_trials=negative_trials_text,
             current_program=current_program_text,
         )
 
@@ -1224,30 +1284,46 @@ class GenerationCoordinator:
         rng = random.Random(int(sampling_seed) + generation_index)
         remaining = list(candidates)
         remaining_weights = [max(float(trial.score), 0.0) for trial in remaining]
-        sampled: list[TrialSummary] = []
+        total_weight = sum(remaining_weights)
+        if total_weight <= 0.0:
+            selected_index = rng.randrange(len(remaining))
+        else:
+            selected_index = rng.choices(
+                range(len(remaining)),
+                weights=remaining_weights,
+                k=1,
+            )[0]
+        current_program = remaining.pop(selected_index)
+        remaining_weights.pop(selected_index)
 
-        # Sample up to two trials without replacement, falling back to uniform draws.
-        for _ in range(min(2, len(remaining))):
-            total_weight = sum(remaining_weights)
-            if total_weight <= 0.0:
-                selected_index = rng.randrange(len(remaining))
-            else:
-                selected_index = rng.choices(
-                    range(len(remaining)),
-                    weights=remaining_weights,
-                    k=1,
-                )[0]
-            sampled.append(remaining.pop(selected_index))
-            remaining_weights.pop(selected_index)
+        inspiration_pool = remaining[: min(INSPIRATION_POOL_SIZE, len(remaining))]
+        inspiration_count = min(MAX_CONTEXT_TRIALS - 1, len(inspiration_pool))
+        inspiration_indices = rng.sample(
+            range(len(inspiration_pool)), k=inspiration_count
+        )
+        inspirations = [inspiration_pool[index] for index in inspiration_indices]
 
-        # Return the sampled trials in a stable best-first order.
+        # Keep the current program first and sort inspirations in stable best-first order.
         candidate_ranks = {
             trial.trial_id: index for index, trial in enumerate(candidates)
         }
-        sampled.sort(
+        inspirations.sort(
             key=lambda trial: (-float(trial.score), candidate_ranks[trial.trial_id])
         )
-        return sampled
+        return [current_program, *inspirations]
+
+    def sample_negative_trials(
+        self,
+        track_id: str,
+        *,
+        limit: int = MAX_NEGATIVE_TRIALS,
+    ) -> list[TrialSummary]:
+        # Surface recent duplicate attempts as negative examples for the prompt.
+        return self.repository.list_recent_trial_summaries(
+            track_id,
+            outcome_reasons={OUTCOME_DUPLICATE},
+            limit=limit,
+        )
 
     def sample_generation_context_trials(
         self,
@@ -1465,6 +1541,7 @@ class GenerationCoordinator:
         )
         if not context_trials:
             return None
+        negative_trials = self.sample_negative_trials(track.track_id)
 
         # Submit the provider request together with the bookkeeping metadata.
         attempt = GenerationAttempt(
@@ -1478,7 +1555,7 @@ class GenerationCoordinator:
             track,
             dataset_manifest,
             context_trials,
-            [],
+            negative_trials,
             generation_index,
             duplicate_retry_count,
         )
