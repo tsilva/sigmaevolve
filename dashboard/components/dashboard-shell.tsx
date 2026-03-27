@@ -124,9 +124,10 @@ type ProgressSegment = {
 };
 type CollapsibleSectionProps = {
   children: ReactNode;
-  expanded: boolean;
+  collapsible?: boolean;
+  expanded?: boolean;
   id: string;
-  onToggle: () => void;
+  onToggle?: () => void;
   summary?: ReactNode;
   title: string;
   titleClassName?: string;
@@ -634,6 +635,7 @@ function getTrackLabel(track: TrackListItem): string {
 
 function CollapsibleSection({
   children,
+  collapsible = true,
   expanded,
   id,
   onToggle,
@@ -645,28 +647,46 @@ function CollapsibleSection({
 }: CollapsibleSectionProps) {
   const TitleTag = titleTag;
   const contentId = `${id}-content`;
+  const isExpanded = collapsible ? expanded === true : true;
+  const headerClassName = toggleClassName
+    ? `collapsible-section-toggle ${toggleClassName}`
+    : "collapsible-section-toggle";
+  const headerContent = (
+    <span className="collapsible-section-copy">
+      <TitleTag className={titleClassName ?? "collapsible-section-title"}>{title}</TitleTag>
+      {summary ? <span className="collapsible-section-summary">{summary}</span> : null}
+    </span>
+  );
+
+  if (!collapsible) {
+    return (
+      <>
+        <div className={`${headerClassName} collapsible-section-header`}>{headerContent}</div>
+        <div id={contentId} className="collapsible-section-body">
+          {children}
+        </div>
+      </>
+    );
+  }
 
   return (
     <>
       <button
         type="button"
-        className={toggleClassName ? `collapsible-section-toggle ${toggleClassName}` : "collapsible-section-toggle"}
+        className={headerClassName}
         onClick={onToggle}
-        aria-expanded={expanded}
+        aria-expanded={isExpanded}
         aria-controls={contentId}
       >
-        <span className="collapsible-section-copy">
-          <TitleTag className={titleClassName ?? "collapsible-section-title"}>{title}</TitleTag>
-          {summary ? <span className="collapsible-section-summary">{summary}</span> : null}
-        </span>
+        {headerContent}
         <span
-          className={`collapsible-section-indicator ${expanded ? "expanded" : ""}`}
+          className={`collapsible-section-indicator ${isExpanded ? "expanded" : ""}`}
           aria-hidden="true"
         >
           ›
         </span>
       </button>
-      {expanded ? (
+      {isExpanded ? (
         <div id={contentId} className="collapsible-section-body">
           {children}
         </div>
@@ -1718,9 +1738,8 @@ export function DashboardShell({
                     <div className="trial-summary-column">
                       <section className="trial-summary-panel">
                         <CollapsibleSection
+                          collapsible={false}
                           id="trial-overview"
-                          expanded={isSectionExpanded("trial-overview")}
-                          onToggle={() => toggleSection("trial-overview")}
                           title="Overview"
                           titleClassName="trial-summary-section-label"
                           toggleClassName="trial-summary-section-toggle"
@@ -1780,9 +1799,8 @@ export function DashboardShell({
 
                       <section className="trial-summary-panel">
                         <CollapsibleSection
+                          collapsible={false}
                           id="trial-metrics"
-                          expanded={isSectionExpanded("trial-metrics")}
-                          onToggle={() => toggleSection("trial-metrics")}
                           title="Metrics"
                           titleClassName="trial-summary-section-label"
                           toggleClassName="trial-summary-section-toggle"
@@ -1809,9 +1827,8 @@ export function DashboardShell({
                     <div className="trial-summary-column">
                       <section className="trial-summary-panel">
                         <CollapsibleSection
+                          collapsible={false}
                           id="trial-run-timeline"
-                          expanded={isSectionExpanded("trial-run-timeline")}
-                          onToggle={() => toggleSection("trial-run-timeline")}
                           title="Run timeline"
                           titleClassName="trial-summary-section-label"
                           toggleClassName="trial-summary-section-toggle"
@@ -1850,9 +1867,8 @@ export function DashboardShell({
 
                       <section className="trial-summary-panel">
                         <CollapsibleSection
+                          collapsible={false}
                           id="trial-generation-provenance"
-                          expanded={isSectionExpanded("trial-generation-provenance")}
-                          onToggle={() => toggleSection("trial-generation-provenance")}
                           title="Generation provenance"
                           titleClassName="trial-summary-section-label"
                           toggleClassName="trial-summary-section-toggle"

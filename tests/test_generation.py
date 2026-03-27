@@ -4,7 +4,9 @@ import io
 import json
 from urllib.error import HTTPError, URLError
 
+import numpy as np
 import pytest
+import torch
 
 from sigmaevolve.core import DatasetManifest, TrackRecord, TrialSummary, now_utc
 from sigmaevolve.generation import (
@@ -622,6 +624,29 @@ def test_baseline_template_uses_one_outer_evolve_block():
     assert source.count("# EVOLVE-BLOCK-START") == 1
     assert source.count("# EVOLVE-BLOCK-END") == 1
     assert len(extract_evolve_block_payloads(source)) == 5
+
+
+def test_baseline_template_preserves_feature_shape_for_evolved_models():
+    namespace: dict[str, object] = {}
+    exec(build_baseline_train_script(), namespace)
+
+    prepare_feature_tensor = namespace["prepare_feature_tensor"]
+    build_model = namespace["build_model"]
+
+    input_shape, train_x = prepare_feature_tensor(
+        np.zeros((4, 28, 28), dtype=np.float32)
+    )
+    _, validation_x = prepare_feature_tensor(
+        np.zeros((2, 28, 28), dtype=np.float32),
+        input_shape=input_shape,
+    )
+    model = build_model(input_shape=input_shape, num_classes=10)
+    logits = model(validation_x)
+
+    assert input_shape == (28, 28)
+    assert tuple(train_x.shape) == (4, 28, 28)
+    assert tuple(logits.shape) == (2, 10)
+    assert isinstance(model.network[0], torch.nn.Flatten)
 
 
 def test_build_candidate_train_script_replaces_only_data_block():
