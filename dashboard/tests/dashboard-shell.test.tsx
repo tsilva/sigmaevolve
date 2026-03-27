@@ -188,6 +188,76 @@ describe("DashboardShell", () => {
     expect(screen.getByRole("button", { name: "Open trial trial_2" })).toBeTruthy();
   });
 
+  it("renders a lineage tree with fork and inspiration relationships", () => {
+    renderShell({
+      detail: createDetail([
+        createTrial({
+          trialId: "trial_root",
+          backend: "baseline",
+          model: "baseline",
+          createdAt: "2026-03-20T15:00:00.000Z",
+          provenanceJson: { backend: "baseline", parent_trial_ids: [] },
+        }),
+        createTrial({
+          trialId: "trial_child_a",
+          createdAt: "2026-03-20T15:01:00.000Z",
+          provenanceJson: {
+            backend: "openrouter",
+            request_messages: [],
+            context_trial_ids: ["trial_root"],
+          },
+        }),
+        createTrial({
+          trialId: "trial_child_b",
+          createdAt: "2026-03-20T15:02:00.000Z",
+          provenanceJson: {
+            backend: "openrouter",
+            request_messages: [],
+            context_trial_ids: ["trial_root", "trial_child_a"],
+          },
+        }),
+      ]),
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Lineage tree" }));
+
+    expect(screen.getByText("How candidates fork and cross-pollinate")).toBeTruthy();
+    expect(screen.getByText("2 direct forks")).toBeTruthy();
+    expect(screen.getByText("Inspired by")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "trial_child_a" })).toBeTruthy();
+    expect(screen.getByText("Inspires")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "trial_child_b" })).toBeTruthy();
+  });
+
+  it("opens the inspector from a lineage node", () => {
+    renderShell({
+      detail: createDetail([
+        createTrial({
+          trialId: "trial_root",
+          backend: "baseline",
+          model: "baseline",
+          createdAt: "2026-03-20T15:00:00.000Z",
+          provenanceJson: { backend: "baseline", parent_trial_ids: [] },
+        }),
+        createTrial({
+          trialId: "trial_child",
+          createdAt: "2026-03-20T15:01:00.000Z",
+          provenanceJson: {
+            backend: "openrouter",
+            request_messages: [],
+            context_trial_ids: ["trial_root"],
+          },
+        }),
+      ]),
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Lineage tree" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open lineage node trial_child" }));
+
+    expect(screen.getByText("Why the selected run behaved that way")).toBeTruthy();
+    expect(navigationState.replace).toHaveBeenCalledWith("/tracks/track_1/trials/trial_child", { scroll: false });
+  });
+
   it("adds hover and focus tooltip text to progress breakdown segments", () => {
     const customTrack: TrackListItem = {
       ...tracks[0],
@@ -870,7 +940,7 @@ describe("DashboardShell", () => {
       initialSelectedTrialId: "trial_2",
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "Back to trial explorer" }));
+    fireEvent.click(screen.getByRole("button", { name: "Back to previous view" }));
 
     await waitFor(() => {
       expect(navigationState.replace).toHaveBeenCalledWith("/tracks/track_1", { scroll: false });
