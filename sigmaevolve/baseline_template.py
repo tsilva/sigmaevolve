@@ -39,8 +39,7 @@ def make_experiment(device, train_ds, val_ds):
         nn.Linear(128, num_classes),
     ).to(device)
 
-    trainable = [parameter for parameter in model.parameters() if parameter.requires_grad]
-    optimizer = torch.optim.Adam(trainable, lr=1e-3)
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
 
     def loss_fn(batch):
         x, y = (tensor.to(device) for tensor in batch)
@@ -78,7 +77,6 @@ def run_epoch(
     total_correct = 0
     total_examples = 0
     predictions: list[torch.Tensor] = []
-
     with context:
         # Iterate over batches
         for batch in loader:
