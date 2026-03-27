@@ -29,16 +29,18 @@ def make_experiment(device, train_ds, val_ds):
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
     val_loader = DataLoader(val_ds, batch_size=batch_size)
 
+    # Create model
     flat_dim = int(train_ds[0][0].numel())
     num_classes = int(train_ds.tensors[1].max().item()) + 1
-
     model = nn.Sequential(
         nn.Flatten(),
         nn.Linear(flat_dim, num_classes),
     ).to(device)
 
+    # Create optimizer
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
 
+    # Create loss function
     def loss_fn(batch):
         x, y = (tensor.to(device) for tensor in batch)
         logits = model(x)

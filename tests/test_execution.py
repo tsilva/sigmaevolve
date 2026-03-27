@@ -504,6 +504,7 @@ def test_run_uses_unbuffered_python_for_child_process(
         train_script_path = Path(command[2])
         runtime_dir = train_script_path.parent / "sigmaevolve"
         seen["runtime_init_exists"] = (runtime_dir / "__init__.py").exists()
+        seen["runtime_init_source"] = (runtime_dir / "__init__.py").read_text()
         seen["runtime_module_exists"] = (
             runtime_dir / "train_script_runtime.py"
         ).exists()
@@ -526,6 +527,7 @@ def test_run_uses_unbuffered_python_for_child_process(
     assert command[1] == "-u"
     assert str(command[2]).endswith("train.py")
     assert seen["runtime_init_exists"] is True
+    assert seen["runtime_init_source"] == ""
     assert seen["runtime_module_exists"] is True
 
 

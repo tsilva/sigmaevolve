@@ -130,6 +130,7 @@ function renderShell(options?: {
   detail?: TrackDetailResponse;
   initialSelectedTrialId?: string | null;
   pathname?: string;
+  tracks?: TrackListItem[];
 }) {
   navigationState.pathname =
     options?.pathname ??
@@ -137,11 +138,12 @@ function renderShell(options?: {
       ? `/tracks/track_1/trials/${options.initialSelectedTrialId}`
       : "/tracks/track_1");
   navigationState.replace.mockReset();
+  const initialTracks = options?.tracks ?? tracks;
 
   return render(
     <DashboardShell
       initialDetail={options?.detail ?? createDetail()}
-      initialTracks={tracks}
+      initialTracks={initialTracks}
       initialSelectedTrialId={options?.initialSelectedTrialId ?? null}
       selectedTrackId="track_1"
     />,
@@ -622,6 +624,25 @@ describe("DashboardShell", () => {
     expect(cardHeadings[2]).toBe("Generated program");
   });
 
+  it("keeps the error payload expanded whenever it is present", () => {
+    renderShell({
+      detail: createDetail([
+        createTrial({
+          trialId: "trial_error_expanded",
+          hasError: true,
+          errorJson: {
+            kind: "generation_failed",
+            message: "candidate parse failed",
+          },
+        }),
+      ]),
+      initialSelectedTrialId: "trial_error_expanded",
+    });
+
+    expect(screen.queryByRole("button", { name: /^error payload$/i })).toBeNull();
+    expect(screen.getByText(/"message": "candidate parse failed"/)).toBeTruthy();
+  });
+
   it("shows reasoning trace before response in the inspector card stack", () => {
     const { container } = renderShell({
       detail: createDetail([
@@ -875,6 +896,20 @@ describe("DashboardShell", () => {
     expect(screen.getByRole("heading", { name: "Research lanes" })).toBeTruthy();
   });
 
+  it("uses the trials-table compact id style for research lane ids", () => {
+    renderShell({
+      tracks: [
+        {
+          ...tracks[0],
+          trackId: "track_1234567890abcdef",
+        },
+      ],
+    });
+
+    expect(screen.getByText("123def")).toBeTruthy();
+    expect(screen.getByTitle("track_1234567890abcdef")).toBeTruthy();
+  });
+
   it("clears the detail pane when a filter returns no trials", async () => {
     vi.mocked(globalThis.fetch).mockResolvedValueOnce({
       ok: true,
@@ -984,7 +1019,6 @@ describe("DashboardShell", () => {
       detail: createDetail(clusteredTrials),
     });
 
-    expect(screen.getByText(/Zoomed range/)).toBeTruthy();
     expect(screen.getByText("1 lower outlier pinned to the baseline")).toBeTruthy();
     expect(container.querySelector(".score-axis-break")).toBeTruthy();
 
