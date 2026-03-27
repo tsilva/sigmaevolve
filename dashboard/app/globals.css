@@ -188,6 +188,7 @@ button {
 .trial-card-top,
 .overview-hero,
 .analysis-card-header,
+.collapsible-section-header,
 .toolbar-row,
 .inspector-hero {
   display: flex;
@@ -200,6 +201,7 @@ button {
 .trial-card-top > *,
 .overview-hero > *,
 .analysis-card-header > *,
+.collapsible-section-header > *,
 .toolbar-row > *,
 .inspector-hero > * {
   min-width: 0;
@@ -367,6 +369,10 @@ button {
   background: transparent;
   text-align: left;
   cursor: pointer;
+}
+
+.collapsible-section-header {
+  cursor: default;
 }
 
 .collapsible-section-copy {

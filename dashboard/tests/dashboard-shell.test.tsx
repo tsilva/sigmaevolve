@@ -442,7 +442,6 @@ describe("DashboardShell", () => {
       initialSelectedTrialId: "trial_generation_failed",
     });
 
-    toggleSection("Run timeline");
     toggleSection("System prompt");
     toggleSection("User prompt");
     toggleSection("Raw LLM response");
@@ -531,8 +530,6 @@ describe("DashboardShell", () => {
       initialSelectedTrialId: "trial_generation_passed",
     });
 
-    toggleSection("Run timeline");
-
     expect(screen.getByText("Generation assertions")).toBeTruthy();
     expect(screen.getByText("Passed")).toBeTruthy();
     expect(screen.queryByText("Assertion failures")).toBeNull();
@@ -559,8 +556,6 @@ describe("DashboardShell", () => {
       ]),
       initialSelectedTrialId: "trial_provenance",
     });
-
-    toggleSection("Generation provenance");
 
     expect(screen.getByText("Generation provenance")).toBeTruthy();
     const subsectionLabels = Array.from(container.querySelectorAll(".trial-summary-subsection-label")).map(
@@ -600,8 +595,6 @@ describe("DashboardShell", () => {
       initialSelectedTrialId: "trial_launcher",
     });
 
-    toggleSection("Generation provenance");
-
     const subsectionLabels = Array.from(container.querySelectorAll(".trial-summary-subsection-label")).map(
       (element) => element.textContent,
     );
@@ -636,8 +629,6 @@ describe("DashboardShell", () => {
       initialSelectedTrialId: "trial_wandb",
     });
 
-    toggleSection("Generation provenance");
-
     expect(screen.queryByText("Wandb Project")).toBeNull();
     expect(screen.queryByText("sigmaevolve")).toBeNull();
     expect(screen.queryByText("Wandb Entity")).toBeNull();
@@ -656,21 +647,29 @@ describe("DashboardShell", () => {
     expect(wandbLink.textContent).toBe("W&B");
   });
 
-  it("renders inspector sections collapsed by default and lets them expand", () => {
+  it("keeps the summary sections open and only collapses the lower inspector cards by default", () => {
     renderShell({
-      initialSelectedTrialId: "trial_2",
+      detail: createDetail([
+        createTrial({
+          trialId: "trial_fixed_sections",
+          provenanceJson: null,
+        }),
+      ]),
+      initialSelectedTrialId: "trial_fixed_sections",
     });
 
-    expect(screen.queryByText("Trial ID")).toBeNull();
-    expect(screen.queryByText("Queued")).toBeNull();
+    expect(screen.queryByRole("button", { name: /^overview$/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^metrics$/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^run timeline$/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^generation provenance$/i })).toBeNull();
+    expect(screen.getByText("Trial ID")).toBeTruthy();
+    expect(screen.getByText("Dispatch Attempts")).toBeTruthy();
+    expect(screen.getByText("Queued")).toBeTruthy();
+    expect(screen.getByText("No provenance payload recorded.")).toBeTruthy();
     expect(screen.queryByText("No raw response recorded.")).toBeNull();
 
-    toggleSection("Overview");
-    toggleSection("Run timeline");
     toggleSection("Raw LLM response");
 
-    expect(screen.getByText("Trial ID")).toBeTruthy();
-    expect(screen.getByText("Queued")).toBeTruthy();
     expect(screen.getByText("No raw response recorded.")).toBeTruthy();
   });
 

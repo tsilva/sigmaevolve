@@ -47,8 +47,9 @@ class EvolvedModel(torch.nn.Module):
         flat_dim = int(np.prod(input_shape))
         hidden_dim_1, hidden_dim_2 = model_config["hidden_dims"]
 
-        # Build the baseline MLP in a single sequential stack.
+        # Keep the baseline as an MLP while preserving the original input shape.
         self.network = torch.nn.Sequential(
+            torch.nn.Flatten(),
             torch.nn.Linear(flat_dim, hidden_dim_1),
             torch.nn.ReLU(),
             torch.nn.Linear(hidden_dim_1, hidden_dim_2),
@@ -120,7 +121,9 @@ def configure_training_policy(*, num_epochs):
         "early_stopping_patience": training_policy["early_stopping_patience"],
     }
 
+
 # EVOLVE-BLOCK-END
+
 
 class TrainScriptContractError(RuntimeError):
     pass
@@ -175,22 +178,32 @@ def read_split(path):
 
 
 def prepare_feature_tensor(features, *, input_shape=None):
-    del input_shape
-
-    # Reject flat inputs before reshaping them into model features.
+    # Reject flat inputs before converting them into model features.
     if features.ndim < 2:
         raise TrainScriptContractError(
             "training features must include at least one non-batch dimension"
         )
 
-    flat_features = features.reshape(int(features.shape[0]), -1)
-    tensor = torch.from_numpy(flat_features)
-    return (int(flat_features.shape[1]),), tensor.contiguous()
+    feature_shape = tuple(int(dimension) for dimension in features.shape[1:])
+    if input_shape is not None and tuple(input_shape) != feature_shape:
+        raise TrainScriptContractError(
+            "validation features must match the training feature shape"
+        )
+
+    tensor = torch.from_numpy(features)
+    return feature_shape, tensor.contiguous()
+
 
 def normalize_feature_tensors(train_x, validation_x):
-    # Reject tensors that were not flattened into feature matrices.
-    if train_x.ndim != 2 or validation_x.ndim != 2:
-        raise TrainScriptContractError("feature tensors must be 2D after flattening")
+    # Reject tensors that do not preserve the same non-batch feature shape.
+    if train_x.ndim < 2 or validation_x.ndim < 2:
+        raise TrainScriptContractError(
+            "feature tensors must include a batch dimension and feature dimensions"
+        )
+    if train_x.shape[1:] != validation_x.shape[1:]:
+        raise TrainScriptContractError(
+            "training and validation feature tensors must share the same shape"
+        )
 
     mean = train_x.mean(dim=0, keepdim=True)
     std = train_x.std(
