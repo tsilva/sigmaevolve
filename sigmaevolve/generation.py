@@ -26,21 +26,29 @@ from sigmaevolve.core import (
     compute_script_hash,
     normalize_source,
 )
+from sigmaevolve.script_spec import (
+    EvolveBlock,
+    ScriptSpecError,
+    is_evolve_marker_line,
+    parse_script_spec,
+    parse_source_layout,
+    require_script_spec,
+)
 
-_BASELINE_TEMPLATE_PATH = Path(__file__).with_name("baseline_template.py")
+_BASELINES_DIR = Path(__file__).with_name("baselines")
+_DEFAULT_BASELINE_PATH = _BASELINES_DIR / "mnist.py"
 
 
-def build_baseline_train_script() -> str:
-    template_source = _BASELINE_TEMPLATE_PATH.read_text(encoding="utf-8")
+def build_baseline_train_script(source_path: str | Path | None = None) -> str:
+    baseline_path = Path(source_path) if source_path is not None else _DEFAULT_BASELINE_PATH
+    template_source = baseline_path.read_text(encoding="utf-8")
+    require_script_spec(template_source)
+    parse_source_layout(template_source)
     return normalize_source(template_source)
 
 
 EVOLVE_BLOCK_START = "# EVOLVE-BLOCK-START"
 EVOLVE_BLOCK_END = "# EVOLVE-BLOCK-END"
-
-_EVOLVE_BLOCK_PATTERN = re.compile(
-    rf"(?ms)^[ \t]*{re.escape(EVOLVE_BLOCK_START)}\n(.*?)^[ \t]*{re.escape(EVOLVE_BLOCK_END)}\n?"
-)
 
 
 class EvolveBlockError(ValueError):
@@ -71,10 +79,25 @@ MAX_NEGATIVE_STDERR_CHARS = 120
 
 def _contains_evolve_block_marker_line(text: str) -> bool:
     for line in text.splitlines():
-        stripped_line = line.strip()
-        if stripped_line in {EVOLVE_BLOCK_START, EVOLVE_BLOCK_END}:
+        if is_evolve_marker_line(line):
             return True
     return False
+
+
+def _candidate_kind_from_provenance(
+    provenance_json: dict[str, Any] | None,
+) -> str:
+    payload = dict(provenance_json or {})
+    candidate_kind = payload.get("candidate_kind")
+    if isinstance(candidate_kind, str) and candidate_kind.strip():
+        return candidate_kind
+    return CANDIDATE_KIND_STRATEGY_V1
+
+
+def _candidate_kind_from_context(context_trials: list[TrialSummary]) -> str:
+    for trial in context_trials:
+        return _candidate_kind_from_provenance(trial.provenance_json)
+    return CANDIDATE_KIND_STRATEGY_V1
 
 
 def _line_indent(line: str) -> str:
@@ -131,21 +154,12 @@ def _find_matching_line_ranges(
 
 
 def split_evolve_blocks(source: str) -> tuple[list[str], list[str]]:
-    normalized = normalize_source(source)
-    matches = list(_EVOLVE_BLOCK_PATTERN.finditer(normalized))
-    if not matches:
-        raise EvolveBlockError("source must contain at least one evolve block")
+    try:
+        layout = parse_source_layout(source)
+    except ScriptSpecError as exc:
+        raise EvolveBlockError(str(exc)) from exc
 
-    immutable_parts: list[str] = []
-    block_payloads: list[str] = []
-    cursor = 0
-    for match in matches:
-        block_start, block_end = match.span(1)
-        immutable_parts.append(normalized[cursor:block_start])
-        block_payloads.append(match.group(1))
-        cursor = block_end
-    immutable_parts.append(normalized[cursor:])
-    return immutable_parts, block_payloads
+    return layout.immutable_parts, [block.payload for block in layout.blocks]
 
 
 def _merge_payloads(immutable_parts: list[str], payloads: list[str]) -> str:
@@ -308,26 +322,60 @@ def parse_search_replace_blocks(response_text: str) -> list[SearchReplaceBlock]:
     return blocks
 
 
+def _find_evolve_block_matches(
+    source: str,
+    search_lines: list[str],
+) -> list[tuple[int, int, str, str]]:
+    try:
+        layout = parse_source_layout(source)
+    except ScriptSpecError as exc:
+        raise EvolveBlockError(str(exc)) from exc
+
+    source_lines = normalize_source(source).splitlines(keepends=True)
+    matches: list[tuple[int, int, str, str]] = []
+    for block in layout.blocks:
+        block_source_lines = source_lines[
+            block.payload_start_line : block.payload_end_line
+        ]
+        for start, end, block_indent in _find_matching_line_ranges(
+            block_source_lines,
+            search_lines,
+        ):
+            matches.append(
+                (
+                    block.payload_start_line + start,
+                    block.payload_start_line + end,
+                    block_indent,
+                    block.name,
+                )
+            )
+    return matches
+
+
 def apply_search_replace_blocks(
     current_source: str, blocks: list[SearchReplaceBlock]
 ) -> str:
-    updated_lines = normalize_source(current_source).splitlines(keepends=True)
+    updated_source = normalize_source(current_source)
     for index, block in enumerate(blocks, start=1):
+        updated_lines = updated_source.splitlines(keepends=True)
         search_lines = normalize_source(block.search).splitlines(keepends=True)
         replace_lines, _ = _canonicalize_patch_text(block.replace)
-        matches = _find_matching_line_ranges(updated_lines, search_lines)
+        matches = _find_evolve_block_matches(updated_source, search_lines)
         if not matches:
             raise EvolveBlockError(
-                f"SEARCH block {index} did not match the current program"
+                f"SEARCH block {index} did not match any evolve block in the current program"
             )
         if len(matches) > 1:
+            block_names = ", ".join(sorted({match[3] for match in matches}))
             raise EvolveBlockError(
-                f"SEARCH block {index} matched multiple locations in the current program"
+                "SEARCH block "
+                f"{index} matched multiple locations across evolve blocks: {block_names}"
             )
 
-        start, end, indent = matches[0]
+        start, end, indent, _ = matches[0]
         updated_lines[start:end] = _reindent_lines(replace_lines, indent)
-    return normalize_source("".join(updated_lines))
+        updated_source = normalize_source("".join(updated_lines))
+    return updated_source
 
 
 def materialize_candidate_source(current_source: str, generated_source: str) -> str:
@@ -407,7 +455,7 @@ class FixedGenerationBackend:
             provenance_json={
                 "backend": "openrouter",
                 "model": self.model_name,
-                "candidate_kind": CANDIDATE_KIND_STRATEGY_V1,
+                "candidate_kind": _candidate_kind_from_context(context_trials),
                 "generation_index": generation_index,
                 "duplicate_retry_count": duplicate_retry_count,
                 "generation_config": {
@@ -703,19 +751,36 @@ class OpenRouterGenerationBackend:
 
     def _strip_evolve_block_tags(self, source: str) -> str:
         lines = source.splitlines()
-        filtered_lines = [
-            line for line in lines if line not in {EVOLVE_BLOCK_START, EVOLVE_BLOCK_END}
-        ]
+        filtered_lines = [line for line in lines if not is_evolve_marker_line(line)]
         return "\n".join(filtered_lines) + ("\n" if source.endswith("\n") else "")
+
+    def _render_compact_evolve_blocks(self, blocks: list[EvolveBlock]) -> str:
+        show_region_names = len(blocks) > 1 or any(
+            block.name != "main" for block in blocks
+        )
+        sections: list[str] = []
+        for block in blocks:
+            body = block.payload.rstrip()
+            if show_region_names:
+                section_lines = [f"# EVOLVE-REGION: {block.name}"]
+                if body:
+                    section_lines.append(body)
+                sections.append("\n".join(section_lines))
+                continue
+            sections.append(body)
+
+        compact_source = "\n\n".join(
+            section for section in sections if section
+        ).rstrip()
+        return f"{compact_source}\n" if compact_source else ""
 
     def _extract_compact_evolve_source(self, source: str) -> str:
         try:
-            payloads = extract_evolve_block_payloads(source)
-        except EvolveBlockError:
+            layout = parse_source_layout(source)
+        except ScriptSpecError:
             return self._strip_evolve_block_tags(source)
 
-        compact_source = "\n\n".join(payloads).rstrip()
-        return f"{compact_source}\n" if compact_source else ""
+        return self._render_compact_evolve_blocks(layout.blocks)
 
     def _render_trial_prompt_block(
         self,
@@ -796,6 +861,7 @@ class OpenRouterGenerationBackend:
         self,
         track: TrackRecord,
         dataset_manifest: DatasetManifest,
+        current_program: TrialSummary | None,
     ) -> str:
         prompt_context: dict[str, object] = {
             "dataset_id": track.dataset_id,
@@ -813,6 +879,14 @@ class OpenRouterGenerationBackend:
         if dataset_metadata:
             prompt_context["dataset_metadata"] = dataset_metadata
 
+        if current_program is not None:
+            script_spec = parse_script_spec(current_program.source)
+            if script_spec is not None:
+                prompt_context["script_runner"] = script_spec.runner
+                prompt_context["script_evolution_task"] = script_spec.evolution.task
+                if script_spec.evolution.objective is not None:
+                    prompt_context["script_objective"] = script_spec.evolution.objective
+
         return "\n".join(self._format_mapping(prompt_context))
 
     def _build_user_prompt_text(
@@ -824,9 +898,12 @@ class OpenRouterGenerationBackend:
         selected_config: dict[str, object],
     ) -> str:
         del selected_config
-        task_context_text = self._build_prompt_context_text(track, dataset_manifest)
-
         current_program = context_trials[0] if context_trials else None
+        task_context_text = self._build_prompt_context_text(
+            track,
+            dataset_manifest,
+            current_program,
+        )
         prior_programs = context_trials[1:] if len(context_trials) > 1 else []
         prior_programs_text = "None."
         if prior_programs:
@@ -1018,7 +1095,7 @@ class OpenRouterGenerationBackend:
         provenance_json: dict[str, object] = {
             "backend": "openrouter",
             "model": str(context.selected_config["model"]),
-            "candidate_kind": CANDIDATE_KIND_STRATEGY_V1,
+            "candidate_kind": _candidate_kind_from_context(context.context_trials),
             "generation_config": dict(context.selected_config),
             "generation_index": generation_index,
             "duplicate_retry_count": duplicate_retry_count,
@@ -1426,11 +1503,10 @@ class GenerationCoordinator:
         sampling_seed: int,
         generation_index: int,
     ) -> GenerationContextSelection:
-        # Prefer finished strategy variants that already have scored metrics.
+        # Prefer finished successful variants that already have scored metrics.
         candidates = self.repository.sample_trial_context(
             track_id,
             limit=self.repository.count_trials(track_id),
-            candidate_kind=CANDIDATE_KIND_STRATEGY_V1,
         )
         if not candidates:
             return GenerationContextSelection(context_trials=[], sampled_candidates=[])
@@ -1567,7 +1643,7 @@ class GenerationCoordinator:
         sampling_seed: int,
         generation_index: int,
     ) -> GenerationContextSelection:
-        # Use successful strategy trials first whenever any exist.
+        # Use successful scored trials first whenever any exist.
         successful_selection = self.sample_successful_context_selection(
             track_id,
             sampling_seed,
@@ -1714,7 +1790,7 @@ class GenerationCoordinator:
         return {
             "backend": "openrouter",
             "model": model,
-            "candidate_kind": CANDIDATE_KIND_STRATEGY_V1,
+            "candidate_kind": _candidate_kind_from_context(context_trials),
             "generation_config": generation_backend,
             "generation_index": generation_index,
             "duplicate_retry_count": duplicate_retry_count,

@@ -1,4 +1,5 @@
 from sigmaevolve.core import (
+    CANDIDATE_KIND_SELFCONTAINED_SCRIPT_V1,
     CANDIDATE_KIND_STRATEGY_V1,
     DatasetManifest,
     DatasetRecord,
@@ -29,6 +30,7 @@ from sigmaevolve.storage import SQLAlchemyRepository
 
 __all__ = [
     "ArrayDatasetProvider",
+    "CANDIDATE_KIND_SELFCONTAINED_SCRIPT_V1",
     "CANDIDATE_KIND_STRATEGY_V1",
     "DatasetManifest",
     "DatasetRecord",

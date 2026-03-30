@@ -9,7 +9,7 @@ from typing import Any, Callable, Protocol
 
 from sigmaevolve.core import (
     ACTIVE_STATUSES,
-    CANDIDATE_KIND_STRATEGY_V1,
+    CANDIDATE_KIND_SELFCONTAINED_SCRIPT_V1,
     OUTCOME_STALE,
     DatasetRecord,
     ReconcileResult,
@@ -23,6 +23,11 @@ from sigmaevolve.generation import (
     GenerationCoordinator,
     OpenRouterGenerationBackend,
     build_baseline_train_script,
+)
+from sigmaevolve.script_spec import (
+    apply_script_policy_defaults,
+    parse_source_layout,
+    require_script_spec,
 )
 from sigmaevolve.storage import SQLAlchemyRepository
 
@@ -1031,17 +1036,38 @@ class EvolutionSystem:
         self.dataset_manager.prepare(dataset_id)
         return self.dataset_manager.to_record(dataset_id)
 
-    def create_track(self, dataset_id: str, policy_json: dict) -> TrackRecord:
+    def create_track(
+        self,
+        dataset_id: str,
+        policy_json: dict,
+        *,
+        seed_source: str | None = None,
+    ) -> TrackRecord:
         # Refuse to create tracks against datasets whose on-disk manifests are not valid.
         self.dataset_manager.verify(dataset_id)
 
+        baseline_source = (
+            seed_source if seed_source is not None else build_baseline_train_script()
+        )
+        script_spec = require_script_spec(baseline_source)
+        parse_source_layout(baseline_source)
+        if script_spec.dataset_id != dataset_id:
+            raise ValueError(
+                "Seed source dataset_id does not match the requested dataset: "
+                f"{script_spec.dataset_id!r} != {dataset_id!r}."
+            )
+        effective_policy = apply_script_policy_defaults(
+            dict(policy_json or {}),
+            script_spec,
+        )
+        baseline_model = script_spec.runner
+
         # Persist the normalized track policy before seeding the baseline trial.
-        policy = TrackPolicy.from_dict(policy_json)
+        policy = TrackPolicy.from_dict(effective_policy)
         track = self.repository.create_track(
             dataset_id=dataset_id,
             policy_json=policy.to_dict(),
         )
-        baseline_source = build_baseline_train_script()
 
         # Seed the track with the fixed baseline candidate exactly once.
         self.repository.create_queued_trial_if_absent(
@@ -1049,8 +1075,8 @@ class EvolutionSystem:
             source=baseline_source,
             provenance_json={
                 "backend": "baseline",
-                "model": "compact-fixed-trainer",
-                "candidate_kind": CANDIDATE_KIND_STRATEGY_V1,
+                "model": baseline_model,
+                "candidate_kind": CANDIDATE_KIND_SELFCONTAINED_SCRIPT_V1,
                 "parent_trial_ids": [],
             },
         )

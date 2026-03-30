@@ -12,6 +12,7 @@ from sigmaevolve.core import DatasetManifest, TrackRecord, TrialSummary, now_utc
 from sigmaevolve.generation import (
     EvolveBlockError,
     OpenRouterGenerationBackend,
+    SearchReplaceBlock,
     apply_search_replace_blocks,
     assert_only_evolve_blocks_changed,
     build_baseline_train_script,
@@ -28,6 +29,7 @@ from sigmaevolve.generation import (
     parse_search_replace_blocks,
     replace_evolve_block_payloads,
 )
+from tests.support import build_selfcontained_train_script
 
 
 def _track_with_pool():
@@ -900,6 +902,72 @@ def test_assert_only_evolve_blocks_changed_rejects_immutable_changes():
     # Reject any change that touches immutable text outside evolve blocks.
     with pytest.raises(EvolveBlockError, match="immutable text"):
         assert_only_evolve_blocks_changed(source, invalid)
+
+
+def test_apply_search_replace_blocks_matches_named_evolve_blocks_only():
+    source = "\n".join(
+        [
+            "# /// sigmaevolve",
+            "# version = 1",
+            '# runner = "python_train_v1"',
+            "#",
+            "# [evolution]",
+            '# task = "Maximize validation accuracy while keeping the script runnable."',
+            "# ///",
+            "",
+            "# EVOLVE-BLOCK-START: model",
+            "hidden = 32",
+            "# EVOLVE-BLOCK-END: model",
+            "",
+            "# EVOLVE-BLOCK-START: training",
+            "batch_size = 64",
+            "# EVOLVE-BLOCK-END: training",
+            "",
+        ]
+    )
+
+    updated = apply_search_replace_blocks(
+        source,
+        [SearchReplaceBlock(search="batch_size = 64\n", replace="batch_size = 32\n")],
+    )
+
+    assert "batch_size = 32" in updated
+    assert "hidden = 32" in updated
+
+
+def test_apply_search_replace_blocks_rejects_header_edits():
+    source = build_selfcontained_train_script()
+
+    with pytest.raises(EvolveBlockError, match="did not match any evolve block"):
+        apply_search_replace_blocks(
+            source,
+            [
+                SearchReplaceBlock(
+                    search='# runner = "python_train_v1"\n',
+                    replace='# runner = "shell"\n',
+                )
+            ],
+        )
+
+
+def test_compact_evolve_source_labels_named_regions():
+    source = "\n".join(
+        [
+            "# EVOLVE-BLOCK-START: model",
+            "hidden = 32",
+            "# EVOLVE-BLOCK-END: model",
+            "",
+            "# EVOLVE-BLOCK-START: training",
+            "batch_size = 64",
+            "# EVOLVE-BLOCK-END: training",
+            "",
+        ]
+    )
+
+    compact = OpenRouterGenerationBackend()._extract_compact_evolve_source(source)
+
+    assert "# EVOLVE-REGION: model" in compact
+    assert "# EVOLVE-REGION: training" in compact
 
 
 def test_materialize_candidate_source_applies_search_replace_blocks():

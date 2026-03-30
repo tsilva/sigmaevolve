@@ -19,57 +19,32 @@ from sigmaevolve.modal import (
     sync_dataset_to_modal,
 )
 from sigmaevolve.orchestration import InlineRunnerLauncher, build_system
+from sigmaevolve.script_spec import (
+    ScriptSpecError,
+    parse_source_layout,
+    require_script_spec,
+)
 from sigmaevolve.storage import classify_error_type
 
 logger = logging.getLogger(f"{__name__}.stderr")
 stdout_logger = logging.getLogger(f"{__name__}.stdout")
 
 
-def load_track_definition(track_file: str) -> tuple[str, dict[str, Any]]:
-    # Load and validate the top-level track definition envelope.
-    parsed = json.loads(Path(track_file).read_text())
-
-    # Reject non-object track definitions before reading any fields.
-    if not isinstance(parsed, dict):
-        raise argparse.ArgumentTypeError("Track file must contain a JSON object.")
-
-    # Extract the required dataset identifier before reading any policy fields.
-    dataset_id = parsed.get("dataset_id")
-
-    # Reject missing or empty dataset identifiers early.
-    if not isinstance(dataset_id, str) or not dataset_id:
+def load_script_definition(script_path: str) -> tuple[str, dict[str, Any], str]:
+    path = Path(script_path)
+    source_text = path.read_text(encoding="utf-8")
+    if source_text.lstrip().startswith("{"):
         raise argparse.ArgumentTypeError(
-            "Track file must include a non-empty string dataset_id."
+            "create-track expects a self-contained script path, not a JSON track file."
         )
 
-    # Reject the removed track label field so new configs only use the reduced contract.
-    if "name" in parsed:
-        raise argparse.ArgumentTypeError("Track file name is no longer supported.")
+    try:
+        script_spec = require_script_spec(source_text)
+        parse_source_layout(source_text)
+    except ScriptSpecError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
 
-    # Reject the removed legacy policy wrapper before reading policy fields.
-    if "policy_json" in parsed:
-        raise argparse.ArgumentTypeError(
-            "Track file policy_json is no longer supported."
-        )
-
-    # Support either an explicit policy object or current top-level policy fields.
-    policy = parsed.get("policy")
-
-    # Validate object-shaped policy payloads before copying them.
-    if policy is not None:
-        # Reject malformed explicit policy objects before copying them.
-        if not isinstance(policy, dict):
-            raise argparse.ArgumentTypeError("Track file policy must be a JSON object.")
-        policy_json = dict(policy)
-
-    # Preserve the current top-level track policy shape when no explicit policy object is present.
-    else:
-        excluded_fields = {"dataset_id"}
-        policy_json = {
-            key: value for key, value in parsed.items() if key not in excluded_fields
-        }
-
-    return dataset_id, policy_json
+    return script_spec.dataset_id, dict(script_spec.track_policy), source_text
 
 
 def positive_int(value: str) -> int:
@@ -102,8 +77,11 @@ class CommandSpec:
 
 def _configure_create_track_parser(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
-        "track_file",
-        help="Path to a JSON file containing dataset_id and track policy fields.",
+        "script_path",
+        help=(
+            "Path to a self-contained train.py script with sigmaevolve metadata "
+            "comments describing the dataset, track policy, and evolution task."
+        ),
     )
 
 
@@ -653,8 +631,8 @@ def _suggest_launch_command(args, track_id: str, *, count: int = 1) -> str:
 
 def cmd_create_track(args) -> int:
     system = _make_system(args)
-    logger.info("Loading track definition.")
-    dataset_id, policy = load_track_definition(args.track_file)
+    logger.info("Loading script definition.")
+    dataset_id, policy, seed_source = load_script_definition(args.script_path)
     logger.info("Ensuring dataset %s is prepared.", dataset_id)
     dataset, prepared_now = _ensure_dataset_prepared(system, dataset_id)
 
@@ -667,7 +645,7 @@ def cmd_create_track(args) -> int:
     logger.info(
         "Creating track for dataset %s and seeding the baseline trial.", dataset_id
     )
-    track = system.create_track(dataset_id, policy)
+    track = system.create_track(dataset_id, policy, seed_source=seed_source)
     logger.info("Created track %s.", track.track_id)
     logger.info("Run it with:\n%s", _suggest_launch_command(args, track.track_id))
     return 0

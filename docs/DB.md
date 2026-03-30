@@ -13,7 +13,7 @@ Dataset manifests are no longer registered in the database. Dataset preparation,
 
 ## `tracks`
 
-Purpose: top-level evolution tracks. A track binds one dataset identifier to one normalized policy configuration and groups all queued, active, and terminal trials for that configuration.
+Purpose: top-level evolution tracks. A track binds one dataset identifier to one normalized policy configuration and groups all queued, active, and terminal trials for that configuration. The current `create-track` flow derives both values from the uploaded self-contained script metadata block rather than from a separate JSON track file.
 
 | Column | Type | Nullable | Description |
 | --- | --- | --- | --- |
@@ -35,6 +35,8 @@ Persisted keys:
 | `max_dispatch_retries` | Maximum number of dispatch attempts before a dispatching trial is marked stale instead of requeued. |
 | `sampling_seed` | RNG seed used when sampling successful parent trials for generation context. |
 | `generation_backend` | OpenRouter generation settings. The persisted shape does not include a `backend` field. |
+
+When a track is created from a self-contained script, these persisted values normally come from the script metadata `[track]` table, optionally merged with script-owned defaults such as `defaults.epochs`.
 
 ### `tracks.policy_json.generation_backend`
 
@@ -84,7 +86,7 @@ Required for LLM-generated non-baseline trials:
 | --- | --- |
 | `backend` | Generation backend identifier. Baseline trials use `baseline`; generated trials use `openrouter`. |
 | `model` | Model name used for generation. |
-| `candidate_kind` | Candidate family identifier. |
+| `candidate_kind` | Candidate family identifier. The bundled MNIST baseline and uploaded self-contained scripts use `selfcontained_script_v1`. Legacy rows may still contain `strategy_v1`. |
 | `generation_config` | Concrete generation settings captured for the request. |
 | `request_messages` | Recorded prompt messages sent through the LLM request path. This is the required prompt provenance for non-baseline trials. |
 | `context_trial_ids` | Parent or context trial ids used to build the generation prompt. |

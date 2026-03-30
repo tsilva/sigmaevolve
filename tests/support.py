@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import json
+from typing import Any
+
 from sigmaevolve.core import CANDIDATE_KIND_STRATEGY_V1
+from sigmaevolve.generation import build_baseline_train_script
 
 
 class RecordingLauncherDouble:
@@ -84,3 +88,104 @@ def make_generation_trace(
         "assertions_passed": assertions_passed,
         "assertion_failures": [],
     }
+
+
+def _render_toml_scalar(value: Any) -> str:
+    if isinstance(value, str):
+        return json.dumps(value)
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int | float):
+        return str(value)
+    if isinstance(value, list):
+        rendered_items = ", ".join(_render_toml_scalar(item) for item in value)
+        return f"[{rendered_items}]"
+    raise TypeError(f"Unsupported TOML scalar value: {value!r}")
+
+
+def _render_toml_table_lines(
+    table_name: str,
+    payload: dict[str, Any],
+    *,
+    array_item: bool = False,
+) -> list[str]:
+    lines: list[str] = []
+    header = f"[[{table_name}]]" if array_item else f"[{table_name}]"
+    lines.append(f"# {header}")
+
+    scalar_items: list[tuple[str, Any]] = []
+    nested_tables: list[tuple[str, dict[str, Any]]] = []
+    array_tables: list[tuple[str, list[dict[str, Any]]]] = []
+    for key, value in payload.items():
+        if isinstance(value, dict):
+            nested_tables.append((key, value))
+            continue
+        if (
+            isinstance(value, list)
+            and value
+            and all(isinstance(item, dict) for item in value)
+        ):
+            array_tables.append((key, value))
+            continue
+        scalar_items.append((key, value))
+
+    for key, value in scalar_items:
+        lines.append(f"# {key} = {_render_toml_scalar(value)}")
+
+    for key, value in nested_tables:
+        lines.append("#")
+        lines.extend(_render_toml_table_lines(f"{table_name}.{key}", value))
+
+    for key, values in array_tables:
+        for item in values:
+            lines.append("#")
+            lines.extend(
+                _render_toml_table_lines(f"{table_name}.{key}", item, array_item=True)
+            )
+
+    return lines
+
+
+def build_selfcontained_train_script(
+    source: str | None = None,
+    *,
+    dataset_id: str = "mnist:v1",
+    task: str = "Maximize validation accuracy while keeping the script runnable.",
+    epochs: int | None = None,
+    track_policy: dict[str, Any] | None = None,
+) -> str:
+    body = source if source is not None else build_baseline_train_script()
+    body_lines = body.splitlines(keepends=True)
+    if body_lines and body_lines[0].startswith("# /// sigmaevolve"):
+        for index, line in enumerate(body_lines[1:], start=1):
+            if line.rstrip("\n") == "# ///":
+                body = "".join(body_lines[index + 1 :])
+                break
+
+    metadata_lines = [
+        "# /// sigmaevolve",
+        "# version = 1",
+        f'# dataset_id = "{dataset_id}"',
+        '# runner = "python_train_v1"',
+    ]
+    if track_policy:
+        metadata_lines.extend(["#"])
+        metadata_lines.extend(_render_toml_table_lines("track", track_policy))
+    if epochs is not None:
+        metadata_lines.extend(
+            [
+                "#",
+                "# [defaults]",
+                f"# epochs = {epochs}",
+            ]
+        )
+    metadata_lines.extend(
+        [
+            "#",
+            "# [evolution]",
+            f'# task = "{task}"',
+            "# ///",
+            "",
+        ]
+    )
+    return "\n".join(metadata_lines) + body
