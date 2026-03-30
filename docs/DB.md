@@ -36,7 +36,7 @@ Persisted keys:
 | `sampling_seed` | RNG seed used when sampling successful parent trials for generation context. |
 | `generation_backend` | OpenRouter generation settings. The persisted shape does not include a `backend` field. |
 
-When a track is created from a self-contained script, these persisted values normally come from the script metadata `[track]` table, optionally merged with script-owned defaults such as `defaults.epochs`.
+When a track is created from a self-contained script, these persisted values normally come from the script metadata `[track]` table, optionally merged with script-owned defaults such as `defaults.epochs`. Script metadata may reference a repo-defined generation model pool by id; normalization resolves that id into the persisted `model_pool`.
 
 ### `tracks.policy_json.generation_backend`
 
@@ -46,6 +46,7 @@ Common persisted keys:
 | --- | --- |
 | `selection` | Model-pool selection strategy such as `weighted_random`, `random`, or `round_robin`. |
 | `seed` | RNG seed used by stochastic model-pool selection. |
+| `model_pool_id` | Optional id of a repo-defined model-pool config. Present when the track was created from a self-contained script that referenced a named pool. |
 | `model_pool` | List of model config entries. Each entry typically includes `model`, `temperature`, `max_tokens`, `retry_count`, and optionally `probability`. |
 
 Removed policy fields are not supported in the live schema: `scorer_settings`, `sampling_settings`, `modal_gpu_preferences`, and `generation_backend.backend`.

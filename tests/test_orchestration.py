@@ -15,6 +15,7 @@ from sigmaevolve.generation import (
     build_candidate_train_script,
     build_model_block,
 )
+from sigmaevolve.model_pools import MNIST_MODEL_POOL_ID
 from sigmaevolve.orchestration import EvolutionSystem, InlineRunnerLauncher
 from sigmaevolve.storage import classify_error_type
 from tests.support import (
@@ -72,6 +73,9 @@ def test_create_track_seeds_one_baseline_candidate(system):
     )
     assert trials[0].provenance_json["candidate_kind"] == "selfcontained_script_v1"
     assert trials[0].provenance_json["model"] == "python_train_v1"
+    assert (
+        track.policy_json["generation_backend"]["model_pool_id"] == MNIST_MODEL_POOL_ID
+    )
 
 
 def test_create_track_seeds_selfcontained_baseline_candidate(system):

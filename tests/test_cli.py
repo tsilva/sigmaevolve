@@ -16,6 +16,7 @@ from sigmaevolve.core import DEFAULT_GENERATION_MODEL
 from sigmaevolve.datasets import ArrayDatasetProvider
 from sigmaevolve.env import load_env_file, resolve_runtime_config
 from sigmaevolve.generation import build_baseline_train_script
+from sigmaevolve.model_pools import MNIST_MODEL_POOL_ID
 from sigmaevolve.orchestration import build_system
 from sigmaevolve.storage import SQLAlchemyRepository, normalize_database_url
 from tests.support import build_selfcontained_train_script
@@ -152,6 +153,9 @@ def test_cli_create_track_uses_default_generation_model(
     assert track is not None
     assert "max_parallelism" not in track.policy_json
     assert "ready_queue_threshold" not in track.policy_json
+    assert (
+        track.policy_json["generation_backend"]["model_pool_id"] == MNIST_MODEL_POOL_ID
+    )
     pool = track.policy_json["generation_backend"]["model_pool"]
     assert pool[0]["model"] == DEFAULT_GENERATION_MODEL
 
@@ -167,20 +171,7 @@ def test_cli_create_track_from_script_file(tmp_path, patched_cli_system, monkeyp
             track_policy={
                 "generation_backend": {
                     "selection": "round_robin",
-                    "model_pool": [
-                        {
-                            "model": "x-ai/grok-4.1-fast",
-                            "temperature": 0.2,
-                            "max_tokens": 1000,
-                            "retry_count": 1,
-                        },
-                        {
-                            "model": "anthropic/claude-sonnet-4.6",
-                            "temperature": 0.7,
-                            "max_tokens": 2000,
-                            "retry_count": 1,
-                        },
-                    ],
+                    "model_pool_id": MNIST_MODEL_POOL_ID,
                 }
             }
         ),
@@ -192,9 +183,12 @@ def test_cli_create_track_from_script_file(tmp_path, patched_cli_system, monkeyp
     track_id = _track_id_from_stderr(stderr)
     track = SQLAlchemyRepository(db_url).get_track(track_id)
     assert track is not None
+    assert (
+        track.policy_json["generation_backend"]["model_pool_id"] == MNIST_MODEL_POOL_ID
+    )
     pool = track.policy_json["generation_backend"]["model_pool"]
-    assert len(pool) == 2
-    assert pool[1]["model"] == "anthropic/claude-sonnet-4.6"
+    assert len(pool) == 8
+    assert pool[1]["model"] == "google/gemini-3.1-flash-lite-preview"
 
 
 def test_cli_create_track_uses_script_defaults(

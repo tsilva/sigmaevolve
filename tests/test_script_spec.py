@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from sigmaevolve.generation import build_baseline_train_script
+from sigmaevolve.model_pools import MNIST_MODEL_POOL_ID
 from sigmaevolve.script_spec import (
     DEFAULT_OBJECTIVE,
     PYTHON_TRAIN_RUNNER,
@@ -22,6 +23,9 @@ def test_parse_script_spec_reads_bundled_baseline():
     assert spec.runner == PYTHON_TRAIN_RUNNER
     assert spec.defaults == {}
     assert spec.track_policy["epochs"] == 20
+    assert (
+        spec.track_policy["generation_backend"]["model_pool_id"] == MNIST_MODEL_POOL_ID
+    )
 
 
 def test_build_baseline_train_script_accepts_path(tmp_path):
@@ -190,7 +194,7 @@ def test_apply_script_policy_defaults_starts_from_embedded_track_policy():
                 "dispatch_ttl_sec": 180,
                 "generation_backend": {
                     "selection": "round_robin",
-                    "model_pool": [{"model": "test/model", "temperature": 0.1}],
+                    "model_pool_id": MNIST_MODEL_POOL_ID,
                 },
             },
         )
@@ -201,7 +205,7 @@ def test_apply_script_policy_defaults_starts_from_embedded_track_policy():
         "epochs": 9,
         "generation_backend": {
             "selection": "round_robin",
-            "model_pool": [{"model": "test/model", "temperature": 0.1}],
+            "model_pool_id": MNIST_MODEL_POOL_ID,
         },
     }
     assert apply_script_policy_defaults(
@@ -212,7 +216,7 @@ def test_apply_script_policy_defaults_starts_from_embedded_track_policy():
         "epochs": 9,
         "generation_backend": {
             "selection": "weighted_random",
-            "model_pool": [{"model": "test/model", "temperature": 0.1}],
+            "model_pool_id": MNIST_MODEL_POOL_ID,
         },
     }
 
