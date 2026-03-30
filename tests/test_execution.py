@@ -27,7 +27,11 @@ from sigmaevolve.orchestration import (
     InlineRunnerLauncher,
 )
 from sigmaevolve.storage import classify_error_type
-from tests.support import make_generation_trace, make_llm_provenance
+from tests.support import (
+    build_selfcontained_train_script,
+    make_generation_trace,
+    make_llm_provenance,
+)
 
 SUCCESS_BLOCK = build_model_block(
     """
@@ -178,9 +182,13 @@ def build_inline_system(repository, dataset_manager, hard_timeout_sec=5.0):
 
 
 def _create_track(
-    system, policy_json: dict | None = None, dataset_id: str = "mnist:v1"
+    system,
+    policy_json: dict | None = None,
+    dataset_id: str = "mnist:v1",
+    *,
+    seed_source: str | None = None,
 ):
-    return system.create_track(dataset_id, policy_json or {})
+    return system.create_track(dataset_id, policy_json or {}, seed_source=seed_source)
 
 
 def finalize_baseline(system, track_id):
@@ -254,6 +262,30 @@ def test_successful_run_produces_metrics_and_score(repository, dataset_manager):
     assert finished.metrics_json["best_eval_epoch"] == 1
     assert finished.score == finished.metrics_json["accuracy"]
     assert finished.error_json is None
+
+
+def test_selfcontained_seed_script_runs_with_header_default_epochs(
+    repository, dataset_manager
+):
+    system = build_inline_system(repository, dataset_manager, hard_timeout_sec=15.0)
+    system.prepare_dataset("mnist:v1")
+    track = _create_track(
+        system,
+        seed_source=build_selfcontained_train_script(epochs=2),
+    )
+    reserved = system.repository.reserve_trials(
+        track.track_id,
+        max_parallelism=1,
+        dispatch_ttl_sec=60,
+        limit=1,
+    )[0]
+
+    system.launcher.launch_trial(reserved.trial_id, reserved.dispatch_token)
+    finished = system.repository.get_trial(reserved.trial_id)
+
+    assert finished is not None
+    assert finished.outcome_reason == "succeeded"
+    assert finished.metrics_json["eval_count"] == 2
 
 
 def test_build_final_metrics_payload_uses_debug_payload_for_epochs_completed():

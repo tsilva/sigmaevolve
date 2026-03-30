@@ -19,6 +19,7 @@ from sigmaevolve.orchestration import EvolutionSystem, InlineRunnerLauncher
 from sigmaevolve.storage import classify_error_type
 from tests.support import (
     RecordingLauncherDouble,
+    build_selfcontained_train_script,
     make_generation_trace,
     make_llm_provenance,
 )
@@ -31,9 +32,13 @@ def _prepare_repo_dataset(
 
 
 def _create_track(
-    system, policy_json: dict | None = None, dataset_id: str = "mnist:v1"
+    system,
+    policy_json: dict | None = None,
+    dataset_id: str = "mnist:v1",
+    *,
+    seed_source: str | None = None,
 ):
-    return system.create_track(dataset_id, policy_json or {})
+    return system.create_track(dataset_id, policy_json or {}, seed_source=seed_source)
 
 
 def _build_system(repository, dataset_manager, generator, launcher):
@@ -65,7 +70,22 @@ def test_create_track_seeds_one_baseline_candidate(system):
         trials[0].source
         == build_baseline_train_script().replace("\r\n", "\n").rstrip("\n") + "\n"
     )
-    assert trials[0].provenance_json["candidate_kind"] == CANDIDATE_KIND_STRATEGY_V1
+    assert trials[0].provenance_json["candidate_kind"] == "selfcontained_script_v1"
+    assert trials[0].provenance_json["model"] == "python_train_v1"
+
+
+def test_create_track_seeds_selfcontained_baseline_candidate(system):
+    system.prepare_dataset("mnist:v1")
+    seed_source = build_selfcontained_train_script(epochs=7)
+
+    track = _create_track(system, seed_source=seed_source)
+
+    trials = system.repository.list_trials(track.track_id)
+    assert len(trials) == 1
+    assert trials[0].source == seed_source
+    assert trials[0].provenance_json["candidate_kind"] == "selfcontained_script_v1"
+    assert trials[0].provenance_json["model"] == "python_train_v1"
+    assert track.policy_json["epochs"] == 7
 
 
 def test_reconcile_generates_from_queued_baseline_before_first_result(
@@ -140,6 +160,75 @@ def forward(self, x):
     )
     assert generated_trial.provenance_json["generation"]["generated_source"] == (
         generated_trial.source
+    )
+
+
+def test_reconcile_preserves_selfcontained_candidate_kind(repository, dataset_manager):
+    class CapturingGenerator:
+        def __init__(self):
+            self.context_trials = None
+            self.source = """TASK_DESCRIPTION:
+Adjust the evolve block while preserving the uploaded script contract.
+
+<<<<<<< SEARCH
+batch_size = 64
+=======
+batch_size = 32
+>>>>>>> REPLACE
+"""
+
+        def generate(
+            self,
+            track,
+            dataset_manifest,
+            context_trials,
+            negative_trials=None,
+            generation_index=0,
+            duplicate_retry_count=0,
+        ):
+            del (
+                track,
+                dataset_manifest,
+                negative_trials,
+                generation_index,
+                duplicate_retry_count,
+            )
+            self.context_trials = context_trials
+            return GenerationResult(
+                source=self.source,
+                provenance_json=make_llm_provenance(
+                    model="selfcontained",
+                    candidate_kind="selfcontained_script_v1",
+                    context_trial_ids=[trial.trial_id for trial in context_trials],
+                    generation={
+                        "task_description": "Adjust the self-contained script.",
+                        "response_text": self.source,
+                    },
+                ),
+            )
+
+    _prepare_repo_dataset(repository, dataset_manager)
+    system, _ = _build_system(
+        repository,
+        dataset_manager,
+        CapturingGenerator(),
+        RecordingLauncherDouble(),
+    )
+    track = _create_track(
+        system,
+        seed_source=build_selfcontained_train_script(),
+    )
+
+    result = system.reconcile_track(
+        track.track_id,
+        ready_queue_threshold=2,
+        max_parallelism=0,
+    )
+    generated_trial = repository.get_trial(result.generated_trial_ids[0])
+
+    assert generated_trial is not None
+    assert generated_trial.provenance_json["candidate_kind"] == (
+        "selfcontained_script_v1"
     )
 
 

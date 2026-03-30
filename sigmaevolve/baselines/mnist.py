@@ -1,3 +1,128 @@
+# /// sigmaevolve
+# version = 1
+# dataset_id = "mnist:v1"
+# runner = "python_train_v1"
+#
+# [track]
+# epochs = 20
+# dispatch_ttl_sec = 300
+# heartbeat_interval_sec = 15
+# stale_ttl_sec = 120
+# max_dispatch_retries = 2
+#
+# [track.generation_backend]
+# selection = "weighted_random"
+# seed = 0
+#
+# [[track.generation_backend.model_pool]]
+# model = "x-ai/grok-4.1-fast"
+# temperature = 0.5
+# max_tokens = 2500
+# retry_count = 2
+# probability = 0.2106
+#
+# [track.generation_backend.model_pool.pricing]
+# prompt = "0.0000002"
+# completion = "0.0000005"
+# web_search = "0.005"
+# input_cache_read = "0.00000005"
+#
+# [[track.generation_backend.model_pool]]
+# model = "google/gemini-3.1-flash-lite-preview"
+# temperature = 0.5
+# max_tokens = 2500
+# retry_count = 2
+# probability = 0.1615
+#
+# [track.generation_backend.model_pool.pricing]
+# prompt = "0.00000025"
+# completion = "0.0000015"
+# image = "0.00000025"
+# audio = "0.0000005"
+# internal_reasoning = "0.0000015"
+# input_cache_read = "0.000000025"
+# input_cache_write = "0.00000008333333333333334"
+#
+# [[track.generation_backend.model_pool]]
+# model = "moonshotai/kimi-k2.5"
+# temperature = 0.5
+# max_tokens = 20000
+# retry_count = 2
+# probability = 0.0909
+#
+# [track.generation_backend.model_pool.pricing]
+# prompt = "0.00000045"
+# completion = "0.0000022"
+# input_cache_read = "0.000000225"
+#
+# [[track.generation_backend.model_pool]]
+# model = "google/gemini-3.1-pro-preview"
+# temperature = 0.5
+# max_tokens = 20000
+# retry_count = 2
+# probability = 0.0202
+#
+# [track.generation_backend.model_pool.pricing]
+# prompt = "0.000002"
+# completion = "0.000012"
+# image = "0.000002"
+# audio = "0.000002"
+# internal_reasoning = "0.000012"
+# input_cache_read = "0.0000002"
+# input_cache_write = "0.000000375"
+#
+# [[track.generation_backend.model_pool]]
+# model = "anthropic/claude-sonnet-4.6"
+# temperature = 0.5
+# max_tokens = 20000
+# retry_count = 2
+# probability = 0.0136
+#
+# [track.generation_backend.model_pool.pricing]
+# prompt = "0.000003"
+# completion = "0.000015"
+# web_search = "0.01"
+# input_cache_read = "0.0000003"
+# input_cache_write = "0.00000375"
+#
+# [[track.generation_backend.model_pool]]
+# model = "openai/gpt-5.4-nano"
+# temperature = 0.5
+# max_tokens = 2500
+# retry_count = 2
+# probability = 0.2013
+#
+# [track.generation_backend.model_pool.pricing]
+# prompt = "0.0000002"
+# completion = "0.00000125"
+# web_search = "0.01"
+#
+# [[track.generation_backend.model_pool]]
+# model = "minimax/minimax-m2.7"
+# temperature = 0.5
+# max_tokens = 20000
+# retry_count = 2
+# probability = 0.1378
+#
+# [track.generation_backend.model_pool.pricing]
+# prompt = "0.0000003"
+# completion = "0.0000012"
+#
+# [[track.generation_backend.model_pool]]
+# model = "deepseek/deepseek-v3.2"
+# temperature = 0.5
+# max_tokens = 20000
+# retry_count = 2
+# probability = 0.1641
+#
+# [track.generation_backend.model_pool.pricing]
+# prompt = "0.00000026"
+# completion = "0.00000038"
+#
+# [evolution]
+# task = "Maximize validation accuracy on the bundled MNIST track while keeping the script runnable."
+# ///
+
 from __future__ import annotations
 
 import argparse
