@@ -6,6 +6,8 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
+from sigmaevolve.model_pools import DEFAULT_MODEL_POOL_ID, get_model_pool_config
+
 
 def normalize_source(source: str) -> str:
     # Round-trip through UTF-8 so invalid text fails fast at the boundary.
@@ -104,43 +106,6 @@ CANDIDATE_KIND_STRATEGY_V1 = "strategy_v1"
 CANDIDATE_KIND_SELFCONTAINED_SCRIPT_V1 = "selfcontained_script_v1"
 DEFAULT_GENERATION_MODEL = "x-ai/grok-4.1-fast"
 DEFAULT_GENERATION_SELECTION = "weighted_random"
-DEFAULT_GENERATION_MODEL_POOL = [
-    {
-        "model": "x-ai/grok-4.1-fast",
-        "temperature": 0.2,
-        "max_tokens": 2500,
-        "retry_count": 2,
-        "probability": 0.5436,
-    },
-    {
-        "model": "google/gemini-3.1-flash-lite-preview",
-        "temperature": 0.2,
-        "max_tokens": 2500,
-        "retry_count": 2,
-        "probability": 0.2446,
-    },
-    {
-        "model": "moonshotai/kimi-k2.5",
-        "temperature": 0.2,
-        "max_tokens": 2500,
-        "retry_count": 2,
-        "probability": 0.1578,
-    },
-    {
-        "model": "google/gemini-3.1-pro-preview",
-        "temperature": 0.2,
-        "max_tokens": 2500,
-        "retry_count": 2,
-        "probability": 0.0306,
-    },
-    {
-        "model": "anthropic/claude-sonnet-4.6",
-        "temperature": 0.2,
-        "max_tokens": 2500,
-        "retry_count": 2,
-        "probability": 0.0233,
-    },
-]
 
 
 def now_utc() -> datetime:
@@ -178,6 +143,33 @@ def _reject_removed_policy_fields(raw: dict[str, Any]) -> None:
         raise ValueError(
             "Track policy generation_backend.backend is no longer supported."
         )
+
+    if has_generation_backend and {
+        "model_pool",
+        "model_pool_id",
+    }.issubset(generation_backend):
+        raise ValueError(
+            "Track policy generation_backend may not include both model_pool and "
+            "model_pool_id."
+        )
+
+
+def _resolve_generation_backend_policy(
+    generation_backend: dict[str, Any],
+) -> dict[str, Any]:
+    resolved_generation_backend = dict(generation_backend)
+    if "model_pool_id" in resolved_generation_backend:
+        model_pool_id = resolved_generation_backend["model_pool_id"]
+        if not isinstance(model_pool_id, str) or not model_pool_id.strip():
+            raise ValueError(
+                "Track policy generation_backend.model_pool_id must be a "
+                "non-empty string."
+            )
+        resolved_generation_backend["model_pool"] = get_model_pool_config(model_pool_id)
+        return resolved_generation_backend
+
+    resolved_generation_backend.pop("model_pool_id", None)
+    return resolved_generation_backend
 
 
 @dataclass(frozen=True)
@@ -251,7 +243,7 @@ class TrackPolicy:
         default_factory=lambda: {
             "selection": DEFAULT_GENERATION_SELECTION,
             "seed": 0,
-            "model_pool": [dict(entry) for entry in DEFAULT_GENERATION_MODEL_POOL],
+            "model_pool": get_model_pool_config(DEFAULT_MODEL_POOL_ID),
         }
     )
 
@@ -275,6 +267,9 @@ class TrackPolicy:
         # Merge overrides onto the default policy before coercing field types.
         base = cls()
         merged = _deep_merge_dict(base.to_dict(), raw or {})
+        generation_backend = _resolve_generation_backend_policy(
+            dict(merged["generation_backend"])
+        )
 
         # Rebuild the dataclass with normalized scalar and nested policy fields.
         return cls(
@@ -284,7 +279,7 @@ class TrackPolicy:
             stale_ttl_sec=int(merged["stale_ttl_sec"]),
             max_dispatch_retries=int(merged["max_dispatch_retries"]),
             sampling_seed=int(merged["sampling_seed"]),
-            generation_backend=dict(merged["generation_backend"]),
+            generation_backend=generation_backend,
         )
 
 
