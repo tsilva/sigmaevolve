@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="dashboard/logo.png" alt="SigmaEvolve" width="140" />
+  <img src="dashboard/logo.png" alt="SigmaEvolve" width="420" />
 
   **🧬 Evolutionary training runs for immutable datasets 🧬**
 </div>
@@ -8,10 +8,10 @@ SigmaEvolve is an evolutionary training harness for classification experiments.
 It keeps datasets fixed, asks an LLM to mutate only marked regions of a
 self-contained training script, and ranks candidates by validation accuracy.
 
-The Python CLI seeds tracks, generates auditable candidate trials through
-OpenRouter, launches runs locally or on Modal, and stores trial state in
-Postgres. The companion Next.js dashboard reads the same database for browsing
-tracks, source, provenance, metrics, and runner status.
+Use the Python CLI to seed tracks, generate auditable candidate trials through
+OpenRouter, launch runs locally or on Modal, and store trial state in Postgres.
+The companion Next.js dashboard reads the same database for browsing tracks,
+source, provenance, metrics, and runner status.
 
 ## Install
 
@@ -22,24 +22,21 @@ database.
 git clone git@github.com:tsilva/sigmaevolve.git
 cd sigmaevolve
 uv sync --extra dev --extra datasets --extra modal
-cp dashboard/.env.example dashboard/.env.local
 npm --prefix dashboard install
-```
-
-Create the user-scoped runtime config that the CLI loads automatically:
-
-```bash
+cp dashboard/.env.example dashboard/.env.local
 mkdir -p ~/.config/sigmaevolve
 $EDITOR ~/.config/sigmaevolve/.env
 ```
 
-Minimum local configuration:
+Minimum CLI configuration:
 
 ```dotenv
 SIGMAEVOLVE_DATABASE_URL=postgresql://user:password@host:5432/sigmaevolve
 SIGMAEVOLVE_OPENROUTER_API_KEY=...
 SIGMAEVOLVE_DATASET_ROOT=./artifacts/datasets
 ```
+
+Set `DATABASE_URL` in `dashboard/.env.local` to the same database URL.
 
 Seed the bundled MNIST track, run one local candidate, and inspect trial state:
 
@@ -55,9 +52,7 @@ Start the dashboard from the repo root:
 npm --prefix dashboard run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000). The dashboard needs
-`dashboard/.env.local` to contain a `DATABASE_URL` for the same database used by
-the Python harness.
+Open [http://localhost:3000](http://localhost:3000).
 
 ## Commands
 
