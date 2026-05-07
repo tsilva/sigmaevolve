@@ -1659,7 +1659,16 @@ button {
   --best: #79ff6c;
   --accent: #26d9ff;
   --accent-strong: #42a5ff;
+  --scrollbar-track: rgba(4, 10, 16, 0.86);
+  --scrollbar-thumb: rgba(72, 171, 255, 0.72);
+  --scrollbar-thumb-hover: rgba(38, 217, 255, 0.88);
   --shadow: 0 24px 70px rgba(0, 0, 0, 0.34);
+}
+
+html {
+  color-scheme: dark;
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+  scrollbar-width: thin;
 }
 
 body {
@@ -1671,6 +1680,44 @@ body {
     linear-gradient(135deg, #050b12 0%, #091722 44%, #0d2432 100%);
   background-size: 28px 28px, 28px 28px, auto, auto, auto;
   color: var(--text);
+}
+
+* {
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+  scrollbar-width: thin;
+}
+
+*::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+}
+
+*::-webkit-scrollbar-track {
+  background:
+    linear-gradient(180deg, rgba(10, 21, 31, 0.96), rgba(4, 10, 16, 0.96)),
+    var(--scrollbar-track);
+  border: 1px solid rgba(148, 178, 200, 0.08);
+  border-radius: 999px;
+}
+
+*::-webkit-scrollbar-thumb {
+  min-height: 44px;
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background:
+    linear-gradient(180deg, var(--scrollbar-thumb-hover), var(--scrollbar-thumb)) border-box;
+  background-clip: padding-box;
+  box-shadow: inset 0 0 0 1px rgba(204, 244, 255, 0.18);
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background:
+    linear-gradient(180deg, #79ebff, #4aa6ff) border-box;
+  background-clip: padding-box;
+}
+
+*::-webkit-scrollbar-corner {
+  background: var(--scrollbar-track);
 }
 
 button,
@@ -2109,13 +2156,61 @@ input {
   background: rgba(12, 25, 36, 0.72);
 }
 
+.trial-row.status-queued,
+.trial-row.status-dispatching,
+.trial-row.status-active,
+.trial-row.status-finished,
+.trial-row.best-trial,
+.trial-row.tone-success,
+.trial-row.tone-warning,
+.trial-row.tone-neutral {
+  color: #dcecff;
+}
+
+.trial-row.status-error,
+.trial-row.tone-danger {
+  color: #ffe0dd;
+}
+
 .trial-row:hover,
 .trial-row.active,
+.trial-row.status-queued:hover,
+.trial-row.status-queued.active,
+.trial-row.status-dispatching:hover,
+.trial-row.status-dispatching.active,
+.trial-row.status-active:hover,
+.trial-row.status-active.active,
+.trial-row.status-finished:hover,
+.trial-row.status-finished.active,
+.trial-row.status-error:hover,
+.trial-row.status-error.active,
 .trial-row.best-trial:hover,
-.trial-row.best-trial.active {
+.trial-row.best-trial.active,
+.trial-row.tone-success:hover,
+.trial-row.tone-success.active,
+.trial-row.tone-warning:hover,
+.trial-row.tone-warning.active,
+.trial-row.tone-danger:hover,
+.trial-row.tone-danger.active,
+.trial-row.tone-neutral:hover,
+.trial-row.tone-neutral.active {
   background:
-    linear-gradient(90deg, rgba(38, 217, 255, 0.18), transparent 42%),
-    rgba(18, 38, 54, 0.94);
+    linear-gradient(90deg, rgba(42, 192, 255, 0.24), rgba(42, 192, 255, 0.08) 38%, transparent 78%),
+    linear-gradient(180deg, rgba(20, 43, 59, 0.98), rgba(12, 28, 40, 0.98));
+  color: #f4fbff;
+}
+
+.trial-row.active,
+.trial-row.status-queued.active,
+.trial-row.status-dispatching.active,
+.trial-row.status-active.active,
+.trial-row.status-finished.active,
+.trial-row.status-error.active,
+.trial-row.best-trial.active {
+  box-shadow:
+    inset 3px 0 0 var(--accent),
+    inset 0 1px 0 rgba(154, 234, 255, 0.18),
+    inset 0 -1px 0 rgba(154, 234, 255, 0.14);
 }
 
 .trial-row.best-trial {
@@ -2127,11 +2222,33 @@ input {
   color: #eaf4ff;
 }
 
+.trial-row td:nth-child(4),
+.trial-row td:nth-child(5),
+.trial-row td:nth-child(6) {
+  color: #8fc9ff;
+  font-weight: 650;
+}
+
+.trial-row.active td:nth-child(4),
+.trial-row.active td:nth-child(5),
+.trial-row.active td:nth-child(6),
+.trial-row:hover td:nth-child(4),
+.trial-row:hover td:nth-child(5),
+.trial-row:hover td:nth-child(6) {
+  color: #b8e5ff;
+}
+
+.trial-row.status-error td:nth-child(4),
+.trial-row.status-error td:nth-child(5),
+.trial-row.status-error td:nth-child(6) {
+  color: #ff8e87;
+}
+
 .status-badge,
 .status-badge.status-finished {
-  color: #9ed0ff;
-  background: rgba(67, 161, 255, 0.16);
-  border-color: rgba(67, 161, 255, 0.28);
+  color: #d7efff;
+  background: rgba(58, 151, 231, 0.24);
+  border-color: rgba(128, 204, 255, 0.34);
 }
 
 .status-badge.status-error {
