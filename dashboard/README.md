@@ -1,4 +1,6 @@
-![SigmaEvolve](./logo.png)
+<div align="center">
+  <img src="./logo.png" alt="SigmaEvolve" width="420" />
+</div>
 
 # SigmaEvolve Dashboard
 

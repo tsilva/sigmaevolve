@@ -70,7 +70,13 @@ export function createDashboardEventStream({
         }
         signal?.removeEventListener("abort", onAbort);
         await cleanup?.();
-        controller.close();
+        try {
+          controller.close();
+        } catch (cause) {
+          if (!(cause instanceof TypeError)) {
+            throw cause;
+          }
+        }
       };
 
       // Reuse the same close path for AbortSignal teardown.

@@ -42,7 +42,7 @@ function formatDate(value: string | null): string {
     return "Pending";
   }
 
-  return new Intl.DateTimeFormat(undefined, {
+  return new Intl.DateTimeFormat("en-GB", {
     dateStyle: "medium",
     timeStyle: "short",
   }).format(new Date(value));
@@ -1225,6 +1225,7 @@ export function DashboardShell({
   const [detail, setDetail] = useState(initialDetail);
   const [status, setStatus] = useState<TrialStatusFilter>("all");
   const [searchText, setSearchText] = useState("");
+  const [trackSearchText, setTrackSearchText] = useState("");
   const [isTracksCollapsed, setIsTracksCollapsed] = useState(false);
   const [lastBrowseWorkspace, setLastBrowseWorkspace] = useState<BrowseWorkspace>("explorer");
   const [activeWorkspace, setActiveWorkspace] = useState<ActiveWorkspace>(
@@ -1240,12 +1241,14 @@ export function DashboardShell({
   const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
   const deferredSearchText = useDeferredValue(searchText.trim().toLowerCase());
+  const deferredTrackSearchText = useDeferredValue(trackSearchText.trim().toLowerCase());
 
   useEffect(() => {
     setTracks(initialTracks);
     setDetail(initialDetail);
     setStatus("all");
     setSearchText("");
+    setTrackSearchText("");
     setIsTracksCollapsed(false);
     setLastBrowseWorkspace("explorer");
     setActiveWorkspace(initialSelectedTrialId ? "inspector" : "explorer");
@@ -1267,6 +1270,13 @@ export function DashboardShell({
     setExpandedSectionIds(DEFAULT_EXPANDED_SECTION_IDS);
   }, [selectedTrialId]);
 
+  const filteredTracks = tracks.filter((track) => {
+    if (!deferredTrackSearchText) {
+      return true;
+    }
+
+    return `${track.trackId} ${track.datasetId}`.toLowerCase().includes(deferredTrackSearchText);
+  });
   const visibleTrials = detail.trials.filter((trial) => matchesSearch(trial, deferredSearchText));
   const selectedTrial =
     visibleTrials.find((trial) => trial.trialId === selectedTrialId) ??
@@ -1534,10 +1544,14 @@ export function DashboardShell({
     <main className={`research-shell ${isTracksCollapsed ? "tracks-collapsed" : ""}`.trim()}>
       {isTracksCollapsed ? null : (
         <aside className="workspace-card track-column">
+          <div className="app-brand">
+            <span className="app-mark" aria-hidden="true">S</span>
+            <span>SigmaEvolve</span>
+          </div>
           <div className="section-heading">
             <div className="sidebar-header">
               <div>
-                <div className="eyebrow">Tracks</div>
+                <div className="eyebrow">Research lanes</div>
                 <h1 className="section-title">Research lanes</h1>
               </div>
               <button
@@ -1549,11 +1563,19 @@ export function DashboardShell({
                 Hide
               </button>
             </div>
-            <p className="section-copy">Switch tracks without losing the current trial context.</p>
+            <label className="search-field compact-search">
+              <span className="search-label">Search tracks</span>
+              <input
+                type="text"
+                value={trackSearchText}
+                onChange={(event) => setTrackSearchText(event.target.value)}
+                placeholder="Search tracks..."
+              />
+            </label>
           </div>
 
           <div className="track-stack">
-            {tracks.map((track) => {
+            {filteredTracks.map((track) => {
               const isActive = track.trackId === selectedTrackId;
               return (
                 <Link
@@ -1583,7 +1605,18 @@ export function DashboardShell({
                 </Link>
               );
             })}
+            {filteredTracks.length === 0 ? (
+              <section className="empty-panel track-empty">
+                <div className="eyebrow">No tracks</div>
+                <p className="section-copy">Try a different track id or dataset.</p>
+              </section>
+            ) : null}
           </div>
+          <nav className="sidebar-nav" aria-label="Dashboard navigation">
+            <span className="sidebar-nav-item active">Dashboard</span>
+            <span className="sidebar-nav-item">Alerts</span>
+            <span className="sidebar-nav-item">Settings</span>
+          </nav>
         </aside>
       )}
 
@@ -1600,6 +1633,27 @@ export function DashboardShell({
             </button>
           </div>
         ) : null}
+        <div className="command-bar">
+          <div className="command-crumbs">
+            <span>{activeWorkspace === "inspector" ? "Track" : "Track Overview"}</span>
+            <span aria-hidden="true">/</span>
+            <strong>{activeWorkspace === "tree" ? "Lineage" : activeWorkspace === "inspector" ? "Run Inspector" : "Dashboard"}</strong>
+          </div>
+          <div className="command-actions">
+            <span className="meta-chip">{detail.track.datasetId}</span>
+            <span className="meta-chip live-chip">Live via {liveMode}</span>
+            <label className="search-field command-search">
+              <span className="search-label">Search trials</span>
+              <input
+                type="search"
+                value={searchText}
+                onChange={(event) => setSearchText(event.target.value)}
+                placeholder="Search trials..."
+              />
+            </label>
+          </div>
+        </div>
+        {activeWorkspace === "explorer" ? (
         <section className="workspace-card overview-panel">
           <div className="overview-hero">
             <div>
@@ -1793,6 +1847,7 @@ export function DashboardShell({
             </article>
           </div>
         </section>
+        ) : null}
 
         <div className="workspace-view-switch" role="tablist" aria-label="Track views">
           <button
@@ -1829,18 +1884,6 @@ export function DashboardShell({
                 Scan outcomes quickly, then open the run inspector to compare source, crash detail, and
                 provenance.
               </p>
-            </div>
-
-            <div className="toolbar-row">
-              <label className="search-field">
-                <span className="search-label">Search trials</span>
-                <input
-                  type="search"
-                  value={searchText}
-                  onChange={(event) => setSearchText(event.target.value)}
-                  placeholder="trial id, model, phase, outcome"
-                />
-              </label>
             </div>
 
             <div className="status-filter" role="tablist" aria-label="Trial status filters">
@@ -2187,7 +2230,7 @@ export function DashboardShell({
 
                 <div className="inspector-grid">
                   {selectedTrial.hasError ? (
-                    <article className="analysis-card wide-card">
+                    <article className="analysis-card wide-card error-payload-card">
                       <CollapsibleSection
                         collapsible={false}
                         id="trial-error-payload"
@@ -2200,7 +2243,7 @@ export function DashboardShell({
                     </article>
                   ) : null}
 
-                  <article className="analysis-card wide-card">
+                  <article className="analysis-card wide-card task-description-card">
                     <CollapsibleSection
                       id="trial-task-description"
                       expanded={isSectionExpanded("trial-task-description")}
@@ -2217,7 +2260,7 @@ export function DashboardShell({
                     </CollapsibleSection>
                   </article>
 
-                  <article className="analysis-card wide-card">
+                  <article className="analysis-card wide-card generated-program-card">
                     <CollapsibleSection
                       id="trial-generated-program"
                       expanded={isSectionExpanded("trial-generated-program")}
@@ -2245,7 +2288,7 @@ export function DashboardShell({
                     </CollapsibleSection>
                   </article>
 
-                  <article className="analysis-card wide-card">
+                  <article className="analysis-card wide-card system-prompt-card">
                     <CollapsibleSection
                       id="trial-system-prompt"
                       expanded={isSectionExpanded("trial-system-prompt")}
@@ -2262,7 +2305,7 @@ export function DashboardShell({
                     </CollapsibleSection>
                   </article>
 
-                  <article className="analysis-card wide-card">
+                  <article className="analysis-card wide-card user-prompt-card">
                     <CollapsibleSection
                       id="trial-user-prompt"
                       expanded={isSectionExpanded("trial-user-prompt")}
@@ -2279,7 +2322,7 @@ export function DashboardShell({
                     </CollapsibleSection>
                   </article>
 
-                  <article className="analysis-card wide-card">
+                  <article className="analysis-card wide-card reasoning-trace-card">
                     <CollapsibleSection
                       id="trial-reasoning-trace"
                       expanded={isSectionExpanded("trial-reasoning-trace")}
@@ -2294,7 +2337,7 @@ export function DashboardShell({
                     </CollapsibleSection>
                   </article>
 
-                  <article className="analysis-card wide-card">
+                  <article className="analysis-card wide-card raw-response-card">
                     <CollapsibleSection
                       id="trial-raw-llm-response"
                       expanded={isSectionExpanded("trial-raw-llm-response")}

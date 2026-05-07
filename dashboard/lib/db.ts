@@ -18,7 +18,12 @@ function databaseUrl(): string {
   if (!value) {
     throw new Error("DATABASE_URL is required.");
   }
-  return value;
+  const parsed = new URL(value);
+  const sslMode = parsed.searchParams.get("sslmode");
+  if (sslMode === "prefer" || sslMode === "require" || sslMode === "verify-ca") {
+    parsed.searchParams.set("sslmode", "verify-full");
+  }
+  return parsed.toString();
 }
 
 export function getPool(): Pool {
