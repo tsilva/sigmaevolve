@@ -6,9 +6,11 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
+    "sentry:env:push": "node scripts/push-sentry-env.mjs",
     "test": "vitest run"
   },
   "dependencies": {
+    "@sentry/nextjs": "^10.52.0",
     "next": "^16.2.0",
     "pg": "^8.16.3",
     "prism-react-renderer": "^2.4.1",
