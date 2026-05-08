@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 
 import nextEnv from "@next/env";
@@ -10,6 +11,8 @@ const args = process.argv.slice(2);
 const force = args.includes("--force");
 const environments = args.filter((arg) => arg !== "--force");
 const targets = environments.length > 0 ? environments : ["production", "preview"];
+const projectConfig = JSON.parse(await readFile(".vercel/project.json", "utf8"));
+const envEndpoint = `/v10/projects/${projectConfig.projectId}/env?teamId=${projectConfig.orgId}`;
 
 const requiredValues = {
   SENTRY_DSN: process.env.SENTRY_DSN,
@@ -36,44 +39,100 @@ if (missing.length > 0) {
   process.exit(1);
 }
 
-async function addVercelEnv(name, value, environment) {
-  const commandArgs = ["env", "add", name, environment, "--yes"];
+async function runVercelApi(path, options = {}) {
+  const commandArgs = ["api", path];
 
-  if (force) {
-    commandArgs.push("--force");
+  if (options.method) {
+    commandArgs.push("--method", options.method);
   }
 
-  if (
-    (name === "SENTRY_AUTH_TOKEN" || name === "SENTRY_SMOKE_TOKEN") &&
-    environment !== "development"
-  ) {
-    commandArgs.push("--sensitive");
+  if (options.input) {
+    commandArgs.push("--input", "-");
   }
 
-  await new Promise((resolve, reject) => {
+  if (options.silent) {
+    commandArgs.push("--silent");
+  }
+
+  return new Promise((resolve, reject) => {
     const child = spawn("vercel", commandArgs, {
-      stdio: ["pipe", "inherit", "inherit"],
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+
+    let stdout = "";
+    let stderr = "";
+
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
     });
 
     child.on("error", reject);
     child.on("close", (code) => {
       if (code === 0) {
-        resolve();
+        resolve(stdout);
         return;
       }
 
-      reject(new Error(`vercel ${commandArgs.join(" ")} exited with ${code}`));
+      reject(
+        new Error(
+          `vercel ${commandArgs.join(" ")} exited with ${code}: ${stderr}`,
+        ),
+      );
     });
 
-    child.stdin.end(`${value}\n`);
+    child.stdin.end(options.input ?? "");
   });
 }
 
-for (const [name, value] of Object.entries(requiredValues)) {
-  for (const environment of targets) {
-    console.log(`Uploading ${name} to Vercel ${environment}...`);
-    await addVercelEnv(name, value, environment);
+async function getExistingEnvVars() {
+  const output = await runVercelApi(envEndpoint);
+  const payload = JSON.parse(output);
+
+  return payload.envs ?? payload.env ?? [];
+}
+
+async function deleteExistingEnvVars(name, existingEnvVars) {
+  const matchingEnvVars = existingEnvVars.filter(
+    (envVar) =>
+      envVar.key === name &&
+      envVar.target?.some((target) => targets.includes(target)),
+  );
+
+  if (matchingEnvVars.length > 0 && !force) {
+    throw new Error(`${name} already exists in Vercel. Re-run with --force.`);
   }
+
+  for (const envVar of matchingEnvVars) {
+    const deleteEndpoint = `/v9/projects/${projectConfig.projectId}/env/${envVar.id}?teamId=${projectConfig.orgId}`;
+    await runVercelApi(deleteEndpoint, { method: "DELETE", silent: true });
+  }
+}
+
+async function createVercelEnv(name, value) {
+  const isSecret = name === "SENTRY_AUTH_TOKEN" || name === "SENTRY_SMOKE_TOKEN";
+
+  await runVercelApi(envEndpoint, {
+    method: "POST",
+    input: JSON.stringify({
+      key: name,
+      value,
+      type: isSecret ? "sensitive" : "encrypted",
+      target: targets,
+    }),
+    silent: true,
+  });
+}
+
+const existingEnvVars = await getExistingEnvVars();
+
+for (const [name, value] of Object.entries(requiredValues)) {
+  console.log(`Uploading ${name} to Vercel ${targets.join(", ")}...`);
+  await deleteExistingEnvVars(name, existingEnvVars);
+  await createVercelEnv(name, value);
 }
 
 console.log(`Uploaded Sentry env values to: ${targets.join(", ")}`);
