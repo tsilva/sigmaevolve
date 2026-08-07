@@ -1,0 +1,11 @@
+# Credential references only. Store values with `keyenv set ENV_NAME`.
+[keyenv]
+version = 1
+
+[secrets.SENTRY_AUTH_TOKEN]
+account = "sigmaevolve/SENTRY_AUTH_TOKEN"
+required = true
+
+[secrets.SENTRY_SMOKE_TOKEN]
+account = "sigmaevolve/SENTRY_SMOKE_TOKEN"
+required = true
