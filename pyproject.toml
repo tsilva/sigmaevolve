@@ -7,7 +7,7 @@ dependencies = [
   "numpy>=1.26",
   "psycopg[binary]>=3.1",
   "sqlalchemy>=2.0",
-  "torch>=2.0",
+  "torch>=2.13.0",
   "wandb>=0.19",
 ]
 
@@ -16,7 +16,7 @@ sigmaevolve = "sigmaevolve.cli:main"
 
 [project.optional-dependencies]
 dev = [
-  "pytest>=9.0",
+  "pytest>=9.0.3",
   "ruff>=0.15.4",
 ]
 datasets = [
@@ -27,7 +27,7 @@ modal = [
 ]
 
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=83.0.0"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
