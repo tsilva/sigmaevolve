@@ -3,9 +3,9 @@
   "private": true,
   "version": "0.1.0",
   "scripts": {
-    "dev": "next dev",
+    "dev": "node ../scripts/dev-server.mjs next dev",
     "build": "next build",
-    "start": "next start",
+    "start": "node ../scripts/dev-server.mjs next start",
     "sentry:env:push": "node scripts/push-sentry-env.mjs",
     "test": "vitest run"
   },

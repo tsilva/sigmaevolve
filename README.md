@@ -26,6 +26,7 @@ npm --prefix dashboard install
 cp dashboard/.env.example dashboard/.env.local
 mkdir -p ~/.config/sigmaevolve
 $EDITOR ~/.config/sigmaevolve/.env
+keyenv doctor
 ```
 
 Minimum CLI configuration:
@@ -46,10 +47,12 @@ uv run sigmaevolve --launcher inline launch <track_id> 1
 uv run sigmaevolve list-trials <track_id>
 ```
 
-Start the dashboard from the repo root:
+The dashboard's private Sentry values declared in `.keyenv.toml` live in macOS
+Keychain. Start it from the repo root through `keyenv`; Node reads the injected
+values normally from `process.env`:
 
 ```bash
-npm --prefix dashboard run dev
+keyenv run -- npm --prefix dashboard run dev
 ```
 
 Open [http://localhost:3000](http://localhost:3000).
