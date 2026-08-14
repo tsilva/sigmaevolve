@@ -4,6 +4,7 @@
 
 - Before concluding that SigmaEvolve credentials or runtime configuration are missing, check the user-scoped env file at `/Users/tsilva/.config/sigmaevolve/.env`.
 - This file may provide `DATABASE_URL`, `OPENROUTER_API_KEY`, and other runtime settings even when those variables are not present in the current shell environment.
+- Dashboard-only private Sentry values are declared in the root `.keyenv.toml`; launch dashboard commands with `keyenv run -- ...` so Node receives them through `process.env`.
 - Do not print secret values back to the user. It is enough to confirm whether the required variables are available.
 
 ## Modal Runs
