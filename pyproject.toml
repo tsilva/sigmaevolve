@@ -5,7 +5,7 @@ description = "Evolutionary training harness for immutable classification datase
 requires-python = ">=3.11"
 dependencies = [
   "numpy>=1.26",
-  "psycopg[binary]>=3.1",
+  "psycopg[binary]>=3.3.4",
   "sqlalchemy>=2.0",
   "torch>=2.13.0",
   "wandb>=0.28.1",
@@ -27,7 +27,7 @@ modal = [
 ]
 
 [build-system]
-requires = ["setuptools>=83"]
+requires = ["setuptools>=84.0.0"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
