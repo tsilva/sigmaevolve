@@ -21,8 +21,8 @@ database.
 ```bash
 git clone git@github.com:tsilva/sigmaevolve.git
 cd sigmaevolve
-uv sync --extra dev --extra datasets --extra modal
-npm --prefix dashboard install
+uv sync --frozen --all-extras --no-config
+npm --prefix dashboard ci --ignore-scripts --min-release-age=7
 cp dashboard/.env.example dashboard/.env.local
 mkdir -p ~/.config/sigmaevolve
 $EDITOR ~/.config/sigmaevolve/.env
@@ -71,7 +71,9 @@ uv run sigmaevolve modal-sync-dataset <dataset_id>
 uv run pytest                                     # run Python tests
 uv run ruff check .                               # lint Python
 uv run ruff format .                              # format Python
+npm --prefix dashboard audit --audit-level=high   # audit dashboard dependencies
 npm --prefix dashboard run test                   # run dashboard tests
+npm --prefix dashboard exec -- tsc --noEmit       # type-check the dashboard
 npm --prefix dashboard run build                  # build the dashboard
 ```
 

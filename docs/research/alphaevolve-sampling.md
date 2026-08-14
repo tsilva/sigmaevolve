@@ -339,11 +339,14 @@ def funsearch_cluster_probs(scores, T0, N, n):
     Z = sum(w)
     return [wi / Z for wi in w]
 
+
 # OpenEvolve parent-mode selection (from proxy code defaults)
 def openevolve_mode(rng):
     r = rng.random()
-    if r < 0.2:   return "exploration"
-    if r < 0.9:   return "exploitation"
+    if r < 0.2:
+        return "exploration"
+    if r < 0.9:
+        return "exploitation"
     return "random_or_weighted"
 ```
 

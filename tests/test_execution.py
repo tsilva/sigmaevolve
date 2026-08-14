@@ -482,7 +482,8 @@ def test_run_stops_early_when_validation_accuracy_plateaus(repository, dataset_m
     finalize_baseline(system, track.track_id)
     finished = _run_trial(system, track.track_id, EARLY_STOP_BLOCK)
     assert finished.outcome_reason == "succeeded"
-    assert finished.metrics_json["eval_count"] == 3
+    # The baseline allows three non-improving epochs after the initial best result.
+    assert finished.metrics_json["eval_count"] == 4
     assert finished.metrics_json["last_phase"] == "finished"
 
 

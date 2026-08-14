@@ -1282,14 +1282,12 @@ def test_reconcile_applies_search_replace_response_before_queueing(
             duplicate_retry_count=0,
         ):
             response_text = """TASK_DESCRIPTION:
-Reduce the forward output scale to test SEARCH/REPLACE patch application.
+Use AdamW to test SEARCH/REPLACE patch application.
 
 <<<<<<< SEARCH
-    def forward(self, x):
-        return self.network(x)
+optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
 =======
-    def forward(self, x):
-        return self.network(x) * 0.5
+optimizer = torch.optim.AdamW(model.parameters(), lr=5e-4)
 >>>>>>> REPLACE
 """
             return type(
@@ -1300,7 +1298,7 @@ Reduce the forward output scale to test SEARCH/REPLACE patch application.
                     "provenance_json": {
                         **make_llm_provenance(model="patch-generator"),
                         "generation": {
-                            "task_description": "Reduce the forward output scale to test SEARCH/REPLACE patch application.",
+                            "task_description": "Use AdamW to test SEARCH/REPLACE patch application.",
                             "response_text": response_text,
                         },
                     },
@@ -1329,10 +1327,10 @@ Reduce the forward output scale to test SEARCH/REPLACE patch application.
     assert result.errors == []
     assert len(result.generated_trial_ids) == 1
     assert created_trial is not None
-    assert "return self.network(x) * 0.5" in created_trial.source
+    assert "torch.optim.AdamW" in created_trial.source
     assert (
         created_trial.provenance_json["generation"]["task_description"]
-        == "Reduce the forward output scale to test SEARCH/REPLACE patch application."
+        == "Use AdamW to test SEARCH/REPLACE patch application."
     )
     assert "SEARCH" in created_trial.provenance_json["generation"]["response_text"]
 
