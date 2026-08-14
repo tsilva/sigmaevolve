@@ -40,7 +40,9 @@ _DEFAULT_BASELINE_PATH = _BASELINES_DIR / "mnist.py"
 
 
 def build_baseline_train_script(source_path: str | Path | None = None) -> str:
-    baseline_path = Path(source_path) if source_path is not None else _DEFAULT_BASELINE_PATH
+    baseline_path = (
+        Path(source_path) if source_path is not None else _DEFAULT_BASELINE_PATH
+    )
     template_source = baseline_path.read_text(encoding="utf-8")
     require_script_spec(template_source)
     parse_source_layout(template_source)
