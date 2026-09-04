@@ -15,7 +15,7 @@ MODEL_POOL_CONFIGS: dict[str, list[dict[str, Any]]] = {
             "probability": 0.5436,
         },
         {
-            "model": "google/gemini-3.7-flash",
+            "model": "google/gemini-3.8-flash",
             "temperature": 0.2,
             "max_tokens": 2500,
             "retry_count": 2,
@@ -58,14 +58,14 @@ MODEL_POOL_CONFIGS: dict[str, list[dict[str, Any]]] = {
             "probability": 0.2106,
         },
         {
-            "model": "google/gemini-3.7-flash",
+            "model": "google/gemini-3.8-flash",
             "pricing": {
                 "prompt": "0.000000375",
                 "completion": "0.000001875",
                 "image": "0.000000375",
                 "audio": "0.000000375",
                 "input_audio_cache": "0.0000000375",
-                "web_search": "0.007",
+                "web_search": "0.014",
                 "internal_reasoning": "0.000001875",
                 "input_cache_read": "0.0000000375",
                 "input_cache_write": "0.0000000208333333333333",
