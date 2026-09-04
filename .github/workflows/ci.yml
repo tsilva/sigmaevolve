@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    name: Python
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: 0.11.13
+          python-version: "3.14"
+          enable-cache: true
+
+      - name: Install locked dependencies
+        run: uv sync --frozen --all-extras --no-config
+
+      - name: Check formatting
+        run: uv run --no-config ruff format --check .
+
+      - name: Lint
+        run: uv run --no-config ruff check .
+
+      - name: Test
+        run: uv run --no-config pytest -q
+
+      - name: Audit locked dependencies
+        run: uv audit --locked --no-config
+
+  dashboard:
+    name: Dashboard
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dashboard
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+
+      - name: Install locked dependencies
+        run: npm ci --ignore-scripts --min-release-age=7
+
+      - name: Audit dependencies
+        run: npm audit --audit-level=high
+
+      - name: Test
+        run: npm test
+
+      - name: Type-check
+        run: npm exec -- tsc --noEmit
+
+      - name: Build
+        run: npm run build
