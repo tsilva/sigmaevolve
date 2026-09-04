@@ -188,7 +188,7 @@ def test_cli_create_track_from_script_file(tmp_path, patched_cli_system, monkeyp
     )
     pool = track.policy_json["generation_backend"]["model_pool"]
     assert len(pool) == 8
-    assert pool[1]["model"] == "google/gemini-3.7-flash"
+    assert pool[1]["model"] == "google/gemini-3.8-flash"
 
 
 def test_cli_create_track_uses_script_defaults(
