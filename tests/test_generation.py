@@ -4,7 +4,6 @@ import io
 import json
 from urllib.error import HTTPError, URLError
 
-import numpy as np
 import pytest
 import torch
 
@@ -314,8 +313,8 @@ def test_openrouter_generation_uses_model_pool_round_robin(monkeypatch):
     assert "textually distinct from CURRENT_PROGRAM" in system_prompt
     assert "SEARCH must match exactly once in CURRENT_PROGRAM" in system_prompt
     assert not first_prompt.lstrip().startswith("{")
-    assert "OBJECTIVE:" in first_prompt
     assert "TASK CONTEXT:" in first_prompt
+    assert "- script_evolution_task:" in first_prompt
     assert "- dataset_id: mnist:v1" in first_prompt
     assert "- epochs: 5" in first_prompt
     assert "- split_sizes:" in first_prompt
@@ -327,7 +326,7 @@ def test_openrouter_generation_uses_model_pool_round_robin(monkeypatch):
     assert "score:" not in first_prompt
     assert "val_acc: 0.5" in first_prompt
     assert "val_loss: n/a" in first_prompt
-    assert first_prompt.rstrip().endswith("REPLACEMENTS:")
+    assert first_prompt.rstrip().endswith("PATCHES:")
 
 
 def test_openrouter_generation_bumps_temperature_on_duplicate_retry(monkeypatch):
@@ -399,12 +398,12 @@ def test_openrouter_generation_prompt_includes_expected_sections(monkeypatch):
     prompt = payloads[0]["messages"][1]["content"]
     assert "# EVOLVE-BLOCK-START" in system_prompt
     assert "# EVOLVE-BLOCK-END" in system_prompt
-    assert "OBJECTIVE:" in prompt
     assert "TASK CONTEXT:" in prompt
+    assert "- script_evolution_task:" in prompt
     assert "REFERENCE PROGRAMS:" in prompt
     assert "AVOID THESE RECENT NEGATIVE TRIALS:" in prompt
     assert "CURRENT PROGRAM:" in prompt
-    assert "REPLACEMENTS:" in prompt
+    assert "PATCHES:" in prompt
 
 
 def test_openrouter_generation_prompt_compacts_prior_programs_before_current_program():
@@ -420,8 +419,8 @@ def test_openrouter_generation_prompt_compacts_prior_programs_before_current_pro
 
     prior_section, current_section = prompt.split("CURRENT PROGRAM:\n", maxsplit=1)
 
-    assert "OBJECTIVE:" in prior_section
     assert "TASK CONTEXT:" in prior_section
+    assert "- script_evolution_task:" in prior_section
     assert "REFERENCE PROGRAMS:" in prior_section
     assert "\n---\nval_acc: 0.998" in prior_section
     assert (
@@ -458,7 +457,7 @@ def test_openrouter_generation_prompt_compacts_prior_programs_before_current_pro
         "Negative trials show only the mutable evolve-block regions, all "
         "immutable scaffolding is purposely ommited.\nNone."
     ) in prompt
-    assert prompt.rstrip().endswith("REPLACEMENTS:")
+    assert prompt.rstrip().endswith("PATCHES:")
 
 
 def test_openrouter_generation_prompt_renders_recent_negative_trials():
@@ -821,14 +820,13 @@ def test_baseline_template_preserves_feature_shape_for_evolved_models():
     namespace: dict[str, object] = {}
     exec(build_baseline_train_script(), namespace)
 
-    build_tensor_datasets = namespace["build_tensor_datasets"]
     make_experiment = namespace["make_experiment"]
 
-    train_ds, validation_ds = build_tensor_datasets(
-        np.zeros((4, 28, 28), dtype=np.float32),
-        np.array([0, 1, 0, 1], dtype=np.int64),
-        np.zeros((2, 28, 28), dtype=np.float32),
-        np.array([0, 1], dtype=np.int64),
+    train_ds = torch.utils.data.TensorDataset(
+        torch.zeros((4, 28, 28)), torch.tensor([0, 1, 0, 1])
+    )
+    validation_ds = torch.utils.data.TensorDataset(
+        torch.zeros((2, 28, 28)), torch.tensor([0, 1])
     )
     experiment = make_experiment(torch.device("cpu"), train_ds, validation_ds)
     logits = experiment["model"](validation_ds.tensors[0])
@@ -909,6 +907,7 @@ def test_apply_search_replace_blocks_matches_named_evolve_blocks_only():
         [
             "# /// sigmaevolve",
             "# version = 1",
+            '# dataset_id = "mnist:v1"',
             '# runner = "python_train_v1"',
             "#",
             "# [evolution]",
@@ -976,9 +975,9 @@ def test_materialize_candidate_source_applies_search_replace_blocks():
 Add a hidden layer so the baseline model keeps a little more capacity.
 
 <<<<<<< SEARCH
-    nn.Linear(128, num_classes),
+    nn.Linear(flat_dim, num_classes),
 =======
-    nn.Linear(128, 64),
+    nn.Linear(flat_dim, 64),
     nn.ReLU(),
     nn.Linear(64, num_classes),
 >>>>>>> REPLACE
@@ -986,7 +985,7 @@ Add a hidden layer so the baseline model keeps a little more capacity.
 
     updated = materialize_candidate_source(source, response)
 
-    assert "nn.Linear(128, 64)" in updated
+    assert "nn.Linear(flat_dim, 64)" in updated
     assert_only_evolve_blocks_changed(source, updated)
 
 
@@ -996,22 +995,15 @@ def test_materialize_candidate_source_matches_search_blocks_without_outer_indent
 Adjust optimization defaults to try a smaller, more regularized update schedule.
 
 <<<<<<< SEARCH
-trainable_parameters = [
-    parameter for parameter in model.parameters() if parameter.requires_grad
-]
-optimizer = None
-if trainable_parameters:
-    optimizer = torch.optim.Adam(trainable_parameters, lr=1e-3)
+optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
 =======
 optimizer = torch.optim.AdamW(model.parameters(), lr=5e-4, weight_decay=1e-4)
-scheduler = None
 >>>>>>> REPLACE
 """
 
     updated = materialize_candidate_source(source, response)
 
     assert "torch.optim.AdamW" in updated
-    assert "scheduler = None" in updated
     assert_only_evolve_blocks_changed(source, updated)
 
 
@@ -1056,21 +1048,27 @@ min_delta = 0.1
 def test_apply_search_replace_blocks_preserves_internal_indentation():
     source = build_baseline_train_script()
     response = """TASK_DESCRIPTION:
-Raise early stopping patience slightly so the model can train longer before stopping.
+Add a hidden layer while preserving the model block's internal indentation.
 
 <<<<<<< SEARCH
-early_stopping_patience = 2
-min_delta = 0.0
+model = nn.Sequential(
+    nn.Flatten(),
+    nn.Linear(flat_dim, num_classes),
+).to(device)
 =======
-early_stopping_patience = 5
-min_delta = 0.0
+model = nn.Sequential(
+    nn.Flatten(),
+    nn.Linear(flat_dim, 64),
+    nn.ReLU(),
+    nn.Linear(64, num_classes),
+).to(device)
 >>>>>>> REPLACE
 """
 
     updated = materialize_candidate_source(source, response)
 
-    assert "    early_stopping_patience = 5" in updated
-    assert "    min_delta = 0.0" in updated
+    assert "        nn.Linear(flat_dim, 64)" in updated
+    assert "        nn.Linear(64, num_classes)" in updated
     assert_only_evolve_blocks_changed(source, updated)
 
 
