@@ -28,7 +28,7 @@
     "@types/react-dom": "^19.2.2",
     "jsdom": "^27.0.0",
     "typescript": "^5.9.3",
-    "vitest": "^4.1.0"
+    "vitest": "^4.1.11"
   },
   "overrides": {
     "@babel/core": "7.29.7",
