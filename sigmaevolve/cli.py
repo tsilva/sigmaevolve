@@ -11,7 +11,11 @@ from pathlib import Path
 from typing import Any, Callable, TextIO
 
 from sigmaevolve.core import ACTIVE_STATUSES
-from sigmaevolve.env import load_env_file, resolve_runtime_config
+from sigmaevolve.env import (
+    load_env_file,
+    load_managed_secrets,
+    resolve_runtime_config,
+)
 from sigmaevolve.execution import RunnerService, collect_wandb_env
 from sigmaevolve.modal import (
     create_modal_launcher,
@@ -166,7 +170,8 @@ def build_cli_parser(
     parser = argparse.ArgumentParser(
         prog="sigmaevolve",
         description=(
-            "Runtime config is resolved from environment variables instead of CLI flags. "
+            "Private runtime settings come from the pinned Infisical development project. "
+            "Nonsecret settings use environment variables or the user-scoped env file. "
             "Supported names: SIGMAEVOLVE_DATABASE_URL or DATABASE_URL, "
             "SIGMAEVOLVE_DATASET_ROOT, SIGMAEVOLVE_OPENROUTER_API_KEY or OPENROUTER_API_KEY, "
             "SIGMAEVOLVE_MODAL_APP_NAME, SIGMAEVOLVE_MODAL_FUNCTION_NAME, "
@@ -539,7 +544,8 @@ def _make_system(args) -> Any:
     # Reject missing database URLs before constructing any system state.
     if not args.database_url:
         raise RuntimeError(
-            "A Postgres database URL is required. Set SIGMAEVOLVE_DATABASE_URL or DATABASE_URL."
+            "A Postgres database URL is required. Add SIGMAEVOLVE_DATABASE_URL or "
+            "DATABASE_URL to the SigmaEvolve development project in Infisical."
         )
 
     # Construct the core system first, then replace its launcher if requested.
@@ -771,13 +777,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    load_env_file()
     _configure_stream_logger(logger, sys.stderr)
     _configure_stream_logger(stdout_logger, sys.stdout)
     parser = build_parser()
     args = parser.parse_args(argv)
-    args = _apply_runtime_config(args)
     try:
+        load_env_file()
+        load_managed_secrets()
+        args = _apply_runtime_config(args)
         return int(args.func(args))
     except Exception as exc:
         logger.error("error: %s", exc)

@@ -26,18 +26,8 @@ npm --prefix dashboard ci --ignore-scripts --min-release-age=7
 cp dashboard/.env.example dashboard/.env.local
 mkdir -p ~/.config/sigmaevolve
 $EDITOR ~/.config/sigmaevolve/.env
-keyenv doctor
+npm --prefix dashboard run secrets:check
 ```
-
-Minimum CLI configuration:
-
-```dotenv
-SIGMAEVOLVE_DATABASE_URL=postgresql://user:password@host:5432/sigmaevolve
-SIGMAEVOLVE_OPENROUTER_API_KEY=...
-SIGMAEVOLVE_DATASET_ROOT=./artifacts/datasets
-```
-
-Set `DATABASE_URL` in `dashboard/.env.local` to the same database URL.
 
 Seed the bundled MNIST track, run one local candidate, and inspect trial state:
 
@@ -47,15 +37,7 @@ uv run sigmaevolve --launcher inline launch <track_id> 1
 uv run sigmaevolve list-trials <track_id>
 ```
 
-The dashboard's private Sentry values declared in `.keyenv.toml` live in macOS
-Keychain. Start it from the repo root through `keyenv`; Node reads the injected
-values normally from `process.env`:
-
-```bash
-keyenv run -- npm --prefix dashboard run dev
-```
-
-Open [http://localhost:3000](http://localhost:3000).
+Production dashboard credentials live separately in `sigmaevolve-production`, Production `/`, with automatic sync to this Vercel project’s Production environment. Redeploy after changes. Preview credentials remain separate. `npm --prefix dashboard run build:secrets` builds locally with development credentials.
 
 ## Commands
 

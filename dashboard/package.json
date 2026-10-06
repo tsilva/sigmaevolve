@@ -3,16 +3,21 @@
   "private": true,
   "version": "0.1.0",
   "scripts": {
-    "dev": "node ../scripts/dev-server.mjs next dev",
+    "dev": "python3 ../scripts/infisical/run.py dev",
     "build": "next build",
     "start": "node ../scripts/dev-server.mjs next start",
     "sentry:env:push": "node scripts/push-sentry-env.mjs",
-    "test": "vitest run"
+    "test": "vitest run",
+    "dev:app": "node ../scripts/dev-server.mjs next dev",
+    "build:secrets": "python3 ../scripts/infisical/run.py build",
+    "secrets:check": "python3 ../scripts/infisical/run.py check",
+    "secrets:migrate:keyenv": "python3 ../scripts/infisical/migrate_keyenv.py",
+    "test:secrets": "python3 -m unittest discover -s ../scripts/infisical -p test_secrets.py"
   },
   "dependencies": {
     "@sentry/nextjs": "10.65.0",
     "@vercel/analytics": "^1.6.1",
-    "next": "16.2.12",
+    "next": "16.3.6",
     "pg": "^8.16.3",
     "prism-react-renderer": "^2.4.1",
     "react": "^19.2.4",
@@ -28,17 +33,18 @@
     "@types/react-dom": "^19.2.2",
     "jsdom": "^27.0.0",
     "typescript": "^5.9.3",
-    "vitest": "^4.1.0"
+    "vitest": "^4.1.11"
   },
   "overrides": {
     "@babel/core": "7.29.7",
     "@opentelemetry/core": "2.8.0",
-    "brace-expansion": "5.0.9",
-    "fast-uri": "3.1.5",
+    "brace-expansion": "5.0.12",
+    "fast-uri": "3.1.8",
     "nanoid": "3.3.18",
     "postcss": "8.5.26",
-    "sharp": "0.35.3",
+    "sharp": "0.35.4",
     "vite": "8.0.16",
-    "ws": "8.21.0"
+    "ws": "8.21.0",
+    "source-map-js": "1.2.2"
   }
 }
