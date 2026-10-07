@@ -1,8 +1,10 @@
-<div align="center">
+<p align="center">
   <img src="dashboard/logo.png" alt="SigmaEvolve" width="420" />
-
-  **🧬 Evolutionary training runs for immutable datasets 🧬**
-</div>
+  <br />
+  <!-- repo-tagline:start -->
+  <strong>🧬 Evolutionary training runs for immutable datasets 🧬</strong>
+  <!-- repo-tagline:end -->
+</p>
 
 SigmaEvolve is an evolutionary training harness for classification experiments.
 It keeps datasets fixed, asks an LLM to mutate only marked regions of a
