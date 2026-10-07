@@ -88,3 +88,11 @@ npm --prefix dashboard run build                  # build the dashboard
 ## License
 
 No root-level license file is present in this repository.
+
+## Secret scanning
+
+GitHub Actions scans changed commits with the pinned Infisical CLI. New branches
+and rewritten pushes scan the complete history reachable from the new head, even
+when the previous commit is no longer available. Missing pull-request revisions
+and scanner errors still fail the check. Reports publish only finding locations;
+credentials and matched source content remain private.
