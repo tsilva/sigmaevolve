@@ -1,11 +1,131 @@
 from __future__ import annotations
 
+import json
 import os
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
 DEFAULT_ENV_PATH = Path.home() / ".config" / "sigmaevolve" / ".env"
 DEFAULT_DATASET_ROOT = "./artifacts/datasets"
+INFISICAL_ROOT = Path(__file__).resolve().parents[1]
+INFISICAL_PROJECT = "adceee68-d107-4399-a6c6-65bc6f09ced1"
+INFISICAL_DOMAIN = "https://app.infisical.com"
+EXPERIMENT_SECRET_KEYS = frozenset(
+    {
+        "DATABASE_URL",
+        "SIGMAEVOLVE_DATABASE_URL",
+        "OPENROUTER_API_KEY",
+        "SIGMAEVOLVE_OPENROUTER_API_KEY",
+        "WANDB_API_KEY",
+    }
+)
+DASHBOARD_SECRET_KEYS = frozenset({"SENTRY_AUTH_TOKEN", "SENTRY_SMOKE_TOKEN"})
+PRIVATE_ENV_KEYS = EXPERIMENT_SECRET_KEYS | DASHBOARD_SECRET_KEYS
+
+
+class ManagedSecretsError(Exception):
+    """Expose only fixed, credential-free errors at the CLI boundary."""
+
+
+def _is_manager_setting(key: str) -> bool:
+    return key.startswith("INFISICAL_") or key == "BWS_ACCESS_TOKEN"
+
+
+def _clear_private_environment() -> None:
+    for key in list(os.environ):
+        if key in PRIVATE_ENV_KEYS or _is_manager_setting(key):
+            os.environ.pop(key, None)
+    for key in PRIVATE_ENV_KEYS:
+        os.environ[key] = ""
+
+
+def _validate_managed_configuration(root: Path) -> None:
+    try:
+        settings = json.loads((root / ".infisical.json").read_text())
+        if (
+            settings["workspaceId"] != INFISICAL_PROJECT
+            or settings.get("domain") != INFISICAL_DOMAIN
+            or settings.get("defaultEnvironment") != "dev"
+        ):
+            raise ValueError()
+    except Exception:
+        raise ManagedSecretsError(
+            "SigmaEvolve's development Infisical configuration is invalid."
+        ) from None
+
+
+def _parse_managed_secrets(payload: str) -> dict[str, str]:
+    try:
+        rows = json.loads(payload)
+        if not isinstance(rows, list):
+            raise ValueError()
+        values: dict[str, str] = {}
+        for row in rows:
+            key, value = row["key"], row["value"]
+            if (
+                not isinstance(key, str)
+                or not isinstance(value, str)
+                or "\0" in key
+                or "\0" in value
+                or row["workspace"] != INFISICAL_PROJECT
+                or row["secretPath"] != "/"
+                or row["type"] != "shared"
+                or key in values
+            ):
+                raise ValueError()
+            values[key] = value
+        return {key: values.get(key, "") for key in EXPERIMENT_SECRET_KEYS}
+    except Exception:
+        raise ManagedSecretsError(
+            "Unexpected Infisical response; provider details were suppressed."
+        ) from None
+
+
+def load_managed_secrets(root: Path = INFISICAL_ROOT) -> None:
+    """Replace private settings using the repository's fixed development source."""
+    # Clear stale credentials even if configuration or the provider request fails.
+    _clear_private_environment()
+    _validate_managed_configuration(root)
+    command = [
+        "infisical",
+        "export",
+        "--format",
+        "json",
+        "--expand=false",
+        "--include-imports=false",
+        "--secret-overriding=false",
+        "--projectId",
+        INFISICAL_PROJECT,
+        "--domain",
+        INFISICAL_DOMAIN,
+        "--env",
+        "dev",
+        "--path",
+        "/",
+        "--silent",
+        "--telemetry=false",
+    ]
+    environment = {
+        key: value for key, value in os.environ.items() if key not in PRIVATE_ENV_KEYS
+    }
+    try:
+        result = subprocess.run(
+            command,
+            cwd=root,
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        if result.returncode:
+            raise ValueError()
+    except Exception:
+        raise ManagedSecretsError(
+            "Infisical request failed. Check installation, login and project access; "
+            "provider details were suppressed."
+        ) from None
+    os.environ.update(_parse_managed_secrets(result.stdout))
 
 
 @dataclass(frozen=True)
@@ -50,8 +170,8 @@ def load_env_file(path: str | Path | None = None, *, override: bool = False) -> 
         key = key.strip()
         value = value.strip()
 
-        # Ignore entries with empty keys after trimming whitespace.
-        if not key:
+        # Userfile settings must never restore credentials or manager authentication.
+        if not key or key in PRIVATE_ENV_KEYS or _is_manager_setting(key):
             continue
 
         # Remove matching quotes around the value when the assignment uses them.
