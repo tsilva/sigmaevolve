@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 
 from sigmaevolve import cli as cli_module
+from sigmaevolve import env as env_module
 from sigmaevolve.cli import CliReconcileReporter, main
 from sigmaevolve.core import DEFAULT_GENERATION_MODEL
 from sigmaevolve.datasets import ArrayDatasetProvider
@@ -103,6 +104,29 @@ def _set_runtime_env(
             monkeypatch.setenv(key, value)
 
 
+@pytest.fixture(autouse=True)
+def managed_cli_provider(monkeypatch):
+    """Keep handler tests offline while exercising the real secret loader."""
+
+    def fake_load_managed_secrets():
+        rows = [
+            {
+                "key": key,
+                "value": os.environ.get(key, ""),
+                "workspace": env_module.INFISICAL_PROJECT,
+                "secretPath": "/",
+                "type": "shared",
+            }
+            for key in env_module.EXPERIMENT_SECRET_KEYS
+        ]
+        result = SimpleNamespace(returncode=0, stdout=json.dumps(rows), stderr="")
+        with monkeypatch.context() as provider_patch:
+            provider_patch.setattr(env_module.subprocess, "run", lambda *a, **k: result)
+            env_module.load_managed_secrets()
+
+    monkeypatch.setattr(cli_module, "load_managed_secrets", fake_load_managed_secrets)
+
+
 @pytest.fixture
 def patched_cli_system(monkeypatch):
     provider = _make_provider()
@@ -188,7 +212,7 @@ def test_cli_create_track_from_script_file(tmp_path, patched_cli_system, monkeyp
     )
     pool = track.policy_json["generation_backend"]["model_pool"]
     assert len(pool) == 8
-    assert pool[1]["model"] == "google/gemini-3.1-flash-lite-preview"
+    assert pool[1]["model"] == "google/gemini-3.8-flash"
 
 
 def test_cli_create_track_uses_script_defaults(
@@ -260,7 +284,7 @@ def test_cli_create_track_reports_progress_to_stderr(
     assert "--launcher" not in stderr
 
 
-def test_cli_loads_env_file_for_defaults(tmp_path, monkeypatch):
+def test_cli_loads_public_env_defaults_and_managed_private_keys(tmp_path, monkeypatch):
     env_dir = tmp_path / ".config" / "sigmaevolve"
     env_dir.mkdir(parents=True)
     env_file = env_dir / ".env"
@@ -269,9 +293,9 @@ def test_cli_loads_env_file_for_defaults(tmp_path, monkeypatch):
     env_file.write_text(
         "\n".join(
             [
-                f"SIGMAEVOLVE_DATABASE_URL=sqlite:///{db_path}",
+                "SIGMAEVOLVE_DATABASE_URL=sqlite:///obsolete-userfile.sqlite",
                 f"SIGMAEVOLVE_DATASET_ROOT={dataset_root}",
-                "SIGMAEVOLVE_OPENROUTER_API_KEY=test-key",
+                "SIGMAEVOLVE_OPENROUTER_API_KEY=obsolete-userfile-key",
                 "SENTINEL=loaded",
             ]
         )
@@ -283,12 +307,16 @@ def test_cli_loads_env_file_for_defaults(tmp_path, monkeypatch):
         return original_loader(env_file, override=override)
 
     monkeypatch.setattr(cli_module, "load_env_file", fake_loader)
-    _set_runtime_env(monkeypatch)
-    monkeypatch.delenv("SIGMAEVOLVE_OPENROUTER_API_KEY", raising=False)
+    _set_runtime_env(
+        monkeypatch,
+        database_url=f"sqlite:///{db_path}",
+        openrouter_api_key="managed-test-key",
+    )
     monkeypatch.delenv("SENTINEL", raising=False)
 
     assert main(["list-trials", "missing"]) == 0
-    assert os.environ["SIGMAEVOLVE_OPENROUTER_API_KEY"] == "test-key"
+    assert os.environ["SIGMAEVOLVE_OPENROUTER_API_KEY"] == "managed-test-key"
+    assert os.environ["SIGMAEVOLVE_DATASET_ROOT"] == str(dataset_root)
     assert os.environ["SENTINEL"] == "loaded"
 
 

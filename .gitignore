@@ -8,8 +8,12 @@ __pycache__/
 *.egg-info/
 .vscode/
 artifacts/
+wandb/
 .next/
 node_modules/
 *.tsbuildinfo
 .vercel/
 .vercel
+
+.venv/
+dashboard/.next-dev-*/

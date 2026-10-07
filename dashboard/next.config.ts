@@ -3,6 +3,7 @@ import { withSentryConfig } from "@sentry/nextjs";
 
 const nextConfig: NextConfig = {
   reactStrictMode: true,
+  distDir: process.env.NEXT_DEV_OUTPUT_DIR || ".next",
 };
 
 export default withSentryConfig(nextConfig, {

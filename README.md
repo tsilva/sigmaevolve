@@ -1,8 +1,10 @@
-<div align="center">
+<p align="center">
   <img src="dashboard/logo.png" alt="SigmaEvolve" width="420" />
-
-  **🧬 Evolutionary training runs for immutable datasets 🧬**
-</div>
+  <br />
+  <!-- repo-tagline:start -->
+  <strong>🧬 Evolutionary training runs for immutable datasets 🧬</strong>
+  <!-- repo-tagline:end -->
+</p>
 
 SigmaEvolve is an evolutionary training harness for classification experiments.
 It keeps datasets fixed, asks an LLM to mutate only marked regions of a
@@ -21,22 +23,13 @@ database.
 ```bash
 git clone git@github.com:tsilva/sigmaevolve.git
 cd sigmaevolve
-uv sync --extra dev --extra datasets --extra modal
-npm --prefix dashboard install
+uv sync --frozen --all-extras --no-config
+npm --prefix dashboard ci --ignore-scripts --min-release-age=7
 cp dashboard/.env.example dashboard/.env.local
 mkdir -p ~/.config/sigmaevolve
 $EDITOR ~/.config/sigmaevolve/.env
+npm --prefix dashboard run secrets:check
 ```
-
-Minimum CLI configuration:
-
-```dotenv
-SIGMAEVOLVE_DATABASE_URL=postgresql://user:password@host:5432/sigmaevolve
-SIGMAEVOLVE_OPENROUTER_API_KEY=...
-SIGMAEVOLVE_DATASET_ROOT=./artifacts/datasets
-```
-
-Set `DATABASE_URL` in `dashboard/.env.local` to the same database URL.
 
 Seed the bundled MNIST track, run one local candidate, and inspect trial state:
 
@@ -46,13 +39,7 @@ uv run sigmaevolve --launcher inline launch <track_id> 1
 uv run sigmaevolve list-trials <track_id>
 ```
 
-Start the dashboard from the repo root:
-
-```bash
-npm --prefix dashboard run dev
-```
-
-Open [http://localhost:3000](http://localhost:3000).
+Production dashboard credentials live separately in `sigmaevolve-production`, Production `/`, with automatic sync to this Vercel project’s Production environment. Redeploy after changes. Preview credentials remain separate. `npm --prefix dashboard run build:secrets` builds locally with development credentials.
 
 ## Commands
 
@@ -68,7 +55,9 @@ uv run sigmaevolve modal-sync-dataset <dataset_id>
 uv run pytest                                     # run Python tests
 uv run ruff check .                               # lint Python
 uv run ruff format .                              # format Python
+npm --prefix dashboard audit --audit-level=high   # audit dashboard dependencies
 npm --prefix dashboard run test                   # run dashboard tests
+npm --prefix dashboard exec -- tsc --noEmit       # type-check the dashboard
 npm --prefix dashboard run build                  # build the dashboard
 ```
 
@@ -99,3 +88,11 @@ npm --prefix dashboard run build                  # build the dashboard
 ## License
 
 No root-level license file is present in this repository.
+
+## Secret scanning
+
+GitHub Actions scans changed commits with the pinned Infisical CLI. New branches
+and rewritten pushes scan the complete history reachable from the new head, even
+when the previous commit is no longer available. Missing pull-request revisions
+and scanner errors still fail the check. Reports publish only finding locations;
+credentials and matched source content remain private.

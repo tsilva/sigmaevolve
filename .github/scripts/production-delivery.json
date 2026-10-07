@@ -1,0 +1,20 @@
+{
+  "repository": "tsilva/sigmaevolve",
+  "githubRepositoryId": 1186449069,
+  "identityId": "672c01c3-c025-40f9-b89b-5abcc03e8261",
+  "infisicalProjectId": "2fbfdb85-b6be-4951-9580-7f6582c825af",
+  "secretNames": [
+    "DATABASE_URL",
+    "NEXT_PUBLIC_SENTRY_DSN",
+    "SENTRY_AUTH_TOKEN",
+    "SENTRY_DSN",
+    "SENTRY_ORG",
+    "SENTRY_PROJECT",
+    "SENTRY_SMOKE_TOKEN",
+    "SENTRY_TRACES_SAMPLE_RATE"
+  ],
+  "destination": "vercel",
+  "vercelProjectId": "prj_Kn7VMXsapAZYHNgxkmRhb8pQhjOI",
+  "vercelProjectName": "sigmaevolve",
+  "vercelTeamId": "team_eE2Iv7IMqPOx8ZVN2xNfR2f0"
+}
