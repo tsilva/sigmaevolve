@@ -26,28 +26,31 @@ from sigmaevolve.core import (
     compute_script_hash,
     normalize_source,
 )
+from sigmaevolve.script_spec import (
+    EvolveBlock,
+    ScriptSpecError,
+    is_evolve_marker_line,
+    parse_script_spec,
+    parse_source_layout,
+    require_script_spec,
+)
 
-_BASELINE_TEMPLATE_PATH = Path(__file__).with_name("baseline_template.py")
+_BASELINES_DIR = Path(__file__).with_name("baselines")
+_DEFAULT_BASELINE_PATH = _BASELINES_DIR / "mnist.py"
 
 
-def build_baseline_train_script() -> str:
-    template_source = _BASELINE_TEMPLATE_PATH.read_text(encoding="utf-8")
+def build_baseline_train_script(source_path: str | Path | None = None) -> str:
+    baseline_path = (
+        Path(source_path) if source_path is not None else _DEFAULT_BASELINE_PATH
+    )
+    template_source = baseline_path.read_text(encoding="utf-8")
+    require_script_spec(template_source)
+    parse_source_layout(template_source)
     return normalize_source(template_source)
 
 
 EVOLVE_BLOCK_START = "# EVOLVE-BLOCK-START"
 EVOLVE_BLOCK_END = "# EVOLVE-BLOCK-END"
-
-_EVOLVE_BLOCK_PATTERN = re.compile(
-    rf"(?ms)^{re.escape(EVOLVE_BLOCK_START)}\n(.*?)^{re.escape(EVOLVE_BLOCK_END)}\n?"
-)
-_EVOLVE_PAYLOAD_START_PATTERNS = (
-    r"^CONFIG = \{\n",
-    r"^(?:import [^\n]+\n)+(?:\n)?class EvolvedModel\(torch\.nn\.Module\):\n|^class EvolvedModel\(torch\.nn\.Module\):\n",
-    r"^(?:import [^\n]+\n)+(?:\n)?def configure_data\(\*, train_x, train_y, validation_x, random_seed\):\n|^def configure_data\(\*, train_x, train_y, validation_x, random_seed\):\n",
-    r"^(?:import [^\n]+\n)+(?:\n)?def configure_optimization\(\*, model, train_loader, num_epochs, num_classes\):\n|^def configure_optimization\(\*, model, train_loader, num_epochs, num_classes\):\n",
-    r"^def configure_training_policy\(\*, num_epochs\):\n",
-)
 
 
 class EvolveBlockError(ValueError):
@@ -67,14 +70,36 @@ class ParsedGenerationResponse:
 
 
 TASK_DESCRIPTION_HEADER = "TASK_DESCRIPTION:"
+MAX_CONTEXT_TRIALS = 4
+MAX_NEGATIVE_TRIALS = 8
+INSPIRATION_POOL_SIZE = 8
+MAX_RENDERED_INSPIRATIONS = 2
+MAX_RENDERED_NEGATIVE_TRIALS = 4
+MAX_NEGATIVE_DETAIL_CHARS = 120
+MAX_NEGATIVE_STDERR_CHARS = 120
 
 
 def _contains_evolve_block_marker_line(text: str) -> bool:
     for line in text.splitlines():
-        stripped_line = line.strip()
-        if stripped_line in {EVOLVE_BLOCK_START, EVOLVE_BLOCK_END}:
+        if is_evolve_marker_line(line):
             return True
     return False
+
+
+def _candidate_kind_from_provenance(
+    provenance_json: dict[str, Any] | None,
+) -> str:
+    payload = dict(provenance_json or {})
+    candidate_kind = payload.get("candidate_kind")
+    if isinstance(candidate_kind, str) and candidate_kind.strip():
+        return candidate_kind
+    return CANDIDATE_KIND_STRATEGY_V1
+
+
+def _candidate_kind_from_context(context_trials: list[TrialSummary]) -> str:
+    for trial in context_trials:
+        return _candidate_kind_from_provenance(trial.provenance_json)
+    return CANDIDATE_KIND_STRATEGY_V1
 
 
 def _line_indent(line: str) -> str:
@@ -131,62 +156,12 @@ def _find_matching_line_ranges(
 
 
 def split_evolve_blocks(source: str) -> tuple[list[str], list[str]]:
-    normalized = normalize_source(source)
-    matches = list(_EVOLVE_BLOCK_PATTERN.finditer(normalized))
-    if not matches:
-        raise EvolveBlockError("source must contain at least one evolve block")
+    try:
+        layout = parse_source_layout(source)
+    except ScriptSpecError as exc:
+        raise EvolveBlockError(str(exc)) from exc
 
-    immutable_parts: list[str] = []
-    block_payloads: list[str] = []
-    cursor = 0
-    for match in matches:
-        block_start, block_end = match.span(1)
-        immutable_parts.append(normalized[cursor:block_start])
-        block_payloads.append(match.group(1))
-        cursor = block_end
-    immutable_parts.append(normalized[cursor:])
-    return immutable_parts, block_payloads
-
-
-def _split_payload_and_separator(segment: str) -> tuple[str, str]:
-    lines = segment.splitlines(keepends=True)
-    separator_start = len(lines)
-    while separator_start > 0 and lines[separator_start - 1].strip() == "":
-        separator_start -= 1
-    return "".join(lines[:separator_start]), "".join(lines[separator_start:])
-
-
-def _split_evolve_payload_sections(block_payload: str) -> tuple[list[str], list[str]]:
-    normalized = normalize_source(block_payload)
-    start_offsets: list[int] = []
-    for pattern in _EVOLVE_PAYLOAD_START_PATTERNS:
-        match = re.search(pattern, normalized, flags=re.MULTILINE)
-        if match is None:
-            raise EvolveBlockError(
-                "source must contain the expected evolve payload sections"
-            )
-        start_offsets.append(match.start())
-    if start_offsets != sorted(start_offsets):
-        raise EvolveBlockError(
-            "source must contain the expected evolve payload sections"
-        )
-    immutable_parts: list[str] = []
-    payloads: list[str] = []
-    immutable_parts.append(normalized[: start_offsets[0]])
-    for index, start in enumerate(start_offsets):
-        end = (
-            start_offsets[index + 1]
-            if index + 1 < len(start_offsets)
-            else len(normalized)
-        )
-        payload, separator = _split_payload_and_separator(normalized[start:end])
-        if not payload:
-            raise EvolveBlockError(
-                "source must contain the expected evolve payload sections"
-            )
-        payloads.append(payload)
-        immutable_parts.append(separator)
-    return immutable_parts, payloads
+    return layout.immutable_parts, [block.payload for block in layout.blocks]
 
 
 def _merge_payloads(immutable_parts: list[str], payloads: list[str]) -> str:
@@ -207,27 +182,25 @@ def _extract_outer_evolve_payload(source: str) -> tuple[list[str], str]:
 
 def extract_evolve_block_payloads(source: str) -> list[str]:
     _, outer_payload = _extract_outer_evolve_payload(source)
-    _, payloads = _split_evolve_payload_sections(outer_payload)
-    return payloads
+    return [normalize_source(outer_payload)]
 
 
 def replace_evolve_block_payloads(
     template_source: str, block_payloads: list[str]
 ) -> str:
-    outer_immutable_parts, outer_payload = _extract_outer_evolve_payload(
+    outer_immutable_parts, current_payload = _extract_outer_evolve_payload(
         template_source
     )
-    section_immutable_parts, current_payloads = _split_evolve_payload_sections(
-        outer_payload
-    )
-    if len(block_payloads) != len(current_payloads):
+    if len(block_payloads) != 1:
         raise EvolveBlockError(
-            f"expected {len(current_payloads)} evolve block payloads, "
-            f"received {len(block_payloads)}"
+            f"expected 1 evolve block payload, received {len(block_payloads)}"
         )
-    updated_outer_payload = _merge_payloads(section_immutable_parts, block_payloads)
+    current_lines = current_payload.splitlines(keepends=True)
+    replacement_lines = normalize_source(block_payloads[0]).splitlines(keepends=True)
+    block_indent = _common_indent(current_lines)
+    indented_replacement = "".join(_reindent_lines(replacement_lines, block_indent))
     return normalize_source(
-        _merge_payloads(outer_immutable_parts, [updated_outer_payload])
+        _merge_payloads(outer_immutable_parts, [indented_replacement])
     )
 
 
@@ -351,26 +324,60 @@ def parse_search_replace_blocks(response_text: str) -> list[SearchReplaceBlock]:
     return blocks
 
 
+def _find_evolve_block_matches(
+    source: str,
+    search_lines: list[str],
+) -> list[tuple[int, int, str, str]]:
+    try:
+        layout = parse_source_layout(source)
+    except ScriptSpecError as exc:
+        raise EvolveBlockError(str(exc)) from exc
+
+    source_lines = normalize_source(source).splitlines(keepends=True)
+    matches: list[tuple[int, int, str, str]] = []
+    for block in layout.blocks:
+        block_source_lines = source_lines[
+            block.payload_start_line : block.payload_end_line
+        ]
+        for start, end, block_indent in _find_matching_line_ranges(
+            block_source_lines,
+            search_lines,
+        ):
+            matches.append(
+                (
+                    block.payload_start_line + start,
+                    block.payload_start_line + end,
+                    block_indent,
+                    block.name,
+                )
+            )
+    return matches
+
+
 def apply_search_replace_blocks(
     current_source: str, blocks: list[SearchReplaceBlock]
 ) -> str:
-    updated_lines = normalize_source(current_source).splitlines(keepends=True)
+    updated_source = normalize_source(current_source)
     for index, block in enumerate(blocks, start=1):
+        updated_lines = updated_source.splitlines(keepends=True)
         search_lines = normalize_source(block.search).splitlines(keepends=True)
         replace_lines, _ = _canonicalize_patch_text(block.replace)
-        matches = _find_matching_line_ranges(updated_lines, search_lines)
+        matches = _find_evolve_block_matches(updated_source, search_lines)
         if not matches:
             raise EvolveBlockError(
-                f"SEARCH block {index} did not match the current program"
+                f"SEARCH block {index} did not match any evolve block in the current program"
             )
         if len(matches) > 1:
+            block_names = ", ".join(sorted({match[3] for match in matches}))
             raise EvolveBlockError(
-                f"SEARCH block {index} matched multiple locations in the current program"
+                "SEARCH block "
+                f"{index} matched multiple locations across evolve blocks: {block_names}"
             )
 
-        start, end, indent = matches[0]
+        start, end, indent, _ = matches[0]
         updated_lines[start:end] = _reindent_lines(replace_lines, indent)
-    return normalize_source("".join(updated_lines))
+        updated_source = normalize_source("".join(updated_lines))
+    return updated_source
 
 
 def materialize_candidate_source(current_source: str, generated_source: str) -> str:
@@ -450,7 +457,7 @@ class FixedGenerationBackend:
             provenance_json={
                 "backend": "openrouter",
                 "model": self.model_name,
-                "candidate_kind": CANDIDATE_KIND_STRATEGY_V1,
+                "candidate_kind": _candidate_kind_from_context(context_trials),
                 "generation_index": generation_index,
                 "duplicate_retry_count": duplicate_retry_count,
                 "generation_config": {
@@ -504,6 +511,35 @@ def _render_prompt_template(name: str, **variables: str) -> str:
         return variables[variable_name]
 
     return re.sub(r"{{([a-zA-Z0-9_]+)}}", replace_variable, template)
+
+
+def _first_message_content(
+    messages: list[dict[str, str]],
+    *,
+    role: str,
+) -> str:
+    for message in messages:
+        if message.get("role") != role:
+            continue
+        content = message.get("content")
+        if isinstance(content, str):
+            return content
+    return ""
+
+
+def _join_message_contents(
+    messages: list[dict[str, str]],
+    *,
+    role: str,
+) -> str:
+    contents = [
+        content
+        for message in messages
+        if message.get("role") == role
+        for content in [message.get("content")]
+        if isinstance(content, str) and content
+    ]
+    return "\n\n".join(contents)
 
 
 @dataclass(frozen=True)
@@ -631,6 +667,14 @@ class OpenRouterGenerationBackend:
             lines.append(f"{prefix}- {label}: {self._format_scalar(value)}")
         return lines
 
+    def _trim_prompt_excerpt(self, value: object, *, limit: int) -> str:
+        text = " ".join(self._format_scalar(value).split())
+        if len(text) <= limit:
+            return text
+        if limit <= 3:
+            return text[:limit]
+        return f"{text[: limit - 3].rstrip()}..."
+
     def _summarize_error(self, error_json: dict[str, object] | None) -> list[str]:
         # Extract the most actionable error fields for prompt-side diagnostics.
         if not error_json:
@@ -644,17 +688,35 @@ class OpenRouterGenerationBackend:
         # Include the human-readable detail when the error payload has one.
         detail = error_json.get("detail")
         if detail is not None:
-            lines.append(f"- error detail: {self._format_scalar(detail)}")
+            trimmed_detail = self._trim_prompt_excerpt(
+                detail,
+                limit=MAX_NEGATIVE_DETAIL_CHARS,
+            )
+            lines.append(f"- error detail: {trimmed_detail}")
 
         # Surface the subprocess return code for execution failures.
         returncode = error_json.get("returncode")
         if returncode is not None:
             lines.append(f"- returncode: {self._format_scalar(returncode)}")
 
+        # Include duplicate bookkeeping when the row points at an existing candidate.
+        existing_trial_id = error_json.get("existing_trial_id")
+        if existing_trial_id is not None:
+            lines.append(
+                f"- existing trial id: {self._format_scalar(existing_trial_id)}"
+            )
+
+        candidate_hash = error_json.get("candidate_hash")
+        if candidate_hash is not None:
+            lines.append(f"- candidate hash: {self._format_scalar(candidate_hash)}")
+
         # Capture the last stderr line as the shortest useful excerpt.
         stderr = error_json.get("stderr")
         if isinstance(stderr, str) and stderr.strip():
-            excerpt = stderr.strip().splitlines()[-1][:240]
+            excerpt = self._trim_prompt_excerpt(
+                stderr.strip().splitlines()[-1],
+                limit=MAX_NEGATIVE_STDERR_CHARS,
+            )
             lines.append(f"- stderr excerpt: {excerpt}")
         return lines
 
@@ -666,30 +728,129 @@ class OpenRouterGenerationBackend:
                 return self._format_scalar(metrics[name])
         return "n/a"
 
+    def _prompt_trial_source(
+        self,
+        trial: TrialSummary,
+        *,
+        strip_evolve_block_tags: bool = False,
+        prefer_generated_source: bool = False,
+    ) -> str:
+        source = trial.source
+        if prefer_generated_source:
+            generation_payload = dict(
+                (trial.provenance_json or {}).get("generation") or {}
+            )
+            generated_source = generation_payload.get("generated_source")
+            has_generated_source = isinstance(generated_source, str) and bool(
+                generated_source.strip()
+            )
+            if has_generated_source:
+                source = generated_source
+
+        if strip_evolve_block_tags:
+            source = self._strip_evolve_block_tags(source)
+        return source
+
     def _strip_evolve_block_tags(self, source: str) -> str:
         lines = source.splitlines()
-        filtered_lines = [
-            line for line in lines if line not in {EVOLVE_BLOCK_START, EVOLVE_BLOCK_END}
-        ]
+        filtered_lines = [line for line in lines if not is_evolve_marker_line(line)]
         return "\n".join(filtered_lines) + ("\n" if source.endswith("\n") else "")
+
+    def _render_compact_evolve_blocks(self, blocks: list[EvolveBlock]) -> str:
+        show_region_names = len(blocks) > 1 or any(
+            block.name != "main" for block in blocks
+        )
+        sections: list[str] = []
+        for block in blocks:
+            body = block.payload.rstrip()
+            if show_region_names:
+                section_lines = [f"# EVOLVE-REGION: {block.name}"]
+                if body:
+                    section_lines.append(body)
+                sections.append("\n".join(section_lines))
+                continue
+            sections.append(body)
+
+        compact_source = "\n\n".join(
+            section for section in sections if section
+        ).rstrip()
+        return f"{compact_source}\n" if compact_source else ""
+
+    def _extract_compact_evolve_source(self, source: str) -> str:
+        try:
+            layout = parse_source_layout(source)
+        except ScriptSpecError:
+            return self._strip_evolve_block_tags(source)
+
+        return self._render_compact_evolve_blocks(layout.blocks)
 
     def _render_trial_prompt_block(
         self,
         trial: TrialSummary,
         *,
+        header: str,
         strip_evolve_block_tags: bool = False,
-    ) -> list[str]:
+        compact_evolve_source: bool = False,
+    ) -> str:
         # Normalize the source snapshot before rendering the trial prompt block.
-        source = trial.source
-        if strip_evolve_block_tags:
-            source = self._strip_evolve_block_tags(source)
+        source = self._prompt_trial_source(
+            trial,
+            strip_evolve_block_tags=strip_evolve_block_tags,
+        )
+        if compact_evolve_source:
+            source = self._extract_compact_evolve_source(source)
         rendered = _render_prompt_template(
             "trial.md",
-            val_acc=self._trial_prompt_metric(trial, "val_acc", "accuracy"),
-            val_loss=self._trial_prompt_metric(trial, "val_loss"),
+            header=header,
             source=source.rstrip(),
         )
-        return rendered.splitlines()
+        return rendered.rstrip()
+
+    def _reference_header(self, trial: TrialSummary) -> str:
+        return (
+            "REFERENCE "
+            f"val_acc={self._trial_prompt_metric(trial, 'val_acc', 'accuracy')} "
+            f"val_loss={self._trial_prompt_metric(trial, 'val_loss')}"
+        )
+
+    def _current_program_header(self, trial: TrialSummary) -> str:
+        return (
+            "CURRENT_PROGRAM "
+            f"val_acc={self._trial_prompt_metric(trial, 'val_acc', 'accuracy')} "
+            f"val_loss={self._trial_prompt_metric(trial, 'val_loss')}"
+        )
+
+    def _render_negative_trial_prompt_block(self, trial: TrialSummary) -> str:
+        source = self._prompt_trial_source(
+            trial,
+            prefer_generated_source=True,
+        )
+        source = self._extract_compact_evolve_source(source)
+        reason = self._format_scalar(trial.outcome_reason or "unknown")
+        detail = "none"
+        for line in self._summarize_error(trial.error_json):
+            if line.startswith("- error detail: "):
+                detail = line.removeprefix("- error detail: ")
+                break
+            if line.startswith("- stderr excerpt: "):
+                detail = line.removeprefix("- stderr excerpt: ")
+        duplicate_count = None
+        if trial.error_json is not None:
+            raw_duplicate_count = trial.error_json.get("duplicate_count")
+            if isinstance(raw_duplicate_count, int) and raw_duplicate_count > 1:
+                duplicate_count = raw_duplicate_count
+
+        frequency_suffix = (
+            f" duplicate_count={duplicate_count}" if duplicate_count is not None else ""
+        )
+        lines = [f"NEGATIVE reason={reason} detail={detail}{frequency_suffix}"]
+        if trial.error_json and trial.error_json.get("returncode") is not None:
+            lines.append(
+                f"returncode={self._format_scalar(trial.error_json['returncode'])}"
+            )
+        if source.rstrip():
+            lines.append(source.rstrip())
+        return "\n".join(lines)
 
     def _build_system_prompt_text(self) -> str:
         return _render_prompt_template(
@@ -702,6 +863,7 @@ class OpenRouterGenerationBackend:
         self,
         track: TrackRecord,
         dataset_manifest: DatasetManifest,
+        current_program: TrialSummary | None,
     ) -> str:
         prompt_context: dict[str, object] = {
             "dataset_id": track.dataset_id,
@@ -719,6 +881,14 @@ class OpenRouterGenerationBackend:
         if dataset_metadata:
             prompt_context["dataset_metadata"] = dataset_metadata
 
+        if current_program is not None:
+            script_spec = parse_script_spec(current_program.source)
+            if script_spec is not None:
+                prompt_context["script_runner"] = script_spec.runner
+                prompt_context["script_evolution_task"] = script_spec.evolution.task
+                if script_spec.evolution.objective is not None:
+                    prompt_context["script_objective"] = script_spec.evolution.objective
+
         return "\n".join(self._format_mapping(prompt_context))
 
     def _build_user_prompt_text(
@@ -729,42 +899,111 @@ class OpenRouterGenerationBackend:
         negative_trials: list[TrialSummary],
         selected_config: dict[str, object],
     ) -> str:
-        del negative_trials, selected_config
-        task_context_text = self._build_prompt_context_text(track, dataset_manifest)
-
-        # Split the context into the current program and optional prior examples.
+        del selected_config
         current_program = context_trials[0] if context_trials else None
+        task_context_text = self._build_prompt_context_text(
+            track,
+            dataset_manifest,
+            current_program,
+        )
         prior_programs = context_trials[1:] if len(context_trials) > 1 else []
-
-        # Render prior programs in full so they remain independent references.
+        prior_programs_text = "None."
         if prior_programs:
-            prior_program_blocks = []
-            for trial in prior_programs:
-                prior_program_blocks.append(
-                    "\n".join(
-                        self._render_trial_prompt_block(
-                            trial,
-                            strip_evolve_block_tags=True,
-                        )
-                    )
+            rendered_prior_programs = [
+                self._render_trial_prompt_block(
+                    trial,
+                    header=(
+                        f"---\n"
+                        f"val_acc: {self._trial_prompt_metric(trial, 'val_acc', 'accuracy')}\n"
+                        f"val_loss: {self._trial_prompt_metric(trial, 'val_loss')}\n"
+                        f"---"
+                    ),
+                    compact_evolve_source=True,
                 )
-            prior_programs_text = "\n".join(prior_program_blocks)
-        else:
-            prior_programs_text = "None."
+                for trial in prior_programs[:MAX_RENDERED_INSPIRATIONS]
+            ]
+            prior_programs_text = "\n".join(rendered_prior_programs)
 
-        # Render the primary current program in full so the model has a base candidate.
+        current_program_text = "None."
         if current_program is not None:
-            current_program_text = "\n".join(
-                self._render_trial_prompt_block(current_program)
+            current_program_text = self._render_trial_prompt_block(
+                current_program,
+                header=(
+                    f"---\n"
+                    f"val_acc: {self._trial_prompt_metric(current_program, 'val_acc', 'accuracy')}\n"
+                    f"val_loss: {self._trial_prompt_metric(current_program, 'val_loss')}\n"
+                    f"---"
+                ),
             )
-        else:
-            current_program_text = "None."
+
+        negative_trials_text = "None."
+        if negative_trials:
+            rendered_negative_trials = [
+                self._render_trial_prompt_block(
+                    trial,
+                    header=(
+                        f"outcome_reason: {self._format_scalar(trial.outcome_reason or 'unknown')}"
+                    ),
+                    strip_evolve_block_tags=True,
+                    compact_evolve_source=True,
+                )
+                + (
+                    ""
+                    if not trial.error_json
+                    else "\n" + "\n".join(self._summarize_error(trial.error_json))
+                )
+                for trial in negative_trials[:MAX_RENDERED_NEGATIVE_TRIALS]
+            ]
+            negative_trials_text = "\n".join(rendered_negative_trials)
+
         return _render_prompt_template(
             "user.md",
             task_context=task_context_text,
             prior_programs=prior_programs_text,
+            negative_trials=negative_trials_text,
             current_program=current_program_text,
         )
+
+    def _build_reference_appendix_text(self, prior_programs: list[TrialSummary]) -> str:
+        entries = prior_programs[:MAX_RENDERED_INSPIRATIONS]
+        if not entries:
+            return "REFERENCE APPENDIX\nNone."
+
+        rendered_entries = [
+            self._render_trial_prompt_block(
+                trial,
+                header=self._reference_header(trial),
+                compact_evolve_source=True,
+            )
+            for trial in entries
+        ]
+        return "REFERENCE APPENDIX\n\n" + "\n\n".join(rendered_entries)
+
+    def _build_negative_appendix_text(
+        self,
+        negative_trials: list[TrialSummary],
+    ) -> str:
+        entries = negative_trials[:MAX_RENDERED_NEGATIVE_TRIALS]
+        if not entries:
+            return "NEGATIVE APPENDIX\nNone."
+
+        rendered_entries = [
+            self._render_negative_trial_prompt_block(trial) for trial in entries
+        ]
+        return "NEGATIVE APPENDIX\n\n" + "\n\n".join(rendered_entries)
+
+    def _build_current_program_appendix_text(
+        self,
+        current_program: TrialSummary | None,
+    ) -> str:
+        if current_program is None:
+            return "CURRENT PROGRAM APPENDIX\nNone."
+
+        rendered_program = self._render_trial_prompt_block(
+            current_program,
+            header=self._current_program_header(current_program),
+        )
+        return "CURRENT PROGRAM APPENDIX\n\n" + rendered_program
 
     def _build_prompt(
         self,
@@ -838,10 +1077,8 @@ class OpenRouterGenerationBackend:
     ) -> dict[str, object]:
         # Preserve the prompt text and response metadata in a single provenance shape.
         request_messages = context.request_messages
-        system_prompt = request_messages[0]["content"] if request_messages else ""
-        user_prompt = (
-            request_messages[1]["content"] if len(request_messages) > 1 else ""
-        )
+        system_prompt = _first_message_content(request_messages, role="system")
+        user_prompt = _join_message_contents(request_messages, role="user")
         generation_payload: dict[str, object] = {
             "system_prompt": system_prompt,
             "user_prompt": user_prompt,
@@ -860,7 +1097,7 @@ class OpenRouterGenerationBackend:
         provenance_json: dict[str, object] = {
             "backend": "openrouter",
             "model": str(context.selected_config["model"]),
-            "candidate_kind": CANDIDATE_KIND_STRATEGY_V1,
+            "candidate_kind": _candidate_kind_from_context(context.context_trials),
             "generation_config": dict(context.selected_config),
             "generation_index": generation_index,
             "duplicate_retry_count": duplicate_retry_count,
@@ -1197,6 +1434,13 @@ class GenerationAttempt:
     generation_index: int
     duplicate_retry_count: int
     context_trials: list[TrialSummary]
+    sampled_candidates: list[dict[str, Any]]
+
+
+@dataclass(frozen=True)
+class GenerationContextSelection:
+    context_trials: list[TrialSummary]
+    sampled_candidates: list[dict[str, Any]]
 
 
 class GenerationCoordinator:
@@ -1204,50 +1448,183 @@ class GenerationCoordinator:
         self.repository = repository
         self.generator = generator
 
+    def _negative_trial_key(self, trial: TrialSummary) -> str:
+        generation_payload = dict((trial.provenance_json or {}).get("generation") or {})
+        candidate_hash = generation_payload.get("candidate_hash")
+        if isinstance(candidate_hash, str) and candidate_hash:
+            return candidate_hash
+
+        generated_source = generation_payload.get("generated_source")
+        if isinstance(generated_source, str) and generated_source.strip():
+            return compute_script_hash(generated_source)
+        return compute_script_hash(trial.source)
+
+    def _with_duplicate_frequency(
+        self,
+        trial: TrialSummary,
+        *,
+        duplicate_count: int,
+    ) -> TrialSummary:
+        error_json = dict(trial.error_json or {})
+        error_json["duplicate_count"] = duplicate_count
+        return TrialSummary(
+            trial_id=trial.trial_id,
+            metrics_json=dict(trial.metrics_json) if trial.metrics_json else None,
+            source=trial.source,
+            provenance_json=dict(trial.provenance_json or {}),
+            outcome_reason=trial.outcome_reason,
+            error_json=error_json,
+        )
+
+    def _build_sampled_candidate_rows(
+        self,
+        candidates: list[TrialSummary],
+        *,
+        current_program: TrialSummary,
+        inspirations: list[TrialSummary],
+        current_probabilities: dict[str, float],
+    ) -> list[dict[str, Any]]:
+        selected_roles = {current_program.trial_id: "current"}
+        selected_roles.update({trial.trial_id: "inspiration" for trial in inspirations})
+        rows: list[dict[str, Any]] = []
+        for rank, trial in enumerate(candidates, start=1):
+            rows.append(
+                {
+                    "rank": rank,
+                    "trial_id": trial.trial_id,
+                    "score": float(trial.score),
+                    "selection_probability": current_probabilities[trial.trial_id],
+                    "selected_role": selected_roles.get(trial.trial_id),
+                }
+            )
+        return rows
+
+    def sample_successful_context_selection(
+        self,
+        track_id: str,
+        sampling_seed: int,
+        generation_index: int,
+    ) -> GenerationContextSelection:
+        # Prefer finished successful variants that already have scored metrics.
+        candidates = self.repository.sample_trial_context(
+            track_id,
+            limit=self.repository.count_trials(track_id),
+        )
+        if not candidates:
+            return GenerationContextSelection(context_trials=[], sampled_candidates=[])
+        if len(candidates) == 1:
+            only_candidate = candidates[0]
+            return GenerationContextSelection(
+                context_trials=[only_candidate],
+                sampled_candidates=[
+                    {
+                        "rank": 1,
+                        "trial_id": only_candidate.trial_id,
+                        "score": float(only_candidate.score),
+                        "selection_probability": 1.0,
+                        "selected_role": "current",
+                    }
+                ],
+            )
+
+        rng = random.Random(int(sampling_seed) + generation_index)
+        remaining = list(candidates)
+        remaining_weights = [max(float(trial.score), 0.0) for trial in remaining]
+        total_weight = sum(remaining_weights)
+        if total_weight <= 0.0:
+            current_probabilities = {
+                trial.trial_id: 1.0 / len(candidates) for trial in candidates
+            }
+            selected_index = rng.randrange(len(remaining))
+        else:
+            current_probabilities = {
+                trial.trial_id: weight / total_weight
+                for trial, weight in zip(candidates, remaining_weights, strict=True)
+            }
+            selected_index = rng.choices(
+                range(len(remaining)),
+                weights=remaining_weights,
+                k=1,
+            )[0]
+        current_program = remaining.pop(selected_index)
+        remaining_weights.pop(selected_index)
+
+        inspiration_pool = remaining[: min(INSPIRATION_POOL_SIZE, len(remaining))]
+        inspiration_count = min(MAX_CONTEXT_TRIALS - 1, len(inspiration_pool))
+        inspiration_indices = rng.sample(
+            range(len(inspiration_pool)), k=inspiration_count
+        )
+        inspirations = [inspiration_pool[index] for index in inspiration_indices]
+
+        # Keep the current program first and sort inspirations in stable best-first order.
+        candidate_ranks = {
+            trial.trial_id: index for index, trial in enumerate(candidates)
+        }
+        inspirations.sort(
+            key=lambda trial: (-float(trial.score), candidate_ranks[trial.trial_id])
+        )
+        return GenerationContextSelection(
+            context_trials=[current_program, *inspirations],
+            sampled_candidates=self._build_sampled_candidate_rows(
+                candidates,
+                current_program=current_program,
+                inspirations=inspirations,
+                current_probabilities=current_probabilities,
+            ),
+        )
+
     def sample_successful_context_trials(
         self,
         track_id: str,
         sampling_seed: int,
         generation_index: int,
     ) -> list[TrialSummary]:
-        # Prefer finished strategy variants that already have scored metrics.
-        candidates = self.repository.sample_trial_context(
+        selection = self.sample_successful_context_selection(
             track_id,
+            sampling_seed,
+            generation_index,
+        )
+        return selection.context_trials
+
+    def sample_negative_trials(
+        self,
+        track_id: str,
+        *,
+        limit: int = MAX_NEGATIVE_TRIALS,
+    ) -> list[TrialSummary]:
+        # Rank duplicate negatives by repeated collisions, then fall back to recency.
+        recent_duplicates = self.repository.list_recent_trial_summaries(
+            track_id,
+            outcome_reasons={OUTCOME_DUPLICATE},
             limit=self.repository.count_trials(track_id),
-            candidate_kind=CANDIDATE_KIND_STRATEGY_V1,
         )
-        if not candidates:
+        if not recent_duplicates:
             return []
-        if len(candidates) == 1:
-            return [candidates[0]]
 
-        rng = random.Random(int(sampling_seed) + generation_index)
-        remaining = list(candidates)
-        remaining_weights = [max(float(trial.score), 0.0) for trial in remaining]
-        sampled: list[TrialSummary] = []
+        grouped_duplicates: dict[str, list[TrialSummary]] = {}
+        recency_rank: dict[str, int] = {}
+        for index, trial in enumerate(recent_duplicates):
+            duplicate_key = self._negative_trial_key(trial)
+            recency_rank.setdefault(duplicate_key, index)
+            grouped_duplicates.setdefault(duplicate_key, []).append(trial)
 
-        # Sample up to two trials without replacement, falling back to uniform draws.
-        for _ in range(min(2, len(remaining))):
-            total_weight = sum(remaining_weights)
-            if total_weight <= 0.0:
-                selected_index = rng.randrange(len(remaining))
-            else:
-                selected_index = rng.choices(
-                    range(len(remaining)),
-                    weights=remaining_weights,
-                    k=1,
-                )[0]
-            sampled.append(remaining.pop(selected_index))
-            remaining_weights.pop(selected_index)
-
-        # Return the sampled trials in a stable best-first order.
-        candidate_ranks = {
-            trial.trial_id: index for index, trial in enumerate(candidates)
-        }
-        sampled.sort(
-            key=lambda trial: (-float(trial.score), candidate_ranks[trial.trial_id])
+        ranked_duplicate_keys = sorted(
+            grouped_duplicates,
+            key=lambda duplicate_key: (
+                -len(grouped_duplicates[duplicate_key]),
+                recency_rank[duplicate_key],
+            ),
         )
-        return sampled
+        sampled_negatives: list[TrialSummary] = []
+        for duplicate_key in ranked_duplicate_keys[:limit]:
+            duplicates = grouped_duplicates[duplicate_key]
+            sampled_negatives.append(
+                self._with_duplicate_frequency(
+                    duplicates[0],
+                    duplicate_count=len(duplicates),
+                )
+            )
+        return sampled_negatives
 
     def sample_generation_context_trials(
         self,
@@ -1255,14 +1632,27 @@ class GenerationCoordinator:
         sampling_seed: int,
         generation_index: int,
     ) -> list[TrialSummary]:
-        # Use successful strategy trials first whenever any exist.
-        successful_context = self.sample_successful_context_trials(
+        selection = self.sample_generation_context_selection(
             track_id,
             sampling_seed,
             generation_index,
         )
-        if successful_context:
-            return successful_context
+        return selection.context_trials
+
+    def sample_generation_context_selection(
+        self,
+        track_id: str,
+        sampling_seed: int,
+        generation_index: int,
+    ) -> GenerationContextSelection:
+        # Use successful scored trials first whenever any exist.
+        successful_selection = self.sample_successful_context_selection(
+            track_id,
+            sampling_seed,
+            generation_index,
+        )
+        if successful_selection.context_trials:
+            return successful_selection
 
         # Avoid mixing in unfinished or failed context once scored trials exist.
         has_scored_history = self.repository.sample_trial_context(
@@ -1270,26 +1660,38 @@ class GenerationCoordinator:
             limit=self.repository.count_trials(track_id),
         )
         if has_scored_history:
-            return []
+            return GenerationContextSelection(context_trials=[], sampled_candidates=[])
 
         # Fall back to the seeded baseline when the track has no scored history yet.
         for trial in self.repository.list_trials(track_id):
             provenance = dict(trial.provenance_json or {})
             if provenance.get("backend") != "baseline":
                 continue
-            return [
-                TrialSummary(
-                    trial_id=trial.trial_id,
-                    metrics_json=dict(trial.metrics_json)
-                    if trial.metrics_json
-                    else None,
-                    source=trial.source,
-                    provenance_json=provenance,
-                    outcome_reason=trial.outcome_reason,
-                    error_json=dict(trial.error_json) if trial.error_json else None,
-                )
-            ]
-        return []
+            baseline_summary = TrialSummary(
+                trial_id=trial.trial_id,
+                metrics_json=dict(trial.metrics_json) if trial.metrics_json else None,
+                source=trial.source,
+                provenance_json=provenance,
+                outcome_reason=trial.outcome_reason,
+                error_json=dict(trial.error_json) if trial.error_json else None,
+            )
+            return GenerationContextSelection(
+                context_trials=[baseline_summary],
+                sampled_candidates=[
+                    {
+                        "rank": 1,
+                        "trial_id": baseline_summary.trial_id,
+                        "score": (
+                            float(baseline_summary.score)
+                            if baseline_summary.metrics_json is not None
+                            else None
+                        ),
+                        "selection_probability": 1.0,
+                        "selected_role": "current",
+                    }
+                ],
+            )
+        return GenerationContextSelection(context_trials=[], sampled_candidates=[])
 
     def with_generation_trace(
         self,
@@ -1307,15 +1709,20 @@ class GenerationCoordinator:
 
         # Backfill prompt text when older payloads only stored request messages.
         if isinstance(request_messages, list):
-            if "system_prompt" not in generation_payload and request_messages:
-                first = request_messages[0]
-                if isinstance(first, dict) and isinstance(first.get("content"), str):
-                    generation_payload["system_prompt"] = first["content"]
+            request_message_dicts = [
+                message for message in request_messages if isinstance(message, dict)
+            ]
+            if "system_prompt" not in generation_payload:
+                generation_payload["system_prompt"] = _first_message_content(
+                    request_message_dicts,
+                    role="system",
+                )
 
-            if "user_prompt" not in generation_payload and len(request_messages) > 1:
-                second = request_messages[1]
-                if isinstance(second, dict) and isinstance(second.get("content"), str):
-                    generation_payload["user_prompt"] = second["content"]
+            if "user_prompt" not in generation_payload:
+                generation_payload["user_prompt"] = _join_message_contents(
+                    request_message_dicts,
+                    role="user",
+                )
 
         # Record the generated candidate trace in one normalized generation block.
         generation_payload.setdefault("response_text", None)
@@ -1385,7 +1792,7 @@ class GenerationCoordinator:
         return {
             "backend": "openrouter",
             "model": model,
-            "candidate_kind": CANDIDATE_KIND_STRATEGY_V1,
+            "candidate_kind": _candidate_kind_from_context(context_trials),
             "generation_config": generation_backend,
             "generation_index": generation_index,
             "duplicate_retry_count": duplicate_retry_count,
@@ -1458,13 +1865,15 @@ class GenerationCoordinator:
         duplicate_retry_count: int,
     ) -> tuple[Future[Any], GenerationAttempt] | None:
         # Skip scheduling when there is no valid context to generate from.
-        context_trials = self.sample_generation_context_trials(
+        selection = self.sample_generation_context_selection(
             track.track_id,
             sampling_seed,
             generation_index,
         )
+        context_trials = selection.context_trials
         if not context_trials:
             return None
+        negative_trials = self.sample_negative_trials(track.track_id)
 
         # Submit the provider request together with the bookkeeping metadata.
         attempt = GenerationAttempt(
@@ -1472,13 +1881,14 @@ class GenerationCoordinator:
             generation_index=generation_index,
             duplicate_retry_count=duplicate_retry_count,
             context_trials=context_trials,
+            sampled_candidates=selection.sampled_candidates,
         )
         future = executor.submit(
             self.generator.generate,
             track,
             dataset_manifest,
             context_trials,
-            [],
+            negative_trials,
             generation_index,
             duplicate_retry_count,
         )
@@ -1619,13 +2029,6 @@ class GenerationCoordinator:
         }
 
 
-CONFIG_BLOCK_INDEX = 0
-MODEL_BLOCK_INDEX = 1
-DATA_BLOCK_INDEX = 2
-OPTIMIZATION_BLOCK_INDEX = 3
-TRAINING_POLICY_BLOCK_INDEX = 4
-
-
 def _normalize_payload(payload: str) -> str:
     return payload.strip("\n") + "\n"
 
@@ -1640,67 +2043,204 @@ def build_candidate_train_script(
     training_policy_block_payload: str | None = None,
 ) -> str:
     template_source = build_baseline_train_script()
-    payloads = extract_evolve_block_payloads(template_source)
-
-    replacements: dict[int, str | None] = {
-        CONFIG_BLOCK_INDEX: config_block_payload,
-        MODEL_BLOCK_INDEX: (
-            model_block_payload if model_block_payload is not None else block_payload
-        ),
-        DATA_BLOCK_INDEX: data_block_payload,
-        OPTIMIZATION_BLOCK_INDEX: optimization_block_payload,
-        TRAINING_POLICY_BLOCK_INDEX: training_policy_block_payload,
-    }
-    for index, payload in replacements.items():
-        if payload is not None:
-            payloads[index] = _normalize_payload(payload)
-
-    return replace_evolve_block_payloads(template_source, payloads)
+    replacement_payloads = [
+        payload
+        for payload in (
+            model_block_payload if model_block_payload is not None else block_payload,
+            config_block_payload,
+            data_block_payload,
+            optimization_block_payload,
+            training_policy_block_payload,
+        )
+        if payload is not None
+    ]
+    if len(replacement_payloads) > 1:
+        raise EvolveBlockError(
+            "single-block templates accept only one replacement payload at a time"
+        )
+    if not replacement_payloads:
+        return template_source
+    return replace_evolve_block_payloads(
+        template_source,
+        [_normalize_payload(replacement_payloads[0])],
+    )
 
 
 def build_config_block(body: str) -> str:
     return _normalize_payload(body)
 
 
+def _default_data_section() -> str:
+    return "\n".join(
+        (
+            "batch_size = 64",
+            "train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)",
+            "val_loader = DataLoader(val_ds, batch_size=batch_size)",
+        )
+    )
+
+
+def _default_model_section() -> str:
+    return "\n".join(
+        (
+            "flat_dim = int(train_ds[0][0].numel())",
+            "num_classes = int(",
+            "    torch.cat((train_ds.tensors[1], val_ds.tensors[1])).max().item()",
+            ") + 1",
+            "",
+            "model = nn.Sequential(",
+            "    nn.Flatten(),",
+            "    nn.Linear(flat_dim, 128),",
+            "    nn.ReLU(),",
+            "    nn.Linear(128, num_classes),",
+            ").to(device)",
+        )
+    )
+
+
+def _default_optimization_section() -> str:
+    return "\n".join(
+        (
+            "trainable_parameters = [",
+            "    parameter for parameter in model.parameters() if parameter.requires_grad",
+            "]",
+            "optimizer = None",
+            "if trainable_parameters:",
+            "    optimizer = torch.optim.Adam(trainable_parameters, lr=1e-3)",
+            "",
+            "scheduler = None",
+            "if optimizer is not None:",
+            "    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(",
+            '        optimizer, mode="min", factor=0.5, patience=1',
+            "    )",
+        )
+    )
+
+
+def _default_training_policy_section() -> str:
+    return "\n".join(
+        (
+            "early_stopping_patience = 2",
+            "min_delta = 0.0",
+        )
+    )
+
+
+def _default_loss_section() -> str:
+    return "\n".join(
+        (
+            "def loss_fn(batch):",
+            "    x, y = (tensor.to(device) for tensor in batch)",
+            "    logits = model(x)",
+            "    loss = F.cross_entropy(logits, y)",
+            "    return loss, logits, y",
+        )
+    )
+
+
+def _default_return_section() -> str:
+    return "\n".join(
+        (
+            "return {",
+            '    "model": model,',
+            '    "optimizer": optimizer,',
+            '    "scheduler": scheduler,',
+            '    "loss_fn": loss_fn,',
+            '    "train_loader": train_loader,',
+            '    "val_loader": val_loader,',
+            '    "early_stopping_patience": early_stopping_patience,',
+            '    "min_delta": min_delta,',
+            "}",
+        )
+    )
+
+
+def _assemble_experiment_block(
+    *,
+    imports: str = "",
+    data_section: str | None = None,
+    model_section: str | None = None,
+    optimization_section: str | None = None,
+    training_policy_section: str | None = None,
+) -> str:
+    parts: list[str] = []
+    normalized_imports = imports.strip()
+    if normalized_imports:
+        parts.append(normalized_imports)
+        parts.append("")
+    parts.append((data_section or _default_data_section()).strip("\n"))
+    parts.append("")
+    parts.append((model_section or _default_model_section()).strip("\n"))
+    parts.append("")
+    parts.append((optimization_section or _default_optimization_section()).strip("\n"))
+    parts.append("")
+    parts.append(
+        (training_policy_section or _default_training_policy_section()).strip("\n")
+    )
+    parts.append("")
+    parts.append(_default_loss_section())
+    parts.append("")
+    parts.append(_default_return_section())
+    parts.append("")
+    return "\n".join(parts)
+
+
 def build_model_block(
     body: str,
     *,
     imports: str = "import torch",
-    build_body: str = "return EvolvedModel()",
+    build_body: str = "return self.network(x)",
 ) -> str:
-    parts: list[str] = []
-    imports = imports.strip()
-    # Keep imports and class/function scaffolding readable in the generated block.
-    if imports:
-        parts.append(imports)
-        parts.append("")
-    parts.append("class EvolvedModel(torch.nn.Module):")
-    parts.append(indent(body.strip("\n"), "    "))
-    parts.append("")
-    parts.append("")
-    parts.append("def build_model(*, input_shape, num_classes):")
-    parts.append(indent(build_body.strip("\n"), "    "))
-    parts.append("")
-    return "\n".join(parts)
-
-
-def _build_function_block(
-    body: str,
-    *,
-    function_name: str,
-    signature: str,
-    imports: str = "",
-) -> str:
-    parts: list[str] = []
-    imports = imports.strip()
-    # Keep imports and function scaffolding readable in the generated block.
-    if imports:
-        parts.append(imports)
-        parts.append("")
-    parts.append(f"def {function_name}({signature}):")
-    parts.append(indent(body.strip("\n"), "    "))
-    parts.append("")
-    return "\n".join(parts)
+    model_section = "\n".join(
+        (
+            "flat_dim = int(train_ds[0][0].numel())",
+            "num_classes = int(",
+            "    torch.cat((train_ds.tensors[1], val_ds.tensors[1])).max().item()",
+            ") + 1",
+            "",
+            "class EvolvedModel(nn.Module):",
+            "    def __init__(self):",
+            "        super().__init__()",
+            "        self.network = nn.Sequential(",
+            "            nn.Flatten(),",
+            "            nn.Linear(flat_dim, 128),",
+            "            nn.ReLU(),",
+            "            nn.Linear(128, num_classes),",
+            "        )",
+            "",
+            indent(body.strip("\n"), "    "),
+            "",
+            "model = EvolvedModel().to(device)",
+        )
+    )
+    if body.strip() == "":
+        model_section = "\n".join(
+            (
+                "flat_dim = int(train_ds[0][0].numel())",
+                "num_classes = int(",
+                "    torch.cat((train_ds.tensors[1], val_ds.tensors[1])).max().item()",
+                ") + 1",
+                "",
+                "class EvolvedModel(nn.Module):",
+                "    def __init__(self):",
+                "        super().__init__()",
+                "        self.network = nn.Sequential(",
+                "            nn.Flatten(),",
+                "            nn.Linear(flat_dim, 128),",
+                "            nn.ReLU(),",
+                "            nn.Linear(128, num_classes),",
+                "        )",
+                "",
+                "    def forward(self, x):",
+                f"        {build_body}",
+                "",
+                "model = EvolvedModel().to(device)",
+            )
+        )
+    return _assemble_experiment_block(
+        imports=imports,
+        model_section=model_section,
+    )
 
 
 def build_data_block(
@@ -1708,11 +2248,9 @@ def build_data_block(
     *,
     imports: str = "import torch",
 ) -> str:
-    return _build_function_block(
-        body,
-        function_name="configure_data",
-        signature="*, train_x, train_y, validation_x, random_seed",
+    return _assemble_experiment_block(
         imports=imports,
+        data_section=body,
     )
 
 
@@ -1721,17 +2259,13 @@ def build_optimization_block(
     *,
     imports: str = "import torch",
 ) -> str:
-    return _build_function_block(
-        body,
-        function_name="configure_optimization",
-        signature="*, model, train_loader, num_epochs, num_classes",
+    return _assemble_experiment_block(
         imports=imports,
+        optimization_section=body,
     )
 
 
 def build_training_policy_block(body: str) -> str:
-    return _build_function_block(
-        body,
-        function_name="configure_training_policy",
-        signature="*, num_epochs",
+    return _assemble_experiment_block(
+        training_policy_section=body,
     )

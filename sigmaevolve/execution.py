@@ -200,6 +200,45 @@ class WandbRunLogger:
             wandb_metadata,
         )
 
+    def upload_best_model_artifact(
+        self,
+        *,
+        best_model_path: Path | None,
+        metrics: dict[str, Any] | None,
+    ) -> None:
+        has_metrics = isinstance(metrics, dict) and bool(metrics)
+        if best_model_path is None or not best_model_path.exists() or not has_metrics:
+            return
+
+        wandb = _import_wandb()
+        artifact_metadata = {
+            "trial_id": self.trial.trial_id,
+            "track_id": self.track.track_id,
+            "dataset_id": self.track.dataset_id,
+            "runner_id": self.runner_id,
+            "score": float(compute_score(metrics)),
+        }
+        for key in (
+            "accuracy",
+            "val_loss",
+            "best_eval_epoch",
+            "best_eval_index",
+            "time_to_best_eval_sec",
+        ):
+            value = metrics.get(key)
+            if value is not None:
+                artifact_metadata[key] = value
+
+        artifact = wandb.Artifact(
+            name=f"{self.trial.trial_id}-best-model",
+            type="model",
+            metadata=artifact_metadata,
+        )
+        artifact.add_file(str(best_model_path), name="best_model.pt")
+        self.run.log_artifact(artifact, aliases=["best", "latest"])
+        self.run.summary["best_model_artifact_name"] = artifact.name
+        self.run.summary["best_model_artifact_path"] = str(best_model_path)
+
     def log_metrics(self, metrics: dict[str, Any], *, state: str) -> None:
         payload = _wandb_metric_aliases(metrics)
         payload["trial_state"] = state
@@ -212,6 +251,7 @@ class WandbRunLogger:
         outcome_reason: str,
         metrics: dict[str, Any] | None,
         error_info: dict[str, Any] | None,
+        best_model_path: Path | None,
     ) -> None:
         # Build the terminal log entry in the same field order the dashboards expect.
         score = float(compute_score(metrics))
@@ -246,6 +286,10 @@ class WandbRunLogger:
             if isinstance(detail, str) and detail:
                 self.run.summary["error_detail"] = detail
 
+        self.upload_best_model_artifact(
+            best_model_path=best_model_path,
+            metrics=metrics,
+        )
         exit_code = 0 if outcome_reason in {"succeeded", "timeout"} else 1
         self.run.finish(exit_code=exit_code)
 
@@ -606,6 +650,24 @@ def _run_streamed_subprocess(
     )
 
 
+def _stage_trial_runtime_package(run_dir: Path) -> None:
+    package_dir = run_dir / "sigmaevolve"
+    package_dir.mkdir(parents=True, exist_ok=True)
+
+    source_dir = Path(__file__).resolve().parent
+    runtime_source = (source_dir / "train_script_runtime.py").read_text(
+        encoding="utf-8"
+    )
+
+    # Keep the staged package minimal so importing the helper module does not
+    # pull in the full sigmaevolve package tree inside the temp run directory.
+    (package_dir / "__init__.py").write_text("", encoding="utf-8")
+    (package_dir / "train_script_runtime.py").write_text(
+        runtime_source,
+        encoding="utf-8",
+    )
+
+
 class RunnerService:
     def __init__(
         self,
@@ -684,9 +746,6 @@ class RunnerService:
     def _read_progress(self, progress_path: Path) -> dict[str, Any] | None:
         return self._read_json_object(progress_path)
 
-    def _read_debug_payload(self, debug_path: Path) -> dict[str, Any] | None:
-        return self._read_json_object(debug_path)
-
     def _load_eval_artifacts(
         self,
         eval_dir: Path,
@@ -747,13 +806,12 @@ class RunnerService:
         *,
         eval_dir: Path,
         progress_path: Path,
-        debug_path: Path,
         labels_path: str,
         started_at: float,
     ) -> dict[str, Any] | None:
-        # Load the latest progress, debug, and eval artifacts before building metrics.
+        # Load the latest progress and eval artifacts before building metrics.
         progress_payload = self._read_progress(progress_path)
-        debug_payload = self._read_debug_payload(debug_path)
+        debug_payload = progress_payload
         artifacts: list[dict[str, Any]] = []
         try:
             artifacts = self._load_eval_artifacts(
@@ -767,7 +825,7 @@ class RunnerService:
             )
 
         # Skip reporter updates until there is at least one source of metrics.
-        if not progress_payload and not debug_payload and not artifacts:
+        if not progress_payload and not artifacts:
             return None
 
         # Delegate the actual payload shaping to the shared runner-metrics helper.
@@ -784,7 +842,6 @@ class RunnerService:
         trial_id: str,
         runner_id: str,
         progress_path: Path,
-        debug_path: Path,
         eval_dir: Path,
         labels_path: str,
         started_at: float,
@@ -797,7 +854,6 @@ class RunnerService:
             metrics = self._collect_active_metrics_payload(
                 eval_dir=eval_dir,
                 progress_path=progress_path,
-                debug_path=debug_path,
                 labels_path=labels_path,
                 started_at=started_at,
             )
@@ -861,6 +917,7 @@ class RunnerService:
         metrics: dict[str, Any] | None,
         error_info: dict[str, Any] | None,
         wandb_run_logger: WandbRunLogger | None,
+        best_model_path: Path | None = None,
     ) -> None:
         self.repository.finalize_trial(
             trial_id=trial_id,
@@ -876,6 +933,7 @@ class RunnerService:
                 outcome_reason=outcome_reason,
                 metrics=metrics,
                 error_info=error_info,
+                best_model_path=best_model_path,
             )
         except Exception:
             logger.warning(
@@ -916,8 +974,10 @@ class RunnerService:
                 config_path = temp_path / "run_config.json"
                 progress_path = temp_path / "progress.json"
                 eval_dir = temp_path / "evals"
-                debug_path = temp_path / "debug.json"
+                best_model_path = temp_path / "best_model.pt"
+                debug_output_path = temp_path / "debug.json"
                 eval_dir.mkdir(parents=True, exist_ok=True)
+                _stage_trial_runtime_package(temp_path)
                 train_script_path.write_text(trial.source)
                 run_config_payload = {
                     "train_split_path": manifest.train_split_path,
@@ -928,7 +988,8 @@ class RunnerService:
                     "random_seed": 1234,
                     "progress_path": str(progress_path),
                     "eval_dir": str(eval_dir),
-                    "debug_output_path": str(debug_path),
+                    "best_model_path": str(best_model_path),
+                    "debug_output_path": str(debug_output_path),
                     "dataset_metadata": manifest.metadata,
                 }
                 config_path.write_text(json.dumps(run_config_payload, sort_keys=True))
@@ -946,6 +1007,7 @@ class RunnerService:
                         metrics=metrics,
                         error_info=error_info,
                         wandb_run_logger=wandb_run_logger,
+                        best_model_path=best_model_path,
                     )
                     logger.info(
                         "Finalized trial %s with outcome=%s.",
@@ -1006,7 +1068,6 @@ class RunnerService:
                     trial_id=trial.trial_id,
                     runner_id=runner_id,
                     progress_path=progress_path,
-                    debug_path=debug_path,
                     eval_dir=eval_dir,
                     labels_path=manifest.validation_labels_path,
                     started_at=started_at,
@@ -1030,7 +1091,7 @@ class RunnerService:
                     process_elapsed_sec,
                 )
                 progress_payload = self._read_progress(progress_path)
-                debug_payload = self._read_debug_payload(debug_path)
+                debug_payload = self._read_json_object(debug_output_path)
                 timed_out = bool(timed_out or (debug_payload or {}).get("timed_out"))
 
                 # Classify a nonzero exit before looking at evaluation artifacts.
@@ -1124,7 +1185,6 @@ class RunnerService:
                     "stdout": stdout,
                     "stderr": stderr,
                     "debug": debug_payload,
-                    "debug_output_path": str(debug_path),
                     "progress": progress_payload,
                     "eval_dir": str(eval_dir),
                     "eval_artifacts": [artifact["path"] for artifact in artifacts],
@@ -1138,6 +1198,7 @@ class RunnerService:
                     metrics=metrics,
                     error_info=error_info,
                     wandb_run_logger=wandb_run_logger,
+                    best_model_path=best_model_path,
                 )
                 logger.info(
                     "Finalized trial %s with outcome=%s score=%.6f accuracy=%s.",

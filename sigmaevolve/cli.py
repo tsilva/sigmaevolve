@@ -11,7 +11,11 @@ from pathlib import Path
 from typing import Any, Callable, TextIO
 
 from sigmaevolve.core import ACTIVE_STATUSES
-from sigmaevolve.env import load_env_file, resolve_runtime_config
+from sigmaevolve.env import (
+    load_env_file,
+    load_managed_secrets,
+    resolve_runtime_config,
+)
 from sigmaevolve.execution import RunnerService, collect_wandb_env
 from sigmaevolve.modal import (
     create_modal_launcher,
@@ -19,57 +23,32 @@ from sigmaevolve.modal import (
     sync_dataset_to_modal,
 )
 from sigmaevolve.orchestration import InlineRunnerLauncher, build_system
+from sigmaevolve.script_spec import (
+    ScriptSpecError,
+    parse_source_layout,
+    require_script_spec,
+)
 from sigmaevolve.storage import classify_error_type
 
 logger = logging.getLogger(f"{__name__}.stderr")
 stdout_logger = logging.getLogger(f"{__name__}.stdout")
 
 
-def load_track_definition(track_file: str) -> tuple[str, dict[str, Any]]:
-    # Load and validate the top-level track definition envelope.
-    parsed = json.loads(Path(track_file).read_text())
-
-    # Reject non-object track definitions before reading any fields.
-    if not isinstance(parsed, dict):
-        raise argparse.ArgumentTypeError("Track file must contain a JSON object.")
-
-    # Extract the required dataset identifier before reading any policy fields.
-    dataset_id = parsed.get("dataset_id")
-
-    # Reject missing or empty dataset identifiers early.
-    if not isinstance(dataset_id, str) or not dataset_id:
+def load_script_definition(script_path: str) -> tuple[str, dict[str, Any], str]:
+    path = Path(script_path)
+    source_text = path.read_text(encoding="utf-8")
+    if source_text.lstrip().startswith("{"):
         raise argparse.ArgumentTypeError(
-            "Track file must include a non-empty string dataset_id."
+            "create-track expects a self-contained script path, not a JSON track file."
         )
 
-    # Reject the removed track label field so new configs only use the reduced contract.
-    if "name" in parsed:
-        raise argparse.ArgumentTypeError("Track file name is no longer supported.")
+    try:
+        script_spec = require_script_spec(source_text)
+        parse_source_layout(source_text)
+    except ScriptSpecError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
 
-    # Reject the removed legacy policy wrapper before reading policy fields.
-    if "policy_json" in parsed:
-        raise argparse.ArgumentTypeError(
-            "Track file policy_json is no longer supported."
-        )
-
-    # Support either an explicit policy object or current top-level policy fields.
-    policy = parsed.get("policy")
-
-    # Validate object-shaped policy payloads before copying them.
-    if policy is not None:
-        # Reject malformed explicit policy objects before copying them.
-        if not isinstance(policy, dict):
-            raise argparse.ArgumentTypeError("Track file policy must be a JSON object.")
-        policy_json = dict(policy)
-
-    # Preserve the current top-level track policy shape when no explicit policy object is present.
-    else:
-        excluded_fields = {"dataset_id"}
-        policy_json = {
-            key: value for key, value in parsed.items() if key not in excluded_fields
-        }
-
-    return dataset_id, policy_json
+    return script_spec.dataset_id, dict(script_spec.track_policy), source_text
 
 
 def positive_int(value: str) -> int:
@@ -102,8 +81,11 @@ class CommandSpec:
 
 def _configure_create_track_parser(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
-        "track_file",
-        help="Path to a JSON file containing dataset_id and track policy fields.",
+        "script_path",
+        help=(
+            "Path to a self-contained train.py script with sigmaevolve metadata "
+            "comments describing the dataset, track policy, and evolution task."
+        ),
     )
 
 
@@ -188,7 +170,8 @@ def build_cli_parser(
     parser = argparse.ArgumentParser(
         prog="sigmaevolve",
         description=(
-            "Runtime config is resolved from environment variables instead of CLI flags. "
+            "Private runtime settings come from the pinned Infisical development project. "
+            "Nonsecret settings use environment variables or the user-scoped env file. "
             "Supported names: SIGMAEVOLVE_DATABASE_URL or DATABASE_URL, "
             "SIGMAEVOLVE_DATASET_ROOT, SIGMAEVOLVE_OPENROUTER_API_KEY or OPENROUTER_API_KEY, "
             "SIGMAEVOLVE_MODAL_APP_NAME, SIGMAEVOLVE_MODAL_FUNCTION_NAME, "
@@ -427,6 +410,41 @@ class CliReconcileReporter:
             f"{payload['slot_index'] + 1}/{max(self.requested, 1)} "
             f"(attempt {payload['duplicate_retry_count']}, generation_index={payload['generation_index']})."
         )
+        sampled_candidates = payload.get("sampled_candidates") or []
+        if sampled_candidates:
+            self._log(
+                "Sampled candidates:\n"
+                f"{self._render_sampled_candidates_table(sampled_candidates)}"
+            )
+
+    def _render_sampled_candidates_table(
+        self, sampled_candidates: list[dict[str, Any]]
+    ) -> str:
+        lines = [
+            "| rank | trial_id | score | p(current) | selected |",
+            "| ---: | --- | ---: | ---: | --- |",
+        ]
+        for row in sampled_candidates:
+            score = row.get("score")
+            selection_probability = row.get("selection_probability")
+            selected_role = row.get("selected_role") or "-"
+            rendered_score = (
+                f"{float(score):.4f}" if isinstance(score, (int, float)) else "-"
+            )
+            rendered_probability = (
+                f"{float(selection_probability):.4f}"
+                if isinstance(selection_probability, (int, float))
+                else "-"
+            )
+            lines.append(
+                "| "
+                f"{row['rank']} | "
+                f"{row['trial_id']} | "
+                f"{rendered_score} | "
+                f"{rendered_probability} | "
+                f"{selected_role} |"
+            )
+        return "\n".join(lines)
 
     def _handle_generation_progress(
         self, payload: dict[str, Any], message: str
@@ -526,7 +544,8 @@ def _make_system(args) -> Any:
     # Reject missing database URLs before constructing any system state.
     if not args.database_url:
         raise RuntimeError(
-            "A Postgres database URL is required. Set SIGMAEVOLVE_DATABASE_URL or DATABASE_URL."
+            "A Postgres database URL is required. Add SIGMAEVOLVE_DATABASE_URL or "
+            "DATABASE_URL to the SigmaEvolve development project in Infisical."
         )
 
     # Construct the core system first, then replace its launcher if requested.
@@ -618,8 +637,8 @@ def _suggest_launch_command(args, track_id: str, *, count: int = 1) -> str:
 
 def cmd_create_track(args) -> int:
     system = _make_system(args)
-    logger.info("Loading track definition.")
-    dataset_id, policy = load_track_definition(args.track_file)
+    logger.info("Loading script definition.")
+    dataset_id, policy, seed_source = load_script_definition(args.script_path)
     logger.info("Ensuring dataset %s is prepared.", dataset_id)
     dataset, prepared_now = _ensure_dataset_prepared(system, dataset_id)
 
@@ -632,7 +651,7 @@ def cmd_create_track(args) -> int:
     logger.info(
         "Creating track for dataset %s and seeding the baseline trial.", dataset_id
     )
-    track = system.create_track(dataset_id, policy)
+    track = system.create_track(dataset_id, policy, seed_source=seed_source)
     logger.info("Created track %s.", track.track_id)
     logger.info("Run it with:\n%s", _suggest_launch_command(args, track.track_id))
     return 0
@@ -758,13 +777,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    load_env_file()
     _configure_stream_logger(logger, sys.stderr)
     _configure_stream_logger(stdout_logger, sys.stdout)
     parser = build_parser()
     args = parser.parse_args(argv)
-    args = _apply_runtime_config(args)
     try:
+        load_env_file()
+        load_managed_secrets()
+        args = _apply_runtime_config(args)
         return int(args.func(args))
     except Exception as exc:
         logger.error("error: %s", exc)

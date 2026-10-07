@@ -13,8 +13,11 @@ import {
 } from "react";
 
 import { HighlightedCode } from "@/components/highlighted-code";
-import { SourceDiff } from "@/components/source-diff";
+import { MarkdownContent } from "@/components/markdown-content";
+import { TrialLineageTree } from "@/components/trial-lineage-tree";
 import { useTrackLiveUpdates } from "@/hooks/use-track-live-updates";
+import { buildSourceDiff } from "@/lib/source-diff";
+import { buildTrialLineageGraph } from "@/lib/trial-lineage";
 import type {
   PaginatedTrialsResponse,
   TrackDetailResponse,
@@ -24,6 +27,7 @@ import type {
 } from "@/lib/types";
 
 const STATUS_OPTIONS: TrialStatusFilter[] = ["all", "queued", "dispatching", "active", "finished", "error"];
+const DISPLAY_METRIC_NAME = "val_acc";
 
 async function fetchJson<T>(input: string): Promise<T> {
   const response = await fetch(input, { cache: "no-store" });
@@ -38,7 +42,7 @@ function formatDate(value: string | null): string {
     return "Pending";
   }
 
-  return new Intl.DateTimeFormat(undefined, {
+  return new Intl.DateTimeFormat("en-GB", {
     dateStyle: "medium",
     timeStyle: "short",
   }).format(new Date(value));
@@ -89,6 +93,39 @@ function formatDuration(value: number | null): string {
   const minutes = Math.floor(value / 60);
   const seconds = Math.round(value % 60);
   return `${minutes}m ${seconds}s`;
+}
+
+function formatBestEpoch(
+  bestEvalEpoch: number | null,
+  epochsCompleted: number | null,
+  evalCount: number | null,
+): string {
+  if (bestEvalEpoch === null) {
+    return "—";
+  }
+
+  const totalEpochs = epochsCompleted ?? evalCount;
+  if (totalEpochs === null) {
+    return String(bestEvalEpoch);
+  }
+  return `${bestEvalEpoch}/${totalEpochs}`;
+}
+
+function summarizeTaskDescription(value: string | null, maxLength = 160): string | null {
+  if (!value) {
+    return null;
+  }
+
+  const collapsed = value.replace(/\s+/g, " ").trim();
+  if (collapsed.length === 0) {
+    return null;
+  }
+
+  if (collapsed.length <= maxLength) {
+    return collapsed;
+  }
+
+  return `${collapsed.slice(0, maxLength - 1).trimEnd()}…`;
 }
 
 function formatJsonBlock(value: Record<string, unknown> | null): string {
@@ -338,8 +375,8 @@ function getGenerationPayload(value: Record<string, unknown> | null): Record<str
 }
 
 function getGenerationPrompt(value: Record<string, unknown> | null, field: "system_prompt" | "user_prompt"): string | null {
-    const generation = getGenerationPayload(value);
-    const prompt = generation?.[field];
+  const generation = getGenerationPayload(value);
+  const prompt = generation?.[field];
   if (typeof prompt === "string" && prompt.length > 0) {
     return prompt;
   }
@@ -349,6 +386,22 @@ function getGenerationPrompt(value: Record<string, unknown> | null, field: "syst
     return requestMessages[0]?.content ?? null;
   }
   return requestMessages[1]?.content ?? null;
+}
+
+function mergeUniqueTrials(current: TrialListItem[], incoming: TrialListItem[]): TrialListItem[] {
+  const mergedById = new Map(current.map((trial) => [trial.trialId, trial]));
+  for (const trial of incoming) {
+    mergedById.set(trial.trialId, trial);
+  }
+
+  return Array.from(mergedById.values()).sort((left, right) => {
+    const createdAtDelta = new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime();
+    if (createdAtDelta !== 0) {
+      return createdAtDelta;
+    }
+
+    return right.trialId.localeCompare(left.trialId);
+  });
 }
 
 function normalizeSourceSnippet(content: string): string {
@@ -368,8 +421,74 @@ function extractFencedSourceSnippets(content: string): string[] {
   return snippets;
 }
 
+function extractAppendixSourceSnippets(
+  content: string,
+  appendixHeader: string,
+  entryHeaderPattern: RegExp,
+): string[] {
+  if (!content.startsWith(appendixHeader)) {
+    return [];
+  }
+
+  const body = content.slice(appendixHeader.length).trim();
+  if (body.length === 0 || body === "None.") {
+    return [];
+  }
+
+  const lines = body.split("\n");
+  const snippets: string[] = [];
+  let currentSnippetLines: string[] | null = null;
+
+  for (const line of lines) {
+    if (entryHeaderPattern.test(line)) {
+      const snippet = normalizeSourceSnippet((currentSnippetLines ?? []).join("\n"));
+      if (snippet) {
+        snippets.push(snippet);
+      }
+      currentSnippetLines = [];
+      continue;
+    }
+
+    if (currentSnippetLines !== null) {
+      currentSnippetLines.push(line);
+    }
+  }
+
+  const trailingSnippet = normalizeSourceSnippet((currentSnippetLines ?? []).join("\n"));
+  if (trailingSnippet) {
+    snippets.push(trailingSnippet);
+  }
+
+  return snippets;
+}
+
+function extractAppendixPromptSnippets(content: string): {
+  snippets: string[];
+  currentProgramSnippet: string | null;
+} {
+  const currentProgramSnippets = extractAppendixSourceSnippets(
+    content,
+    "CURRENT PROGRAM APPENDIX",
+    /^CURRENT_PROGRAM\b/,
+  );
+  if (currentProgramSnippets.length > 0) {
+    return {
+      snippets: currentProgramSnippets,
+      currentProgramSnippet: currentProgramSnippets[0],
+    };
+  }
+
+  return {
+    snippets: [
+      ...extractAppendixSourceSnippets(content, "REFERENCE APPENDIX", /^REFERENCE\b/),
+      ...extractAppendixSourceSnippets(content, "NEGATIVE APPENDIX", /^NEGATIVE\b/),
+    ],
+    currentProgramSnippet: null,
+  };
+}
+
 function extractCurrentProgramSnippet(content: string): string | null {
-  const sectionMatch = content.match(/CURRENT PROGRAM:\n([\s\S]*?)(?:\nREPLACEMENTS:|$)/);
+  const sectionMatch = content.match(/CURRENT(?: |_)PROGRAM:\n([\s\S]*?)(?:\nREPLACEMENTS:|$)/);
   if (!sectionMatch) {
     return null;
   }
@@ -383,6 +502,15 @@ function extractMixedSourceSnapshot(messages: PromptMessage[]): MixedSourceSnaps
   let currentProgramSnippet: string | null = null;
 
   for (const message of messages) {
+    const appendixPromptSnippets = extractAppendixPromptSnippets(message.content);
+    snippets.push(...appendixPromptSnippets.snippets);
+    if (
+      currentProgramSnippet === null &&
+      appendixPromptSnippets.currentProgramSnippet !== null
+    ) {
+      currentProgramSnippet = appendixPromptSnippets.currentProgramSnippet;
+    }
+
     if (currentProgramSnippet === null) {
       currentProgramSnippet = extractCurrentProgramSnippet(message.content);
     }
@@ -547,6 +675,22 @@ function compactIdentifier(value: string, leading = 10, trailing = 6): string {
     return value;
   }
   return `${value.slice(0, leading)}…${value.slice(-trailing)}`;
+}
+
+function formatCompactEntityId(value: string, prefix?: string): string {
+  const trimmed = prefix && value.startsWith(prefix) ? value.slice(prefix.length) : value;
+  if (trimmed.length <= 6) {
+    return trimmed;
+  }
+  return `${trimmed.slice(0, 3)}${trimmed.slice(-3)}`;
+}
+
+function formatShortTrialId(value: string): string {
+  return formatCompactEntityId(value, "trial_");
+}
+
+function formatShortTrackId(value: string): string {
+  return formatCompactEntityId(value, "track_");
 }
 
 function summarizeCrashDetails(value: string | null): string | null {
@@ -847,7 +991,8 @@ type DashboardShellProps = {
   selectedTrackId: string;
 };
 
-type ActiveWorkspace = "explorer" | "inspector";
+type BrowseWorkspace = "explorer" | "tree";
+type ActiveWorkspace = BrowseWorkspace | "inspector";
 type ScoreChartPoint = {
   backend: string | null;
   createdAt: string;
@@ -864,6 +1009,8 @@ type ScoreChartPoint = {
   y: number;
 };
 
+const DEFAULT_EXPANDED_SECTION_IDS = ["trial-task-description", "trial-generated-program"];
+
 const SCORE_CHART_WIDTH = 960;
 const SCORE_CHART_HEIGHT = 124;
 const SCORE_CHART_PADDING = {
@@ -875,6 +1022,7 @@ const SCORE_CHART_PADDING = {
 const MIN_SCORE_CHART_RANGE = 0.02;
 const MIN_ZOOMED_SCORE_CHART_RANGE = 0.003;
 const MIN_ZOOMED_SCORE_PADDING = 0.0015;
+const LINEAGE_PAGE_SIZE = 100;
 
 function getScoreTickDigits(range: number): number {
   if (range < 0.002) {
@@ -1077,29 +1225,40 @@ export function DashboardShell({
   const [detail, setDetail] = useState(initialDetail);
   const [status, setStatus] = useState<TrialStatusFilter>("all");
   const [searchText, setSearchText] = useState("");
+  const [trackSearchText, setTrackSearchText] = useState("");
   const [isTracksCollapsed, setIsTracksCollapsed] = useState(false);
+  const [lastBrowseWorkspace, setLastBrowseWorkspace] = useState<BrowseWorkspace>("explorer");
   const [activeWorkspace, setActiveWorkspace] = useState<ActiveWorkspace>(
     initialSelectedTrialId ? "inspector" : "explorer",
   );
   const [selectedTrialId, setSelectedTrialId] = useState<string | null>(initialSelectedTrialId);
   const [urlTrialId, setUrlTrialId] = useState<string | null>(initialSelectedTrialId);
+  const [lineageTrials, setLineageTrials] = useState(initialDetail.trials);
+  const [lineageNextCursor, setLineageNextCursor] = useState<string | null>(initialDetail.nextCursor);
+  const [isLineageLoading, setIsLineageLoading] = useState(false);
   const [hoveredScorePoint, setHoveredScorePoint] = useState<ScoreChartPoint | null>(null);
-  const [expandedSectionIds, setExpandedSectionIds] = useState<string[]>([]);
+  const [expandedSectionIds, setExpandedSectionIds] = useState<string[]>(DEFAULT_EXPANDED_SECTION_IDS);
   const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
   const deferredSearchText = useDeferredValue(searchText.trim().toLowerCase());
+  const deferredTrackSearchText = useDeferredValue(trackSearchText.trim().toLowerCase());
 
   useEffect(() => {
     setTracks(initialTracks);
     setDetail(initialDetail);
     setStatus("all");
     setSearchText("");
+    setTrackSearchText("");
     setIsTracksCollapsed(false);
+    setLastBrowseWorkspace("explorer");
     setActiveWorkspace(initialSelectedTrialId ? "inspector" : "explorer");
     setSelectedTrialId(initialSelectedTrialId);
     setUrlTrialId(initialSelectedTrialId);
+    setLineageTrials(initialDetail.trials);
+    setLineageNextCursor(initialDetail.nextCursor);
+    setIsLineageLoading(false);
     setHoveredScorePoint(null);
-    setExpandedSectionIds([]);
+    setExpandedSectionIds(DEFAULT_EXPANDED_SECTION_IDS);
     setError(null);
   }, [initialDetail, initialSelectedTrialId, initialTracks, selectedTrackId]);
 
@@ -1108,9 +1267,16 @@ export function DashboardShell({
   }, [routeTrialId]);
 
   useEffect(() => {
-    setExpandedSectionIds([]);
+    setExpandedSectionIds(DEFAULT_EXPANDED_SECTION_IDS);
   }, [selectedTrialId]);
 
+  const filteredTracks = tracks.filter((track) => {
+    if (!deferredTrackSearchText) {
+      return true;
+    }
+
+    return `${track.trackId} ${track.datasetId}`.toLowerCase().includes(deferredTrackSearchText);
+  });
   const visibleTrials = detail.trials.filter((trial) => matchesSearch(trial, deferredSearchText));
   const selectedTrial =
     visibleTrials.find((trial) => trial.trialId === selectedTrialId) ??
@@ -1146,13 +1312,22 @@ export function DashboardShell({
   const selectedShowsDiagnosticSource = Boolean(
     selectedTrial && selectedGeneratedSource && selectedGeneratedSource !== selectedTrial.source,
   );
-  const selectedCanCompareMixedSource = Boolean(
-    !selectedIsGenerationFailure && selectedGeneratedProgram && selectedGeneratedProgram.length > 0,
+  const selectedProgramDiff =
+    !selectedIsGenerationFailure && selectedGeneratedProgram && selectedMixedSource
+      ? buildSourceDiff(selectedMixedSource.source, selectedGeneratedProgram)
+      : null;
+  const selectedHasInlineProgramDiff = Boolean(
+    selectedProgramDiff &&
+      (selectedProgramDiff.summary.added > 0 || selectedProgramDiff.summary.removed > 0),
   );
+  const selectedGeneratedProgramSummary = selectedHasInlineProgramDiff
+    ? `${formatMixedSourceSummary(selectedMixedSource)} • +${selectedProgramDiff?.summary.added} / -${selectedProgramDiff?.summary.removed} inline diff`
+    : undefined;
   const progressPercent = getProgressPercent(detail.track);
   const coveragePercent = getCoveragePercent(detail.track);
   const attentionCount = getAttentionCount(detail.track);
   const scoreChart = buildScoreChart(visibleTrials, detail.track.bestTrialId);
+  const lineageGraph = buildTrialLineageGraph(lineageTrials);
   const bestTrialId =
     detail.track.bestTrialId ??
     (detail.trials.length === 0
@@ -1188,6 +1363,32 @@ export function DashboardShell({
     fetchJson<PaginatedTrialsResponse>(buildTrialsUrl(selectedTrackId, nextStatus, cursor, limit)),
   );
 
+  const hydrateLineageTrials = useEffectEvent(async () => {
+    if (isLineageLoading || !lineageNextCursor) {
+      return;
+    }
+
+    setIsLineageLoading(true);
+    try {
+      let nextCursor: string | null = lineageNextCursor;
+      let nextLineageTrials = lineageTrials;
+
+      while (nextCursor) {
+        const nextPage = await loadTrials("all", nextCursor, LINEAGE_PAGE_SIZE);
+        nextLineageTrials = mergeUniqueTrials(nextLineageTrials, nextPage.trials);
+        nextCursor = nextPage.nextCursor;
+      }
+
+      setLineageTrials(nextLineageTrials);
+      setLineageNextCursor(null);
+      setError(null);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Unable to load the lineage tree.");
+    } finally {
+      setIsLineageLoading(false);
+    }
+  });
+
   const refreshData = useEffectEvent(async () => {
     try {
       const [nextTracks, nextTrials] = await Promise.all([
@@ -1201,6 +1402,10 @@ export function DashboardShell({
         trials: nextTrials.trials,
         nextCursor: nextTrials.nextCursor,
       }));
+      if (status === "all") {
+        setLineageTrials(nextTrials.trials);
+        setLineageNextCursor(nextTrials.nextCursor);
+      }
       setError(null);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Unable to refresh dashboard data.");
@@ -1240,6 +1445,16 @@ export function DashboardShell({
     setSelectedTrialId(visibleTrials[0].trialId);
   }, [selectedTrialId, syncSelectedTrial, updateTrialUrl, urlTrialId, visibleTrials]);
 
+  useEffect(() => {
+    if (activeWorkspace !== "tree" || !lineageNextCursor || isLineageLoading) {
+      return;
+    }
+
+    startTransition(() => {
+      void hydrateLineageTrials();
+    });
+  }, [activeWorkspace, hydrateLineageTrials, isLineageLoading, lineageNextCursor, startTransition]);
+
   const liveMode = useTrackLiveUpdates({
     streamUrl: `/api/tracks/${selectedTrackId}/stream`,
     onRefresh: () => {
@@ -1260,6 +1475,10 @@ export function DashboardShell({
             trials: nextTrials.trials,
             nextCursor: nextTrials.nextCursor,
           }));
+          if (nextStatus === "all") {
+            setLineageTrials(nextTrials.trials);
+            setLineageNextCursor(nextTrials.nextCursor);
+          }
           setError(null);
         } catch (cause) {
           setError(cause instanceof Error ? cause.message : "Unable to update the trial filter.");
@@ -1282,6 +1501,10 @@ export function DashboardShell({
             trials: [...current.trials, ...nextTrials.trials],
             nextCursor: nextTrials.nextCursor,
           }));
+          if (status === "all") {
+            setLineageTrials((current) => mergeUniqueTrials(current, nextTrials.trials));
+            setLineageNextCursor(nextTrials.nextCursor);
+          }
           setError(null);
         } catch (cause) {
           setError(cause instanceof Error ? cause.message : "Unable to load more trials.");
@@ -1295,8 +1518,15 @@ export function DashboardShell({
     syncSelectedTrial(trialId);
   };
 
+  const openBrowseWorkspace = (workspace: BrowseWorkspace) => {
+    setLastBrowseWorkspace(workspace);
+    setActiveWorkspace(workspace);
+    updateTrialUrl(null);
+    setUrlTrialId(null);
+  };
+
   const returnToExplorer = () => {
-    setActiveWorkspace("explorer");
+    setActiveWorkspace(lastBrowseWorkspace);
     updateTrialUrl(null);
     setUrlTrialId(null);
   };
@@ -1314,10 +1544,14 @@ export function DashboardShell({
     <main className={`research-shell ${isTracksCollapsed ? "tracks-collapsed" : ""}`.trim()}>
       {isTracksCollapsed ? null : (
         <aside className="workspace-card track-column">
+          <div className="app-brand">
+            <span className="app-mark" aria-hidden="true">S</span>
+            <span>SigmaEvolve</span>
+          </div>
           <div className="section-heading">
             <div className="sidebar-header">
               <div>
-                <div className="eyebrow">Tracks</div>
+                <div className="eyebrow">Research lanes</div>
                 <h1 className="section-title">Research lanes</h1>
               </div>
               <button
@@ -1329,11 +1563,19 @@ export function DashboardShell({
                 Hide
               </button>
             </div>
-            <p className="section-copy">Switch tracks without losing the current trial context.</p>
+            <label className="search-field compact-search">
+              <span className="search-label">Search tracks</span>
+              <input
+                type="text"
+                value={trackSearchText}
+                onChange={(event) => setTrackSearchText(event.target.value)}
+                placeholder="Search tracks..."
+              />
+            </label>
           </div>
 
           <div className="track-stack">
-            {tracks.map((track) => {
+            {filteredTracks.map((track) => {
               const isActive = track.trackId === selectedTrackId;
               return (
                 <Link
@@ -1343,7 +1585,9 @@ export function DashboardShell({
                 >
                   <div className="track-card-top">
                     <div>
-                      <div className="track-card-title">{getTrackLabel(track)}</div>
+                      <div className="track-card-title" title={track.trackId}>
+                        {formatShortTrackId(track.trackId)}
+                      </div>
                       <div className="track-card-subtitle">{track.datasetId}</div>
                     </div>
                     <div className="track-score">{formatNumber(track.bestScore, 4)}</div>
@@ -1361,7 +1605,18 @@ export function DashboardShell({
                 </Link>
               );
             })}
+            {filteredTracks.length === 0 ? (
+              <section className="empty-panel track-empty">
+                <div className="eyebrow">No tracks</div>
+                <p className="section-copy">Try a different track id or dataset.</p>
+              </section>
+            ) : null}
           </div>
+          <nav className="sidebar-nav" aria-label="Dashboard navigation">
+            <span className="sidebar-nav-item active">Dashboard</span>
+            <span className="sidebar-nav-item">Alerts</span>
+            <span className="sidebar-nav-item">Settings</span>
+          </nav>
         </aside>
       )}
 
@@ -1378,6 +1633,27 @@ export function DashboardShell({
             </button>
           </div>
         ) : null}
+        <div className="command-bar">
+          <div className="command-crumbs">
+            <span>{activeWorkspace === "inspector" ? "Track" : "Track Overview"}</span>
+            <span aria-hidden="true">/</span>
+            <strong>{activeWorkspace === "tree" ? "Lineage" : activeWorkspace === "inspector" ? "Run Inspector" : "Dashboard"}</strong>
+          </div>
+          <div className="command-actions">
+            <span className="meta-chip">{detail.track.datasetId}</span>
+            <span className="meta-chip live-chip">Live via {liveMode}</span>
+            <label className="search-field command-search">
+              <span className="search-label">Search trials</span>
+              <input
+                type="search"
+                value={searchText}
+                onChange={(event) => setSearchText(event.target.value)}
+                placeholder="Search trials..."
+              />
+            </label>
+          </div>
+        </div>
+        {activeWorkspace === "explorer" ? (
         <section className="workspace-card overview-panel">
           <div className="overview-hero">
             <div>
@@ -1457,19 +1733,14 @@ export function DashboardShell({
                       {scoreChart.scoredCount} scored / {visibleTrials.length} displayed
                     </span>
                   </div>
-                  <div className="score-chart-meta">
-                    <span>Best {formatNumber(scoreChart.bestScore, 4)}</span>
-                    <span>
-                      {scoreChart.scaleMode === "zoomed" ? "Zoomed range" : "Range"} {formatNumber(scoreChart.yMin, 4)} to{" "}
-                      {formatNumber(scoreChart.yMax, 4)}
-                    </span>
-                    {scoreChart.scaleMode === "zoomed" ? (
+                  {scoreChart.scaleMode === "zoomed" ? (
+                    <div className="score-chart-meta">
                       <span>
                         {scoreChart.clippedLowCount} lower outlier{scoreChart.clippedLowCount === 1 ? "" : "s"} pinned to the
                         baseline
                       </span>
-                    ) : null}
-                  </div>
+                    </div>
+                  ) : null}
                   <div className="score-chart-shell">
                     <svg
                       className="score-chart"
@@ -1576,6 +1847,32 @@ export function DashboardShell({
             </article>
           </div>
         </section>
+        ) : null}
+
+        <div className="workspace-view-switch" role="tablist" aria-label="Track views">
+          <button
+            type="button"
+            className={`filter-chip ${activeWorkspace === "explorer" ? "active" : ""}`}
+            onClick={() => openBrowseWorkspace("explorer")}
+          >
+            Trial table
+          </button>
+          <button
+            type="button"
+            className={`filter-chip ${activeWorkspace === "tree" ? "active" : ""}`}
+            onClick={() => openBrowseWorkspace("tree")}
+          >
+            Lineage tree
+          </button>
+          <button
+            type="button"
+            className={`filter-chip ${activeWorkspace === "inspector" ? "active" : ""}`}
+            onClick={() => selectedTrial && openInspector(selectedTrial.trialId)}
+            disabled={!selectedTrial}
+          >
+            Inspector
+          </button>
+        </div>
 
         <div className={`workspace-stage workspace-stage-${activeWorkspace}`}>
           {activeWorkspace === "explorer" ? (
@@ -1587,18 +1884,6 @@ export function DashboardShell({
                 Scan outcomes quickly, then open the run inspector to compare source, crash detail, and
                 provenance.
               </p>
-            </div>
-
-            <div className="toolbar-row">
-              <label className="search-field">
-                <span className="search-label">Search trials</span>
-                <input
-                  type="search"
-                  value={searchText}
-                  onChange={(event) => setSearchText(event.target.value)}
-                  placeholder="trial id, model, phase, outcome"
-                />
-              </label>
             </div>
 
             <div className="status-filter" role="tablist" aria-label="Trial status filters">
@@ -1628,12 +1913,13 @@ export function DashboardShell({
                 <table className="trial-table">
                   <thead>
                     <tr>
-                      <th scope="col">Trial</th>
                       <th scope="col">Status</th>
+                      <th scope="col">Trial</th>
+                      <th scope="col">Task</th>
                       <th scope="col">Score</th>
-                      <th scope="col">Accuracy</th>
+                      <th scope="col">{DISPLAY_METRIC_NAME}</th>
+                      <th scope="col">Best Epoch</th>
                       <th scope="col">Model</th>
-                      <th scope="col">Notes</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1643,17 +1929,10 @@ export function DashboardShell({
                         role="button"
                         tabIndex={0}
                         aria-label={`Open trial ${trial.trialId}`}
-                        className={`trial-row tone-${getTrialTone(trial)} ${selectedTrial?.trialId === trial.trialId ? "active" : ""} ${isBestTrial(detail.track, trial.trialId) ? "best-trial" : ""}`}
+                        className={`trial-row tone-${getTrialTone(trial)} status-${trial.status} ${selectedTrial?.trialId === trial.trialId ? "active" : ""} ${isBestTrial(detail.track, trial.trialId) ? "best-trial" : ""}`}
                         onClick={() => openInspector(trial.trialId)}
                         onKeyDown={(event) => handleTrialKeyDown(event, trial.trialId)}
                       >
-                        <td>
-                          <div className="trial-cell-title-row">
-                            <div className="trial-cell-primary">{trial.trialId}</div>
-                            {isBestTrial(detail.track, trial.trialId) ? <span className="flag-chip flag-best">best so far</span> : null}
-                          </div>
-                          <div className="trial-cell-secondary">{getTrialNarrative(trial)}</div>
-                        </td>
                         <td>
                           <div className="trial-status-row">
                             <span className={`status-badge status-${trial.status}`}>
@@ -1663,20 +1942,35 @@ export function DashboardShell({
                             <span className="trial-status-duration">{formatDuration(trial.durationSec)}</span>
                           </div>
                         </td>
-                        <td>{formatNumber(trial.score, 4)}</td>
-                        <td>{formatNumber(trial.accuracy, 4)}</td>
                         <td>
-                          <div className="trial-cell-primary">{trial.model ?? "unknown model"}</div>
-                          <div className="trial-cell-secondary">{trial.backend ?? "unknown backend"}</div>
-                        </td>
-                        <td>
-                          <div className="trial-notes">
+                          <div className="trial-cell-title-row">
+                            <div className="trial-cell-primary" title={trial.trialId}>
+                              {formatShortTrialId(trial.trialId)}
+                            </div>
+                            {isBestTrial(detail.track, trial.trialId) ? <span className="flag-chip flag-best">best so far</span> : null}
                             {trial.outcomeReason ? <span className="flag-chip">{trial.outcomeReason}</span> : null}
                             {trial.errorType ? <span className="flag-chip flag-danger">{trial.errorType}</span> : null}
                             {trial.timedOut ? <span className="flag-chip flag-warning">timed out</span> : null}
                             {trial.hadUnscoredWorkAtTimeout ? <span className="flag-chip flag-warning">unevaluated work</span> : null}
                             {trial.hasError ? <span className="flag-chip flag-danger">error payload</span> : null}
                           </div>
+                          <div className="trial-cell-secondary">{getTrialNarrative(trial)}</div>
+                        </td>
+                        <td>
+                          {trial.taskDescription ? (
+                            <div className="trial-task-snippet" title={trial.taskDescription}>
+                              {summarizeTaskDescription(trial.taskDescription)}
+                            </div>
+                          ) : (
+                            <span className="trial-cell-secondary">No task description</span>
+                          )}
+                        </td>
+                        <td>{formatNumber(trial.score, 4)}</td>
+                        <td>{formatNumber(trial.accuracy, 4)}</td>
+                        <td>{formatBestEpoch(trial.bestEvalEpoch, trial.epochsCompleted, trial.evalCount)}</td>
+                        <td>
+                          <div className="trial-cell-primary">{trial.model ?? "unknown model"}</div>
+                          <div className="trial-cell-secondary">{trial.backend ?? "unknown backend"}</div>
                         </td>
                       </tr>
                     ))}
@@ -1693,6 +1987,18 @@ export function DashboardShell({
           </section>
           ) : null}
 
+          {activeWorkspace === "tree" ? (
+          <>
+            {error ? <div className="error-banner">{error}</div> : null}
+            <TrialLineageTree
+              graph={lineageGraph}
+              isLoading={isLineageLoading}
+              onOpenTrial={openInspector}
+              selectedTrialId={selectedTrialId}
+            />
+          </>
+          ) : null}
+
           {activeWorkspace === "inspector" ? (
           <section className="workspace-card inspector-panel">
             <div className="section-heading">
@@ -1705,9 +2011,9 @@ export function DashboardShell({
                   type="button"
                   className="panel-toggle"
                   onClick={returnToExplorer}
-                  aria-label="Back to trial explorer"
+                  aria-label="Back to previous view"
                 >
-                  Back to trials
+                  Back to previous view
                 </button>
               </div>
               <p className="section-copy">
@@ -1812,7 +2118,7 @@ export function DashboardShell({
                           <div className="context-stack">
                             {[
                               { label: "Score", value: formatNumber(selectedTrial.score, 4) },
-                              { label: "Accuracy", value: formatNumber(selectedTrial.accuracy, 4) },
+                              { label: DISPLAY_METRIC_NAME, value: formatNumber(selectedTrial.accuracy, 4) },
                               { label: "Time To Best Eval", value: formatDuration(selectedTrial.timeToBestEvalSec) },
                               { label: "Duration", value: formatDuration(selectedTrial.durationSec) },
                               { label: "Dispatch Attempts", value: selectedTrial.dispatchAttempts },
@@ -1924,11 +2230,10 @@ export function DashboardShell({
 
                 <div className="inspector-grid">
                   {selectedTrial.hasError ? (
-                    <article className="analysis-card wide-card">
+                    <article className="analysis-card wide-card error-payload-card">
                       <CollapsibleSection
+                        collapsible={false}
                         id="trial-error-payload"
-                        expanded={isSectionExpanded("trial-error-payload")}
-                        onToggle={() => toggleSection("trial-error-payload")}
                         title="Error payload"
                         titleTag="h3"
                         toggleClassName="analysis-card-header"
@@ -1938,61 +2243,7 @@ export function DashboardShell({
                     </article>
                   ) : null}
 
-                  {selectedCanCompareMixedSource ? (
-                    <article className="analysis-card wide-card">
-                      <CollapsibleSection
-                        id="trial-mixed-source-diff"
-                        expanded={isSectionExpanded("trial-mixed-source-diff")}
-                        onToggle={() => toggleSection("trial-mixed-source-diff")}
-                        title="Mixed vs generated diff"
-                        titleTag="h3"
-                        summary={formatMixedSourceSummary(selectedMixedSource)}
-                        toggleClassName="analysis-card-header"
-                      >
-                        {selectedMixedSource ? (
-                          <SourceDiff before={selectedMixedSource.source} after={selectedGeneratedProgram ?? ""} />
-                        ) : (
-                          <p className="section-copy">No prompt-embedded source snippets were recorded for this trial.</p>
-                        )}
-                      </CollapsibleSection>
-                    </article>
-                  ) : null}
-
-                  <article className="analysis-card wide-card">
-                    <CollapsibleSection
-                      id="trial-system-prompt"
-                      expanded={isSectionExpanded("trial-system-prompt")}
-                      onToggle={() => toggleSection("trial-system-prompt")}
-                      title="System prompt"
-                      titleTag="h3"
-                      toggleClassName="analysis-card-header"
-                    >
-                      <HighlightedCode
-                        code={selectedSystemPrompt ?? "No system prompt recorded."}
-                        language={detectPromptLanguage(selectedSystemPrompt ?? "")}
-                        wrap
-                      />
-                    </CollapsibleSection>
-                  </article>
-
-                  <article className="analysis-card wide-card">
-                    <CollapsibleSection
-                      id="trial-user-prompt"
-                      expanded={isSectionExpanded("trial-user-prompt")}
-                      onToggle={() => toggleSection("trial-user-prompt")}
-                      title="User prompt"
-                      titleTag="h3"
-                      toggleClassName="analysis-card-header"
-                    >
-                      <HighlightedCode
-                        code={selectedUserPrompt ?? "No user prompt recorded."}
-                        language={detectPromptLanguage(selectedUserPrompt ?? "")}
-                        wrap
-                      />
-                    </CollapsibleSection>
-                  </article>
-
-                  <article className="analysis-card wide-card">
+                  <article className="analysis-card wide-card task-description-card">
                     <CollapsibleSection
                       id="trial-task-description"
                       expanded={isSectionExpanded("trial-task-description")}
@@ -2009,47 +2260,14 @@ export function DashboardShell({
                     </CollapsibleSection>
                   </article>
 
-                  <article className="analysis-card wide-card">
-                    <CollapsibleSection
-                      id="trial-raw-llm-response"
-                      expanded={isSectionExpanded("trial-raw-llm-response")}
-                      onToggle={() => toggleSection("trial-raw-llm-response")}
-                      title="Raw LLM response"
-                      titleTag="h3"
-                      toggleClassName="analysis-card-header"
-                    >
-                      <HighlightedCode
-                        code={selectedResponseText ?? "No raw response recorded."}
-                        language={detectPromptLanguage(selectedResponseText ?? "")}
-                        wrap
-                      />
-                    </CollapsibleSection>
-                  </article>
-
-                  <article className="analysis-card wide-card">
-                    <CollapsibleSection
-                      id="trial-reasoning-trace"
-                      expanded={isSectionExpanded("trial-reasoning-trace")}
-                      onToggle={() => toggleSection("trial-reasoning-trace")}
-                      title="Reasoning trace"
-                      titleTag="h3"
-                      toggleClassName="analysis-card-header"
-                    >
-                      <HighlightedCode
-                        code={selectedReasoningText ?? "No reasoning trace recorded."}
-                        language={detectPromptLanguage(selectedReasoningText ?? "")}
-                        wrap
-                      />
-                    </CollapsibleSection>
-                  </article>
-
-                  <article className="analysis-card wide-card">
+                  <article className="analysis-card wide-card generated-program-card">
                     <CollapsibleSection
                       id="trial-generated-program"
                       expanded={isSectionExpanded("trial-generated-program")}
                       onToggle={() => toggleSection("trial-generated-program")}
                       title={selectedIsGenerationFailure ? "Generation attempt" : "Generated program"}
                       titleTag="h3"
+                      summary={selectedGeneratedProgramSummary}
                       toggleClassName="analysis-card-header"
                     >
                       {selectedShowsDiagnosticSource ? (
@@ -2063,7 +2281,74 @@ export function DashboardShell({
                           selectedGeneratedProgram ??
                           (selectedIsGenerationFailure ? "No generation attempt recorded." : "No generated program recorded.")
                         }
+                        diffBefore={selectedHasInlineProgramDiff ? selectedMixedSource?.source : null}
                         language="python"
+                        wrap
+                      />
+                    </CollapsibleSection>
+                  </article>
+
+                  <article className="analysis-card wide-card system-prompt-card">
+                    <CollapsibleSection
+                      id="trial-system-prompt"
+                      expanded={isSectionExpanded("trial-system-prompt")}
+                      onToggle={() => toggleSection("trial-system-prompt")}
+                      title="System prompt"
+                      titleTag="h3"
+                      toggleClassName="analysis-card-header"
+                    >
+                      <HighlightedCode
+                        code={selectedSystemPrompt ?? "No system prompt recorded."}
+                        language={detectPromptLanguage(selectedSystemPrompt ?? "")}
+                        wrap
+                      />
+                    </CollapsibleSection>
+                  </article>
+
+                  <article className="analysis-card wide-card user-prompt-card">
+                    <CollapsibleSection
+                      id="trial-user-prompt"
+                      expanded={isSectionExpanded("trial-user-prompt")}
+                      onToggle={() => toggleSection("trial-user-prompt")}
+                      title="User prompt"
+                      titleTag="h3"
+                      toggleClassName="analysis-card-header"
+                    >
+                      <HighlightedCode
+                        code={selectedUserPrompt ?? "No user prompt recorded."}
+                        language={detectPromptLanguage(selectedUserPrompt ?? "")}
+                        wrap
+                      />
+                    </CollapsibleSection>
+                  </article>
+
+                  <article className="analysis-card wide-card reasoning-trace-card">
+                    <CollapsibleSection
+                      id="trial-reasoning-trace"
+                      expanded={isSectionExpanded("trial-reasoning-trace")}
+                      onToggle={() => toggleSection("trial-reasoning-trace")}
+                      title="Reasoning trace"
+                      titleTag="h3"
+                      toggleClassName="analysis-card-header"
+                    >
+                      <MarkdownContent
+                        content={selectedReasoningText ?? "No reasoning trace recorded."}
+                      />
+                    </CollapsibleSection>
+                  </article>
+
+                  <article className="analysis-card wide-card raw-response-card">
+                    <CollapsibleSection
+                      id="trial-raw-llm-response"
+                      expanded={isSectionExpanded("trial-raw-llm-response")}
+                      onToggle={() => toggleSection("trial-raw-llm-response")}
+                      title="Response"
+                      titleTag="h3"
+                      toggleClassName="analysis-card-header"
+                    >
+                      <HighlightedCode
+                        code={selectedResponseText ?? "No raw response recorded."}
+                        language={detectPromptLanguage(selectedResponseText ?? "")}
                         wrap
                       />
                     </CollapsibleSection>

@@ -206,15 +206,11 @@ logging.basicConfig(
 app = modal.App(DEFAULT_MODAL_APP_NAME)
 image = (
     modal.Image.debian_slim(python_version="3.11")
-    .pip_install(
-        "numpy>=1.26",
-        "psycopg[binary]>=3.1",
-        "sqlalchemy>=2.0",
-        "torch>=2.0",
-        "torchvision>=0.18",
-        "wandb>=0.19",
+    .pip_install_from_pyproject(
+        "pyproject.toml",
+        optional_dependencies=["datasets"],
     )
-    .add_local_python_source("sigmaevolve")
+    .add_local_python_source("sigmaevolve", copy=True)
 )
 dataset_volume = modal.Volume.from_name(
     DEFAULT_MODAL_DATASET_VOLUME, create_if_missing=True

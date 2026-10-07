@@ -4,7 +4,6 @@ import io
 import json
 from urllib.error import HTTPError, URLError
 
-import numpy as np
 import pytest
 import torch
 
@@ -12,6 +11,7 @@ from sigmaevolve.core import DatasetManifest, TrackRecord, TrialSummary, now_utc
 from sigmaevolve.generation import (
     EvolveBlockError,
     OpenRouterGenerationBackend,
+    SearchReplaceBlock,
     apply_search_replace_blocks,
     assert_only_evolve_blocks_changed,
     build_baseline_train_script,
@@ -20,6 +20,7 @@ from sigmaevolve.generation import (
     build_data_block,
     build_model_block,
     build_optimization_block,
+    build_training_policy_block,
     extract_evolve_block_payloads,
     extract_task_description,
     materialize_candidate_source,
@@ -27,6 +28,7 @@ from sigmaevolve.generation import (
     parse_search_replace_blocks,
     replace_evolve_block_payloads,
 )
+from tests.support import build_selfcontained_train_script
 
 
 def _track_with_pool():
@@ -134,6 +136,51 @@ def _context_with_prior_programs():
     ]
 
 
+def _context_with_many_prior_programs():
+    context = _context_with_prior_programs()
+    context.extend(
+        [
+            TrialSummary(
+                trial_id="trial_prior_2",
+                metrics_json={"accuracy": 0.997, "val_loss": 0.031},
+                source=_mutated_script(
+                    "return torch.zeros((x.shape[0], 10), dtype=torch.float32) + 0.4"
+                ),
+                provenance_json={
+                    "backend": "openrouter",
+                    "candidate_kind": "strategy_v1",
+                },
+            ),
+            TrialSummary(
+                trial_id="trial_prior_3",
+                metrics_json={"accuracy": 0.996, "val_loss": 0.045},
+                source=_mutated_script(
+                    "return torch.zeros((x.shape[0], 10), dtype=torch.float32) + 0.5"
+                ),
+                provenance_json={
+                    "backend": "openrouter",
+                    "candidate_kind": "strategy_v1",
+                },
+            ),
+        ]
+    )
+    return context
+
+
+def _context_with_alternate_current_and_prior_programs():
+    return [
+        TrialSummary(
+            trial_id="trial_current_alt",
+            metrics_json={"accuracy": 0.991, "val_loss": 0.11},
+            source=_mutated_script(
+                "return torch.zeros((x.shape[0], 10), dtype=torch.float32) + 0.6"
+            ),
+            provenance_json={"backend": "openrouter", "candidate_kind": "strategy_v1"},
+        ),
+        *_context_with_many_prior_programs()[1:],
+    ]
+
+
 def _negative_trials():
     return [
         TrialSummary(
@@ -147,6 +194,26 @@ def _negative_trials():
                 "stderr": "RuntimeError: mat1 and mat2 shapes cannot be multiplied (55000x28 and 784x128)",
             },
         )
+    ]
+
+
+def _many_negative_trials():
+    return [
+        TrialSummary(
+            trial_id=f"trial_failed_{index}",
+            metrics_json=None,
+            source=_mutated_script(f"raise RuntimeError('bad candidate {index}')"),
+            provenance_json={"backend": "openrouter", "model": "test/model"},
+            outcome_reason="crashed",
+            error_json={
+                "returncode": index + 1,
+                "detail": (
+                    "shape mismatch while evaluating candidate "
+                    f"{index} with a deliberately long diagnostic string"
+                ),
+            },
+        )
+        for index in range(4)
     ]
 
 
@@ -215,6 +282,7 @@ def test_openrouter_generation_uses_model_pool_round_robin(monkeypatch):
     assert first_result.provenance_json["candidate_kind"] == "strategy_v1"
     assert second_result.provenance_json["generation_config"]["temperature"] == 0.8
     assert first_result.provenance_json["request_messages"] == payloads[0]["messages"]
+    assert len(payloads[0]["messages"]) == 2
     assert (
         first_result.provenance_json["generation"]["system_prompt"]
         == payloads[0]["messages"][0]["content"]
@@ -233,45 +301,32 @@ def test_openrouter_generation_uses_model_pool_round_robin(monkeypatch):
     first_prompt = payloads[0]["messages"][1]["content"]
     assert "# EVOLVE-BLOCK-START" in system_prompt
     assert "# EVOLVE-BLOCK-END" in system_prompt
-    assert (
-        "Never wrap the response in triple backticks or fenced code blocks"
-        in system_prompt
-    )
-    assert (
-        "A `TASK_DESCRIPTION:` header followed by a brief plain-text description"
-        in system_prompt
-    )
-    assert "If you cannot emit a complete SEARCH/REPLACE block, output NO_CHANGES" in (
+    assert "Return exactly:" in system_prompt
+    assert "TASK_DESCRIPTION:" in system_prompt
+    assert "Maximize val_acc" in system_prompt
+    assert "Use lower val_loss only to break ties" in system_prompt
+    assert "Appendix order: REFERENCE, NEGATIVE, CURRENT_PROGRAM" in (system_prompt)
+    assert "Randomly choose either a focused improvement or a broader revamp" in (
         system_prompt
     )
-    assert "TASK_DESCRIPTION:" in system_prompt
-    assert (
-        "Do not emit leading spaces or tabs that only reflect surrounding block nesting"
-        in system_prompt
-    )
-    assert (
-        "SEARCH must match exactly one location in the CURRENT PROGRAM" in system_prompt
-    )
+    assert "Use REFERENCE appendices as inspiration only" in system_prompt
+    assert "textually distinct from CURRENT_PROGRAM" in system_prompt
+    assert "SEARCH must match exactly once in CURRENT_PROGRAM" in system_prompt
     assert not first_prompt.lstrip().startswith("{")
-    assert "OBJECTIVE:" in first_prompt
     assert "TASK CONTEXT:" in first_prompt
+    assert "- script_evolution_task:" in first_prompt
     assert "- dataset_id: mnist:v1" in first_prompt
     assert "- epochs: 5" in first_prompt
     assert "- split_sizes:" in first_prompt
     assert "- dataset_metadata:" in first_prompt
     assert "- num_classes: 10" in first_prompt
     assert "REFERENCE PROGRAMS:" in first_prompt
+    assert "AVOID THESE RECENT NEGATIVE TRIALS:" in first_prompt
     assert "CURRENT PROGRAM:" in first_prompt
-    assert "Optimize for higher val_acc." in first_prompt
-    assert "Use REFERENCE PROGRAMS as inspiration only." in first_prompt
-    assert (
-        "Patch this program. SEARCH blocks must match text from CURRENT PROGRAM"
-        in first_prompt
-    )
     assert "score:" not in first_prompt
     assert "val_acc: 0.5" in first_prompt
     assert "val_loss: n/a" in first_prompt
-    assert first_prompt.rstrip().endswith("REPLACEMENTS:")
+    assert first_prompt.rstrip().endswith("PATCHES:")
 
 
 def test_openrouter_generation_bumps_temperature_on_duplicate_retry(monkeypatch):
@@ -343,14 +398,15 @@ def test_openrouter_generation_prompt_includes_expected_sections(monkeypatch):
     prompt = payloads[0]["messages"][1]["content"]
     assert "# EVOLVE-BLOCK-START" in system_prompt
     assert "# EVOLVE-BLOCK-END" in system_prompt
-    assert "OBJECTIVE:" in prompt
     assert "TASK CONTEXT:" in prompt
+    assert "- script_evolution_task:" in prompt
     assert "REFERENCE PROGRAMS:" in prompt
+    assert "AVOID THESE RECENT NEGATIVE TRIALS:" in prompt
     assert "CURRENT PROGRAM:" in prompt
-    assert "REPLACEMENTS:" in prompt
+    assert "PATCHES:" in prompt
 
 
-def test_openrouter_generation_prompt_lists_full_prior_programs_before_current_program():
+def test_openrouter_generation_prompt_compacts_prior_programs_before_current_program():
     backend = OpenRouterGenerationBackend(api_key="test-key")
 
     prompt = backend._build_user_prompt_text(
@@ -362,20 +418,28 @@ def test_openrouter_generation_prompt_lists_full_prior_programs_before_current_p
     )
 
     prior_section, current_section = prompt.split("CURRENT PROGRAM:\n", maxsplit=1)
-    assert "OBJECTIVE:" in prior_section
+
     assert "TASK CONTEXT:" in prior_section
-    assert "REFERENCE PROGRAMS:\n---\nval_acc: 0.998" in prior_section
+    assert "- script_evolution_task:" in prior_section
+    assert "REFERENCE PROGRAMS:" in prior_section
+    assert "\n---\nval_acc: 0.998" in prior_section
+    assert (
+        "Reference programs show only the mutable evolve-block regions" in prior_section
+    )
     assert "score:" not in prior_section
     assert "val_acc: 0.998" in prior_section
     assert "val_loss: 0.023" in prior_section
     assert "[...]" not in prior_section
     assert "def forward(self, x):" in prior_section
+    assert "from __future__ import annotations" not in prior_section
+    assert "class TrainScriptContractError(RuntimeError):" not in prior_section
     assert (
         "return torch.zeros((x.shape[0], 10), dtype=torch.float32) + 0.3"
         in prior_section
     )
-    assert "return torch.zeros((x.shape[0], 10), dtype=torch.float32) + 0.2" not in (
-        prior_section
+    assert (
+        "return torch.zeros((x.shape[0], 10), dtype=torch.float32) + 0.2"
+        not in prior_section
     )
     assert (
         "CURRENT PROGRAM:\nPatch this program. SEARCH blocks must match text from CURRENT PROGRAM"
@@ -388,7 +452,88 @@ def test_openrouter_generation_prompt_lists_full_prior_programs_before_current_p
     assert "# EVOLVE-BLOCK-END" not in prior_section
     assert "# EVOLVE-BLOCK-START" in current_section
     assert "# EVOLVE-BLOCK-END" in current_section
-    assert prompt.rstrip().endswith("REPLACEMENTS:")
+    assert (
+        "AVOID THESE RECENT NEGATIVE TRIALS:\n"
+        "Negative trials show only the mutable evolve-block regions, all "
+        "immutable scaffolding is purposely ommited.\nNone."
+    ) in prompt
+    assert prompt.rstrip().endswith("PATCHES:")
+
+
+def test_openrouter_generation_prompt_renders_recent_negative_trials():
+    backend = OpenRouterGenerationBackend(api_key="test-key")
+
+    prompt = backend._build_user_prompt_text(
+        _track_with_pool(),
+        _manifest(),
+        _context_with_prior_programs(),
+        negative_trials=_negative_trials(),
+        selected_config={"model": "test/model"},
+    )
+
+    negative_section = prompt.split(
+        "AVOID THESE RECENT NEGATIVE TRIALS:\n", maxsplit=1
+    )[1].split("CURRENT PROGRAM:\n", maxsplit=1)[0]
+
+    assert "AVOID THESE RECENT NEGATIVE TRIALS:" in prompt
+    assert "Negative trials show only the mutable evolve-block regions" in prompt
+    assert "outcome_reason: crashed" in negative_section
+    assert "- returncode: 1" in negative_section
+    assert "mat1 and mat2 shapes cannot be multiplied" in negative_section
+    assert "raise RuntimeError('bad candidate')" in negative_section
+    assert "class TrainScriptContractError(RuntimeError):" not in negative_section
+
+
+def test_openrouter_generation_prompt_keeps_stable_prefix_across_context_changes():
+    backend = OpenRouterGenerationBackend(api_key="test-key")
+
+    first_prompt = backend._build_user_prompt_text(
+        _track_with_pool(),
+        _manifest(),
+        _context_with_prior_programs(),
+        negative_trials=_negative_trials(),
+        selected_config={"model": "test/model"},
+    )
+    second_prompt = backend._build_user_prompt_text(
+        _track_with_pool(),
+        _manifest(),
+        _context_with_alternate_current_and_prior_programs(),
+        negative_trials=_many_negative_trials(),
+        selected_config={"model": "test/model"},
+    )
+
+    first_prefix = first_prompt.split("REFERENCE PROGRAMS:\n", maxsplit=1)[0]
+    second_prefix = second_prompt.split("REFERENCE PROGRAMS:\n", maxsplit=1)[0]
+    assert first_prefix == second_prefix
+    assert first_prompt != second_prompt
+
+
+def test_openrouter_generation_prompt_applies_render_budgets():
+    backend = OpenRouterGenerationBackend(api_key="test-key")
+
+    prompt = backend._build_user_prompt_text(
+        _track_with_pool(),
+        _manifest(),
+        _context_with_many_prior_programs(),
+        negative_trials=_many_negative_trials(),
+        selected_config={"model": "test/model"},
+    )
+
+    reference_section = prompt.split("REFERENCE PROGRAMS:\n", maxsplit=1)[1].split(
+        "AVOID THESE RECENT NEGATIVE TRIALS:\n", maxsplit=1
+    )[0]
+    negative_section = prompt.split(
+        "AVOID THESE RECENT NEGATIVE TRIALS:\n", maxsplit=1
+    )[1].split("CURRENT PROGRAM:\n", maxsplit=1)[0]
+
+    assert reference_section.count("val_acc:") == 2
+    assert "trial_prior_2" not in reference_section
+    assert " + 0.5" not in reference_section
+    assert " + 0.3" in reference_section
+    assert " + 0.4" in reference_section
+    assert negative_section.count("outcome_reason:") == 4
+    assert "bad candidate 2" in negative_section
+    assert "bad candidate 3" in negative_section
 
 
 def test_openrouter_generation_reports_missing_api_key(monkeypatch):
@@ -649,20 +794,16 @@ def test_replace_evolve_block_payloads_rewrites_only_block_contents():
     updated = replace_evolve_block_payloads(
         source,
         [
-            payloads[0],
             build_model_block(
                 """
 def forward(self, x):
     return torch.zeros((x.shape[0], 2), dtype=torch.float32)
 """,
             ),
-            payloads[2],
-            payloads[3],
-            payloads[4],
         ],
     )
 
-    assert len(payloads) == 5
+    assert len(payloads) == 1
     assert extract_evolve_block_payloads(updated) != payloads
     assert_only_evolve_blocks_changed(source, updated)
 
@@ -672,30 +813,27 @@ def test_baseline_template_uses_one_outer_evolve_block():
 
     assert source.count("# EVOLVE-BLOCK-START") == 1
     assert source.count("# EVOLVE-BLOCK-END") == 1
-    assert len(extract_evolve_block_payloads(source)) == 5
+    assert len(extract_evolve_block_payloads(source)) == 1
 
 
 def test_baseline_template_preserves_feature_shape_for_evolved_models():
     namespace: dict[str, object] = {}
     exec(build_baseline_train_script(), namespace)
 
-    prepare_feature_tensor = namespace["prepare_feature_tensor"]
-    build_model = namespace["build_model"]
+    make_experiment = namespace["make_experiment"]
 
-    input_shape, train_x = prepare_feature_tensor(
-        np.zeros((4, 28, 28), dtype=np.float32)
+    train_ds = torch.utils.data.TensorDataset(
+        torch.zeros((4, 28, 28)), torch.tensor([0, 1, 0, 1])
     )
-    _, validation_x = prepare_feature_tensor(
-        np.zeros((2, 28, 28), dtype=np.float32),
-        input_shape=input_shape,
+    validation_ds = torch.utils.data.TensorDataset(
+        torch.zeros((2, 28, 28)), torch.tensor([0, 1])
     )
-    model = build_model(input_shape=input_shape, num_classes=10)
-    logits = model(validation_x)
+    experiment = make_experiment(torch.device("cpu"), train_ds, validation_ds)
+    logits = experiment["model"](validation_ds.tensors[0])
 
-    assert input_shape == (28, 28)
-    assert tuple(train_x.shape) == (4, 28, 28)
-    assert tuple(logits.shape) == (2, 10)
-    assert isinstance(model.network[0], torch.nn.Flatten)
+    assert tuple(train_ds.tensors[0].shape) == (4, 28, 28)
+    assert tuple(logits.shape) == (2, 2)
+    assert isinstance(experiment["model"][0], torch.nn.Flatten)
 
 
 def test_build_candidate_train_script_replaces_only_data_block():
@@ -704,28 +842,16 @@ def test_build_candidate_train_script_replaces_only_data_block():
     updated = build_candidate_train_script(
         data_block_payload=build_data_block("""
 batch_size = 8
-return {
-    "batch_size": batch_size,
-    "train_loader": torch.utils.data.DataLoader(
-        torch.utils.data.TensorDataset(train_x, train_y),
-        batch_size=batch_size,
-        shuffle=False,
-    ),
-    "validation_loader": torch.utils.data.DataLoader(
-        torch.utils.data.TensorDataset(validation_x),
-        batch_size=1,
-        shuffle=False,
-    ),
-}
+train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=False)
+val_loader = DataLoader(val_ds, batch_size=1)
 """)
     )
 
     updated_payloads = extract_evolve_block_payloads(updated)
-    assert updated_payloads[0] == source_payloads[0]
-    assert updated_payloads[1] == source_payloads[1]
-    assert updated_payloads[3] == source_payloads[3]
-    assert updated_payloads[4] == source_payloads[4]
-    assert "batch_size = 8" in updated_payloads[2]
+    assert len(source_payloads) == 1
+    assert "batch_size = 8" in updated_payloads[0]
+    assert "shuffle=False" in updated_payloads[0]
+    assert updated_payloads[0] != source_payloads[0]
     assert_only_evolve_blocks_changed(source, updated)
 
 
@@ -734,28 +860,21 @@ def test_build_candidate_train_script_replaces_only_optimization_block():
     source_payloads = extract_evolve_block_payloads(source)
     updated = build_candidate_train_script(
         optimization_block_payload=build_optimization_block("""
-return {
-    "trainable_parameters": [parameter for parameter in model.parameters() if parameter.requires_grad],
-    "optimizer": None,
-    "scheduler": None,
-    "label_smoothing": 0.0,
-    "grad_clip_norm": None,
-}
+optimizer = None
+scheduler = None
 """)
     )
 
     updated_payloads = extract_evolve_block_payloads(updated)
-    assert updated_payloads[0] == source_payloads[0]
-    assert updated_payloads[1] == source_payloads[1]
-    assert updated_payloads[2] == source_payloads[2]
-    assert updated_payloads[4] == source_payloads[4]
-    assert '"optimizer": None' in updated_payloads[3]
+    assert len(source_payloads) == 1
+    assert "optimizer = None" in updated_payloads[0]
+    assert "scheduler = None" in updated_payloads[0]
+    assert updated_payloads[0] != source_payloads[0]
     assert_only_evolve_blocks_changed(source, updated)
 
 
 def test_build_candidate_train_script_positional_model_payload_keeps_other_blocks():
     source = build_baseline_train_script()
-    source_payloads = extract_evolve_block_payloads(source)
     updated = build_candidate_train_script(
         build_model_block(
             """
@@ -766,12 +885,11 @@ def forward(self, x):
     )
 
     updated_payloads = extract_evolve_block_payloads(updated)
-    assert updated_payloads[0] == source_payloads[0]
+    assert len(updated_payloads) == 1
     assert (
         "return torch.zeros((x.shape[0], 2), dtype=torch.float32)"
-        in updated_payloads[1]
+        in updated_payloads[0]
     )
-    assert updated_payloads[2:] == source_payloads[2:]
     assert_only_evolve_blocks_changed(source, updated)
 
 
@@ -784,23 +902,90 @@ def test_assert_only_evolve_blocks_changed_rejects_immutable_changes():
         assert_only_evolve_blocks_changed(source, invalid)
 
 
+def test_apply_search_replace_blocks_matches_named_evolve_blocks_only():
+    source = "\n".join(
+        [
+            "# /// sigmaevolve",
+            "# version = 1",
+            '# dataset_id = "mnist:v1"',
+            '# runner = "python_train_v1"',
+            "#",
+            "# [evolution]",
+            '# task = "Maximize validation accuracy while keeping the script runnable."',
+            "# ///",
+            "",
+            "# EVOLVE-BLOCK-START: model",
+            "hidden = 32",
+            "# EVOLVE-BLOCK-END: model",
+            "",
+            "# EVOLVE-BLOCK-START: training",
+            "batch_size = 64",
+            "# EVOLVE-BLOCK-END: training",
+            "",
+        ]
+    )
+
+    updated = apply_search_replace_blocks(
+        source,
+        [SearchReplaceBlock(search="batch_size = 64\n", replace="batch_size = 32\n")],
+    )
+
+    assert "batch_size = 32" in updated
+    assert "hidden = 32" in updated
+
+
+def test_apply_search_replace_blocks_rejects_header_edits():
+    source = build_selfcontained_train_script()
+
+    with pytest.raises(EvolveBlockError, match="did not match any evolve block"):
+        apply_search_replace_blocks(
+            source,
+            [
+                SearchReplaceBlock(
+                    search='# runner = "python_train_v1"\n',
+                    replace='# runner = "shell"\n',
+                )
+            ],
+        )
+
+
+def test_compact_evolve_source_labels_named_regions():
+    source = "\n".join(
+        [
+            "# EVOLVE-BLOCK-START: model",
+            "hidden = 32",
+            "# EVOLVE-BLOCK-END: model",
+            "",
+            "# EVOLVE-BLOCK-START: training",
+            "batch_size = 64",
+            "# EVOLVE-BLOCK-END: training",
+            "",
+        ]
+    )
+
+    compact = OpenRouterGenerationBackend()._extract_compact_evolve_source(source)
+
+    assert "# EVOLVE-REGION: model" in compact
+    assert "# EVOLVE-REGION: training" in compact
+
+
 def test_materialize_candidate_source_applies_search_replace_blocks():
     source = build_baseline_train_script()
     response = """TASK_DESCRIPTION:
-Reduce the forward output scale to temper logits and improve validation stability.
+Add a hidden layer so the baseline model keeps a little more capacity.
 
 <<<<<<< SEARCH
-    def forward(self, x):
-        return self.network(x)
+    nn.Linear(flat_dim, num_classes),
 =======
-    def forward(self, x):
-        return self.network(x) * 0.5
+    nn.Linear(flat_dim, 64),
+    nn.ReLU(),
+    nn.Linear(64, num_classes),
 >>>>>>> REPLACE
 """
 
     updated = materialize_candidate_source(source, response)
 
-    assert "return self.network(x) * 0.5" in updated
+    assert "nn.Linear(flat_dim, 64)" in updated
     assert_only_evolve_blocks_changed(source, updated)
 
 
@@ -810,44 +995,33 @@ def test_materialize_candidate_source_matches_search_blocks_without_outer_indent
 Adjust optimization defaults to try a smaller, more regularized update schedule.
 
 <<<<<<< SEARCH
-    "learning_rate": 0.002,
-    "weight_decay": 1e-4,
-    "label_smoothing": 0.0,
-    "grad_clip_norm": 1.0,
+optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
 =======
-    "learning_rate": 0.001,
-    "weight_decay": 1e-5,
-    "label_smoothing": 0.1,
-    "grad_clip_norm": 0.5,
+optimizer = torch.optim.AdamW(model.parameters(), lr=5e-4, weight_decay=1e-4)
 >>>>>>> REPLACE
 """
 
     updated = materialize_candidate_source(source, response)
 
-    assert '"learning_rate": 0.001' in updated
-    assert '        "learning_rate": 0.001,' in updated
+    assert "torch.optim.AdamW" in updated
     assert_only_evolve_blocks_changed(source, updated)
 
 
 def test_assert_only_evolve_blocks_changed_accepts_outer_block_only_patch_layout():
     source = build_baseline_train_script()
     response = """TASK_DESCRIPTION:
-Increase model width to add capacity while keeping the rest of the program unchanged.
+Increase the batch size while keeping the rest of the program unchanged.
 
 <<<<<<< SEARCH
-"model": {
-    "hidden_dims": (256, 128),
-},
+batch_size = 64
 =======
-"model": {
-    "hidden_dims": (512, 256),
-},
+batch_size = 128
 >>>>>>> REPLACE
 """
 
     updated = materialize_candidate_source(source, response)
 
-    assert '"hidden_dims": (512, 256)' in updated
+    assert "batch_size = 128" in updated
     assert_only_evolve_blocks_changed(source, updated)
 
 
@@ -855,69 +1029,46 @@ def test_build_candidate_train_script_replaces_only_config_block():
     source = build_baseline_train_script()
     source_payloads = extract_evolve_block_payloads(source)
     updated = build_candidate_train_script(
-        config_block_payload=build_config_block("""
-CONFIG = {
-    "normalization_std_floor": 1e-5,
-    "binary_probability_threshold": 0.55,
-    "binary_logit_threshold": 0.1,
-    "initial_best_accuracy": -1.0,
-    "accuracy_improvement_tol": 1e-8,
-    "model": {
-        "hidden_dims": (256, 128),
-    },
-    "data": {
-        "max_batch_size": 512,
-        "shuffle_train": True,
-        "shuffle_validation": False,
-    },
-    "optimization": {
-        "learning_rate": 0.002,
-        "weight_decay": 1e-4,
-        "label_smoothing": 0.0,
-        "grad_clip_norm": 1.0,
-    },
-    "training_policy": {
-        "early_stopping_patience": 2,
-    },
-}
-""")
+        config_block_payload=build_config_block(
+            build_training_policy_block(
+                """
+early_stopping_patience = 5
+min_delta = 0.1
+"""
+            )
+        )
     )
 
     updated_payloads = extract_evolve_block_payloads(updated)
-    assert '"binary_probability_threshold": 0.55' in updated_payloads[0]
-    assert updated_payloads[1:] == source_payloads[1:]
+    assert "early_stopping_patience = 5" in updated_payloads[0]
+    assert updated_payloads[0] != source_payloads[0]
     assert_only_evolve_blocks_changed(source, updated)
 
 
 def test_apply_search_replace_blocks_preserves_internal_indentation():
     source = build_baseline_train_script()
     response = """TASK_DESCRIPTION:
-Raise early stopping patience slightly so the model can train longer before stopping.
+Add a hidden layer while preserving the model block's internal indentation.
 
 <<<<<<< SEARCH
-def configure_training_policy(*, num_epochs):
-    del num_epochs
-    training_policy = CONFIG["training_policy"]
-    return {
-        "early_stopping_patience": training_policy["early_stopping_patience"],
-    }
+model = nn.Sequential(
+    nn.Flatten(),
+    nn.Linear(flat_dim, num_classes),
+).to(device)
 =======
-def configure_training_policy(*, num_epochs):
-    del num_epochs
-    training_policy = CONFIG["training_policy"]
-    return {
-        "early_stopping_patience": training_policy["early_stopping_patience"] + 3,
-    }
+model = nn.Sequential(
+    nn.Flatten(),
+    nn.Linear(flat_dim, 64),
+    nn.ReLU(),
+    nn.Linear(64, num_classes),
+).to(device)
 >>>>>>> REPLACE
 """
 
     updated = materialize_candidate_source(source, response)
 
-    assert (
-        '        "early_stopping_patience": training_policy["early_stopping_patience"] + 3,'
-        in updated
-    )
-    assert "    del num_epochs" in updated
+    assert "        nn.Linear(flat_dim, 64)" in updated
+    assert "        nn.Linear(64, num_classes)" in updated
     assert_only_evolve_blocks_changed(source, updated)
 
 

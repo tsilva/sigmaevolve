@@ -13,7 +13,7 @@ Dataset manifests are no longer registered in the database. Dataset preparation,
 
 ## `tracks`
 
-Purpose: top-level evolution tracks. A track binds one dataset identifier to one normalized policy configuration and groups all queued, active, and terminal trials for that configuration.
+Purpose: top-level evolution tracks. A track binds one dataset identifier to one normalized policy configuration and groups all queued, active, and terminal trials for that configuration. The current `create-track` flow derives both values from the uploaded self-contained script metadata block rather than from a separate JSON track file.
 
 | Column | Type | Nullable | Description |
 | --- | --- | --- | --- |
@@ -36,6 +36,8 @@ Persisted keys:
 | `sampling_seed` | RNG seed used when sampling successful parent trials for generation context. |
 | `generation_backend` | OpenRouter generation settings. The persisted shape does not include a `backend` field. |
 
+When a track is created from a self-contained script, these persisted values normally come from the script metadata `[track]` table, optionally merged with script-owned defaults such as `defaults.epochs`. Script metadata may reference a repo-defined generation model pool by id; normalization resolves that id into the persisted `model_pool`.
+
 ### `tracks.policy_json.generation_backend`
 
 Common persisted keys:
@@ -44,6 +46,7 @@ Common persisted keys:
 | --- | --- |
 | `selection` | Model-pool selection strategy such as `weighted_random`, `random`, or `round_robin`. |
 | `seed` | RNG seed used by stochastic model-pool selection. |
+| `model_pool_id` | Optional id of a repo-defined model-pool config. Present when the track was created from a self-contained script that referenced a named pool. |
 | `model_pool` | List of model config entries. Each entry typically includes `model`, `temperature`, `max_tokens`, `retry_count`, and optionally `probability`. |
 
 Removed policy fields are not supported in the live schema: `scorer_settings`, `sampling_settings`, `modal_gpu_preferences`, and `generation_backend.backend`.
@@ -84,7 +87,7 @@ Required for LLM-generated non-baseline trials:
 | --- | --- |
 | `backend` | Generation backend identifier. Baseline trials use `baseline`; generated trials use `openrouter`. |
 | `model` | Model name used for generation. |
-| `candidate_kind` | Candidate family identifier. |
+| `candidate_kind` | Candidate family identifier. The bundled MNIST baseline and uploaded self-contained scripts use `selfcontained_script_v1`. Legacy rows may still contain `strategy_v1`. |
 | `generation_config` | Concrete generation settings captured for the request. |
 | `request_messages` | Recorded prompt messages sent through the LLM request path. This is the required prompt provenance for non-baseline trials. |
 | `context_trial_ids` | Parent or context trial ids used to build the generation prompt. |
@@ -95,7 +98,7 @@ Optional persisted keys:
 | --- | --- |
 | `launcher` | Slim launcher metadata. Only `run_id` and `run_url` are persisted. |
 | `wandb` | Slim Weights & Biases metadata. Persisted keys are `project`, `entity`, `run_id`, `run_name`, and `run_url`. |
-| `generation` | Present when generation trace data was captured. Persisted keys are `task_description`, `response_text`, `reasoning_text`, `generated_source`, `assertions_passed`, `assertion_failures`, and `candidate_hash` when those values are available. |
+| `generation` | Present when generation trace data was captured. Persisted keys are `task_description`, `response_text`, `reasoning_text`, `generated_source`, `assertions_passed`, `assertion_failures`, and `candidate_hash` when those values are available. Runnable non-baseline queued `train.py` candidates that still contain evolve blocks must include non-empty `response_text` and `generated_source` before insertion. |
 
 Removed provenance fields are not persisted in the live schema, including `generation_index`, `duplicate_retry_count`, `provider_response_id`, duplicated prompt copies under `generation` such as `system_prompt` and `user_prompt`, provider metadata duplicates such as `provider` and `provider_model`, and launcher cancellation bookkeeping.
 
@@ -108,13 +111,15 @@ Persisted keys:
 | `accuracy` | Validation accuracy for the persisted best-scoring evaluation. This is the ranking metric used for derived score. |
 | `val_loss` | Validation loss for the persisted best-scoring evaluation. |
 | `time_to_best_eval_sec` | Elapsed runtime until the best evaluation was produced. |
+| `best_eval_epoch` | 1-based training epoch that produced the persisted best-scoring evaluation. |
 | `eval_count` | Number of completed evaluations observed so far or at finish time. |
+| `epochs_completed` | Total number of training epochs that completed before the run stopped or finished. |
 | `timed_out` | Whether the run ended due to timeout. |
 | `time_since_last_eval_sec` | Runtime elapsed after the last completed evaluation. Useful for timeout diagnostics. |
 | `had_unscored_work_at_timeout` | Indicates the process timed out while additional training work had not yet produced a scored evaluation. |
 | `last_phase` | Last reported phase such as `train`, `eval`, or `finished`. |
 
-No other runner metrics are persisted in the live schema. Fields such as `best_accuracy`, `train_loss`, `train_acc`, `val_acc`, `best_eval_index`, `best_eval_epoch`, `best_eval_path`, `last_completed_eval_sec`, `last_completed_eval_index`, `process_elapsed_sec`, `epochs_completed`, `epochs_without_improvement`, and `early_stop_epoch` are intentionally dropped before persistence.
+No other runner metrics are persisted in the live schema. Fields such as `best_accuracy`, `train_loss`, `train_acc`, `val_acc`, `best_eval_index`, `best_eval_path`, `last_completed_eval_sec`, `last_completed_eval_index`, `process_elapsed_sec`, `epochs_without_improvement`, and `early_stop_epoch` are intentionally dropped before persistence.
 
 ### `trials.error_json`
 

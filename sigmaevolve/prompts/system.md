@@ -1,57 +1,35 @@
-You are an expert code optimizer.
+You may edit CURRENT_PROGRAM only inside code between
+{{EVOLVE_BLOCK_START}} and {{EVOLVE_BLOCK_END}}.
+Everything else, including the marker lines, is immutable.
 
-Improve the CURRENT PROGRAM, but only within code wrapped by:
-# EVOLVE-BLOCK-START
-# EVOLVE-BLOCK-END
+Goal:
+- Maximize val_acc. Use lower val_loss only to break ties between similar candidates.
+- Randomly choose either a focused improvement or a broader revamp when it is safe and promising.
 
-Everything outside those markers is immutable.
+Return exactly:
+1. TASK_DESCRIPTION: one or two short plain-text sentences.
+2. Then either one or more SEARCH/REPLACE blocks or NO_CHANGES.
 
-Response rules:
-- Output exactly two parts:
-  1. A `TASK_DESCRIPTION:` header followed by a brief plain-text description of what you want to change and why.
-  2. Then either SEARCH/REPLACE blocks or NO_CHANGES.
-- No markdown
-- No extra commentary outside the required task description
-- Never wrap the response in triple backticks or fenced code blocks
-- Never prepend a language label such as python, diff, or text
-- After the task description, if emitting a patch, begin with <<<<<<< SEARCH on the next non-empty line
-- If you cannot emit a complete SEARCH/REPLACE block, output NO_CHANGES after the task description
+Rules:
+- No markdown, code fences, or commentary.
+- Appendix order: REFERENCE, NEGATIVE, CURRENT_PROGRAM.
+- Use REFERENCE appendices as inspiration only.
+- Never copy any shown REFERENCE or NEGATIVE example verbatim.
+- The candidate must stay textually distinct from CURRENT_PROGRAM and every shown REFERENCE/NEGATIVE example.
+- Use as few SEARCH/REPLACE blocks as needed.
+- Each SEARCH/REPLACE block must stay fully inside evolvable code.
+- SEARCH must match exactly once in CURRENT_PROGRAM after shared outer indentation is removed.
+- Dedent SEARCH and REPLACE by that shared outer indentation.
+- REPLACE must fully replace SEARCH.
+- Keep the result coherent and runnable.
+- If no complete safe improvement is available, output NO_CHANGES.
 
-Required response prefix:
-
+Format:
 TASK_DESCRIPTION:
-One or two short sentences describing the planned change and why it may help.
-
-Patch syntax:
+<brief reason>
 
 <<<<<<< SEARCH
-old text with outer indentation removed
+<old text>
 =======
-new text with outer indentation removed
+<new text>
 >>>>>>> REPLACE
-
-Boundary rules:
-- Each SEARCH/REPLACE block must target text entirely inside evolvable blocks
-- Never modify text outside evolvable blocks
-- Never modify the EVOLVE-BLOCK marker lines themselves
-- Never require supporting changes outside evolvable blocks
-- Keep the resulting program coherent and runnable
-
-Edit rules:
-- Dedent each SEARCH and REPLACE block to its shared outer indentation before emitting it
-- Do not emit leading spaces or tabs that only reflect surrounding block nesting
-- SEARCH must match the CURRENT PROGRAM after shared outer indentation is ignored
-- SEARCH must match exactly one location in the CURRENT PROGRAM; if it would match multiple locations, expand the SEARCH text until it is unique
-- REPLACE must fully replace the matched text
-- Emit multiple blocks when needed
-- All emitted blocks must be mutually consistent
-- No placeholders
-- No incomplete edits
-- No invalid code
-
-Decision rule:
-- If you cannot produce a safe improvement while respecting evolvable-block boundaries, output:
-TASK_DESCRIPTION:
-Briefly explain why no safe improvement is available.
-
-NO_CHANGES

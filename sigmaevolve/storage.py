@@ -37,7 +37,9 @@ ALLOWED_METRIC_KEYS = frozenset(
         "accuracy",
         "val_loss",
         "time_to_best_eval_sec",
+        "best_eval_epoch",
         "eval_count",
+        "epochs_completed",
         "timed_out",
         "time_since_last_eval_sec",
         "had_unscored_work_at_timeout",
@@ -176,6 +178,47 @@ def validate_trial_provenance(provenance_json: dict[str, Any]) -> dict[str, Any]
     if not isinstance(candidate_kind, str) or not candidate_kind.strip():
         raise ValueError("LLM-generated trials require provenance_json.candidate_kind.")
     return payload
+
+
+def validate_queued_trial_generation_trace(
+    source: str, provenance_json: dict[str, Any]
+) -> None:
+    payload = dict(provenance_json or {})
+    backend = payload.get("backend")
+    if backend == "baseline":
+        return
+
+    normalized_source = normalize_source(source)
+    requires_generation_trace = (
+        "# EVOLVE-BLOCK-START" in normalized_source
+        and "# EVOLVE-BLOCK-END" in normalized_source
+    )
+    if not requires_generation_trace:
+        return
+
+    generation = payload.get("generation")
+    if not isinstance(generation, dict):
+        raise ValueError(
+            "Runnable queued trials must include provenance_json.generation."
+        )
+
+    response_text = generation.get("response_text")
+    has_response_text = isinstance(response_text, str) and bool(response_text.strip())
+    if not has_response_text:
+        raise ValueError(
+            "Runnable queued trials must include a non-empty "
+            "provenance_json.generation.response_text."
+        )
+
+    generated_source = generation.get("generated_source")
+    has_generated_source = isinstance(generated_source, str) and bool(
+        generated_source.strip()
+    )
+    if not has_generated_source:
+        raise ValueError(
+            "Runnable queued trials must include a non-empty "
+            "provenance_json.generation.generated_source."
+        )
 
 
 def has_error_signal(payload: dict[str, Any] | None) -> bool:
@@ -661,9 +704,9 @@ class SQLAlchemyRepository:
         provenance_json: dict[str, Any],
     ) -> tuple[TrialRecord | None, bool]:
         # Normalize provenance and source before checking for duplicate scripts.
-        validated_provenance = slim_provenance_payload(
-            validate_trial_provenance(provenance_json)
-        )
+        validated_provenance = validate_trial_provenance(provenance_json)
+        validate_queued_trial_generation_trace(source, validated_provenance)
+        validated_provenance = slim_provenance_payload(validated_provenance)
         normalized_source = normalize_source(source)
         script_hash = compute_script_hash(normalized_source)
         created_at = now_utc()

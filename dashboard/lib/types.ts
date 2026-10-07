@@ -26,6 +26,9 @@ export type TrialListItem = {
   modalRunUrl: string | null;
   score: number;
   accuracy: number | null;
+  bestEvalEpoch: number | null;
+  epochsCompleted: number | null;
+  evalCount: number | null;
   timeToBestEvalSec: number | null;
   timedOut: boolean;
   timeSinceLastEvalSec: number | null;

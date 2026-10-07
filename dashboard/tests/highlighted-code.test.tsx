@@ -13,4 +13,26 @@ describe("HighlightedCode", () => {
     expect(lines).toHaveLength(3);
     expect(lines.map((line) => line.textContent)).toEqual(["first", "\u00A0", "second"]);
   });
+
+  it("renders inline diff rows inside the code block when a comparison source is provided", () => {
+    const { container } = render(
+      <HighlightedCode
+        code={"alpha\nbeta updated\ngamma\n"}
+        diffBefore={"alpha\nbeta\ngamma\n"}
+        language="python"
+        wrap
+      />,
+    );
+
+    const rows = Array.from(container.querySelectorAll(".code-block-diff-row"));
+
+    expect(rows.map((row) => row.textContent)).toEqual([
+      " 1alpha",
+      "-2beta",
+      "+2beta updated",
+      " 3gamma",
+    ]);
+    expect(container.querySelectorAll(".code-block-line-remove")).toHaveLength(1);
+    expect(container.querySelectorAll(".code-block-line-add")).toHaveLength(1);
+  });
 });

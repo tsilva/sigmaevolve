@@ -44,6 +44,9 @@ describe("dashboard row mappers", () => {
       modalRunUrl: null,
       score: "0",
       accuracy: null,
+      bestEvalEpoch: null,
+      epochsCompleted: null,
+      evalCount: null,
       timeToBestEvalSec: null,
       timedOut: false,
       timeSinceLastEvalSec: null,
@@ -81,6 +84,9 @@ describe("dashboard row mappers", () => {
       modalRunUrl: null,
       score: 0,
       accuracy: null,
+      bestEvalEpoch: null,
+      epochsCompleted: null,
+      evalCount: null,
       timeToBestEvalSec: null,
       timedOut: false,
       timeSinceLastEvalSec: null,
@@ -127,6 +133,9 @@ describe("dashboard row mappers", () => {
       modalRunUrl: null,
       score: "0",
       accuracy: "0.875",
+      bestEvalEpoch: "3",
+      epochsCompleted: "5",
+      evalCount: "5",
       timeToBestEvalSec: "1.25",
       timedOut: false,
       timeSinceLastEvalSec: null,
@@ -147,9 +156,60 @@ describe("dashboard row mappers", () => {
 
     expect(mapped.status).toBe("active");
     expect(mapped.accuracy).toBe(0.875);
+    expect(mapped.bestEvalEpoch).toBe(3);
+    expect(mapped.epochsCompleted).toBe(5);
+    expect(mapped.evalCount).toBe(5);
     expect(mapped.timeToBestEvalSec).toBe(1.25);
     expect(mapped.lastPhase).toBe("train");
     expect(mapped.durationSec).toBe(12.5);
+  });
+
+  it("replaces encrypted reasoning payloads with a safe availability message", () => {
+    const mapped = mapTrialListItem({
+      trialId: "trial_encrypted_reasoning",
+      status: "finished",
+      outcomeReason: "succeeded",
+      modalRunId: null,
+      modalRunUrl: null,
+      score: "0.91",
+      accuracy: "0.91",
+      bestEvalEpoch: null,
+      epochsCompleted: null,
+      evalCount: null,
+      timeToBestEvalSec: "1.5",
+      timedOut: false,
+      timeSinceLastEvalSec: "2.0",
+      hadUnscoredWorkAtTimeout: false,
+      lastPhase: "finished",
+      backend: "openrouter",
+      model: "google/gemini",
+      dispatchAttempts: "1",
+      createdAt: "2026-03-20T15:00:00.000Z",
+      startedAt: "2026-03-20T15:01:00.000Z",
+      finishedAt: "2026-03-20T15:02:00.000Z",
+      durationSec: "60",
+      hasError: false,
+      source: "print('ok')\n",
+      errorJson: null,
+      provenanceJson: {
+        model: "google/gemini",
+        request_messages: [],
+        generation: {
+          reasoning_text: [
+            {
+              type: "reasoning.encrypted",
+              data: "AY89a19Jsq7xtfbhrjynErTNjrdDbmfbe3gDcIH4rvFJEp195oIBbTyfgiQ1/5l2oko=",
+              format: "google-gemini-v1",
+              index: 0,
+            },
+          ],
+        },
+      },
+    });
+
+    expect(mapped.reasoningText).toBe(
+      "Reasoning trace unavailable. Provider returned encrypted reasoning blocks (google-gemini-v1).",
+    );
   });
 
   it("does not flag successful diagnostics as an execution error", () => {
@@ -161,6 +221,9 @@ describe("dashboard row mappers", () => {
       modalRunUrl: "https://modal.com/apps/test/runs/fc-123",
       score: "0.927",
       accuracy: "0.927",
+      bestEvalEpoch: "2",
+      epochsCompleted: "4",
+      evalCount: "4",
       timeToBestEvalSec: "1.97",
       timedOut: false,
       timeSinceLastEvalSec: "4.19",
@@ -181,6 +244,8 @@ describe("dashboard row mappers", () => {
 
     expect(mapped.hasError).toBe(false);
     expect(mapped.modalRunUrl).toBe("https://modal.com/apps/test/runs/fc-123");
+    expect(mapped.bestEvalEpoch).toBe(2);
+    expect(mapped.epochsCompleted).toBe(4);
     expect(mapped.errorJson).toEqual({ stderr: "", eval_artifacts: ["/tmp/eval_0001.npz"] });
     expect(mapped.responseText).toBeNull();
     expect(mapped.taskDescription).toBeNull();
@@ -199,6 +264,8 @@ describe("dashboard row mappers", () => {
       modalRunUrl: null,
       score: "0.927",
       accuracy: "0.927",
+      bestEvalEpoch: null,
+      epochsCompleted: null,
       timeToBestEvalSec: "1.97",
       timedOut: false,
       timeSinceLastEvalSec: "4.19",

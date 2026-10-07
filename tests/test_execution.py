@@ -2,6 +2,7 @@ import json
 import logging
 import threading
 import time
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -10,6 +11,7 @@ from sigmaevolve import execution as strategy_runtime
 from sigmaevolve.core import CANDIDATE_KIND_STRATEGY_V1
 from sigmaevolve.execution import (
     RunnerService,
+    build_final_metrics_payload,
     collect_wandb_env,
     resolve_wandb_settings,
 )
@@ -25,7 +27,11 @@ from sigmaevolve.orchestration import (
     InlineRunnerLauncher,
 )
 from sigmaevolve.storage import classify_error_type
-from tests.support import make_llm_provenance
+from tests.support import (
+    build_selfcontained_train_script,
+    make_generation_trace,
+    make_llm_provenance,
+)
 
 SUCCESS_BLOCK = build_model_block(
     """
@@ -49,17 +55,16 @@ SALVAGED_TIMEOUT_BLOCK = build_model_block(
     """
 def __init__(self):
     super().__init__()
-    self.epoch_index = 0
-
-def on_epoch_start(self, *, epoch_index, num_epochs):
-    self.epoch_index = epoch_index
+    self.train_calls = 0
 
 def forward(self, x):
+    if self.training:
+        self.train_calls += 1
     flat = x.reshape(x.shape[0], -1)
     scores = flat.sum(dim=1)
-    if self.training and self.epoch_index >= 2:
+    if self.training and self.train_calls >= 3:
         time.sleep(2.0)
-    if self.epoch_index == 0:
+    if self.train_calls == 1:
         return torch.zeros((x.shape[0], 2), dtype=torch.float32)
     return torch.stack((-scores, scores), dim=1)
 """,
@@ -70,16 +75,14 @@ TIEBREAKER_BLOCK = build_model_block(
     """
 def __init__(self):
     super().__init__()
-    self.epoch_index = 0
-
-def on_epoch_start(self, *, epoch_index, num_epochs):
-    self.epoch_index = epoch_index
+    self.train_calls = 0
 
 def forward(self, x):
     if self.training:
-        if self.epoch_index == 0:
+        self.train_calls += 1
+        if self.train_calls == 1:
             time.sleep(0.05)
-        elif self.epoch_index == 1:
+        elif self.train_calls == 2:
             time.sleep(0.1)
         else:
             time.sleep(2.0)
@@ -109,8 +112,6 @@ def forward(self, x):
 """
 )
 
-MISSING_EXPORT_BLOCK = "import torch\n"
-
 LOGGING_BLOCK = build_model_block(
     """
 def forward(self, x):
@@ -127,13 +128,12 @@ LIVE_METRICS_BLOCK = build_model_block(
     """
 def __init__(self):
     super().__init__()
-    self.epoch_index = 0
-
-def on_epoch_start(self, *, epoch_index, num_epochs):
-    self.epoch_index = epoch_index
+    self.train_calls = 0
 
 def forward(self, x):
-    if self.training and self.epoch_index >= 1:
+    if self.training:
+        self.train_calls += 1
+    if self.training and self.train_calls >= 2:
         time.sleep(1.3)
     flat = x.reshape(x.shape[0], -1)
     scores = flat.sum(dim=1)
@@ -145,34 +145,29 @@ def forward(self, x):
 SMALL_BATCH_DATA_BLOCK = build_data_block(
     """
 batch_size = 2
-return {
-    "batch_size": batch_size,
-    "train_loader": torch.utils.data.DataLoader(
-        torch.utils.data.TensorDataset(train_x, train_y),
-        batch_size=batch_size,
-        shuffle=False,
-    ),
-    "validation_loader": torch.utils.data.DataLoader(
-        torch.utils.data.TensorDataset(validation_x),
-        batch_size=1,
-        shuffle=False,
-    ),
-}
+train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=False)
+val_loader = DataLoader(val_ds, batch_size=1)
 """,
-    imports="import torch",
+    imports="from torch.utils.data import DataLoader",
 )
 
 NOOP_OPTIMIZATION_BLOCK = build_optimization_block(
     """
-return {
-    "trainable_parameters": [parameter for parameter in model.parameters() if parameter.requires_grad],
-    "optimizer": None,
-    "scheduler": None,
-    "label_smoothing": 0.0,
-    "grad_clip_norm": None,
-}
+optimizer = None
+scheduler = None
 """
 )
+
+INVALID_EXPERIMENT_BLOCK = """
+model = object()
+optimizer = None
+scheduler = None
+loss_fn = 123
+train_loader = None
+val_loader = None
+early_stopping_patience = 0
+min_delta = 0.0
+"""
 
 
 def build_inline_system(repository, dataset_manager, hard_timeout_sec=5.0):
@@ -187,9 +182,13 @@ def build_inline_system(repository, dataset_manager, hard_timeout_sec=5.0):
 
 
 def _create_track(
-    system, policy_json: dict | None = None, dataset_id: str = "mnist:v1"
+    system,
+    policy_json: dict | None = None,
+    dataset_id: str = "mnist:v1",
+    *,
+    seed_source: str | None = None,
 ):
-    return system.create_track(dataset_id, policy_json or {})
+    return system.create_track(dataset_id, policy_json or {}, seed_source=seed_source)
 
 
 def finalize_baseline(system, track_id):
@@ -212,7 +211,10 @@ def _run_trial(system, track_id, source):
     _, created = system.repository.create_queued_trial_if_absent(
         track_id,
         trial_source,
-        make_llm_provenance(candidate_kind=CANDIDATE_KIND_STRATEGY_V1),
+        make_llm_provenance(
+            candidate_kind=CANDIDATE_KIND_STRATEGY_V1,
+            generation=make_generation_trace(trial_source),
+        ),
     )
     assert created is True
     reserved = system.repository.reserve_trials(
@@ -256,8 +258,66 @@ def test_successful_run_produces_metrics_and_score(repository, dataset_manager):
     assert finished.metrics_json["accuracy"] >= 0.0
     assert finished.metrics_json["val_loss"] >= 0.0
     assert finished.metrics_json["eval_count"] == 2
+    assert finished.metrics_json["epochs_completed"] == 2
+    assert finished.metrics_json["best_eval_epoch"] == 1
     assert finished.score == finished.metrics_json["accuracy"]
     assert finished.error_json is None
+
+
+def test_selfcontained_seed_script_runs_with_header_default_epochs(
+    repository, dataset_manager
+):
+    system = build_inline_system(repository, dataset_manager, hard_timeout_sec=15.0)
+    system.prepare_dataset("mnist:v1")
+    track = _create_track(
+        system,
+        seed_source=build_selfcontained_train_script(epochs=2),
+    )
+    reserved = system.repository.reserve_trials(
+        track.track_id,
+        max_parallelism=1,
+        dispatch_ttl_sec=60,
+        limit=1,
+    )[0]
+
+    system.launcher.launch_trial(reserved.trial_id, reserved.dispatch_token)
+    finished = system.repository.get_trial(reserved.trial_id)
+
+    assert finished is not None
+    assert finished.outcome_reason == "succeeded"
+    assert finished.metrics_json["eval_count"] == 2
+
+
+def test_build_final_metrics_payload_uses_debug_payload_for_epochs_completed():
+    metrics = build_final_metrics_payload(
+        artifacts=[
+            {
+                "metrics": {"accuracy": 0.9, "val_loss": 0.1},
+                "elapsed_time_sec": 1.5,
+                "eval_index": 2,
+                "epoch": 2,
+                "path": "/tmp/eval_0002.npz",
+            }
+        ],
+        progress_payload={
+            "phase": "finished",
+            "elapsed_time_sec": 1.6,
+            "last_completed_eval_sec": 1.5,
+            "eval_index": 2,
+            "epoch_index": 1,
+        },
+        process_elapsed_sec=1.6,
+        timed_out=False,
+        debug_payload={
+            "epochs_completed": 2,
+            "eval_count": 2,
+            "early_stopped": False,
+        },
+    )
+
+    assert metrics["best_eval_epoch"] == 2
+    assert metrics["epochs_completed"] == 2
+    assert metrics["eval_count"] == 1
 
 
 def test_successful_run_creates_wandb_experiment(
@@ -295,6 +355,25 @@ def test_successful_run_creates_wandb_experiment(
     assert 0.0 <= run.summary["train/acc"] <= 1.0
     assert run.summary["val/loss"] == pytest.approx(finished.metrics_json["val_loss"])
     assert run.summary["val/acc"] == pytest.approx(finished.metrics_json["accuracy"])
+    assert len(run.artifacts) == 1
+    artifact_entry = run.artifacts[0]
+    artifact = artifact_entry["artifact"]
+    assert artifact.name == f"{finished.trial_id}-best-model"
+    assert artifact.type == "model"
+    assert artifact.metadata["trial_id"] == finished.trial_id
+    assert artifact.metadata["track_id"] == finished.track_id
+    assert artifact.metadata["dataset_id"] == "mnist:v1"
+    assert artifact.metadata["accuracy"] == pytest.approx(
+        finished.metrics_json["accuracy"]
+    )
+    assert artifact_entry["aliases"] == ["best", "latest"]
+    assert artifact.files == [
+        {
+            "local_path": run.summary["best_model_artifact_path"],
+            "name": "best_model.pt",
+        }
+    ]
+    assert [event["kind"] for event in run.events][-2:] == ["artifact", "finish"]
     assert run.finished == {"exit_code": 0}
 
 
@@ -358,6 +437,28 @@ def test_timeout_with_completed_eval_keeps_best_score(repository, dataset_manage
     assert finished.error_json is None
 
 
+def test_timeout_with_completed_eval_uploads_best_model_artifact(
+    repository, dataset_manager, fake_wandb
+):
+    system = build_inline_system(repository, dataset_manager, hard_timeout_sec=1.5)
+    system.prepare_dataset("mnist:v1")
+    track = _create_track(system, {"epochs": 4})
+    finalize_baseline(system, track.track_id)
+    finished = _run_trial(system, track.track_id, SALVAGED_TIMEOUT_BLOCK)
+
+    runs = fake_wandb["runs"]
+    assert isinstance(runs, list)
+    assert len(runs) == 1
+    run = runs[0]
+    assert finished.outcome_reason == "timeout"
+    assert len(run.artifacts) == 1
+    artifact = run.artifacts[0]["artifact"]
+    assert artifact.metadata["accuracy"] == pytest.approx(
+        finished.metrics_json["accuracy"]
+    )
+    assert [event["kind"] for event in run.events][-2:] == ["artifact", "finish"]
+
+
 def test_equal_accuracy_uses_lower_time_to_best_eval_as_tiebreaker(
     repository, dataset_manager
 ):
@@ -381,7 +482,8 @@ def test_run_stops_early_when_validation_accuracy_plateaus(repository, dataset_m
     finalize_baseline(system, track.track_id)
     finished = _run_trial(system, track.track_id, EARLY_STOP_BLOCK)
     assert finished.outcome_reason == "succeeded"
-    assert finished.metrics_json["eval_count"] == 3
+    # The baseline allows three non-improving epochs after the initial best result.
+    assert finished.metrics_json["eval_count"] == 4
     assert finished.metrics_json["last_phase"] == "finished"
 
 
@@ -396,18 +498,17 @@ def test_crash_finalizes_with_zero_score(repository, dataset_manager):
     assert finished.score == 0.0
 
 
-def test_missing_required_exports_finalizes_as_eval_failed(repository, dataset_manager):
+def test_invalid_experiment_contract_finalizes_as_crashed(repository, dataset_manager):
     system = build_inline_system(repository, dataset_manager)
     system.prepare_dataset("mnist:v1")
     track = _create_track(system)
     finalize_baseline(system, track.track_id)
-    finished = _run_trial(system, track.track_id, MISSING_EXPORT_BLOCK)
+    finished = _run_trial(system, track.track_id, INVALID_EXPERIMENT_BLOCK)
     assert finished.status == "error"
-    assert finished.outcome_reason == "eval_failed"
-    assert finished.error_json["reason"] == "train_script_contract_violation"
+    assert finished.outcome_reason == "crashed"
     assert (
         classify_error_type(finished.outcome_reason or "", finished.error_json)
-        == "execution_contract_violation"
+        == "execution_crash"
     )
     assert finished.score == 0.0
 
@@ -451,7 +552,10 @@ def test_run_uses_unbuffered_python_for_child_process(
     _, created = system.repository.create_queued_trial_if_absent(
         track.track_id,
         reserved_source,
-        make_llm_provenance(candidate_kind=CANDIDATE_KIND_STRATEGY_V1),
+        make_llm_provenance(
+            candidate_kind=CANDIDATE_KIND_STRATEGY_V1,
+            generation=make_generation_trace(reserved_source),
+        ),
     )
     assert created is True
     reserved = system.repository.reserve_trials(
@@ -463,6 +567,13 @@ def test_run_uses_unbuffered_python_for_child_process(
     def fake_run_streamed_subprocess(command, timeout):
         seen["command"] = command
         seen["timeout"] = timeout
+        train_script_path = Path(command[2])
+        runtime_dir = train_script_path.parent / "sigmaevolve"
+        seen["runtime_init_exists"] = (runtime_dir / "__init__.py").exists()
+        seen["runtime_init_source"] = (runtime_dir / "__init__.py").read_text()
+        seen["runtime_module_exists"] = (
+            runtime_dir / "train_script_runtime.py"
+        ).exists()
         return type(
             "Completed",
             (),
@@ -481,6 +592,9 @@ def test_run_uses_unbuffered_python_for_child_process(
     assert isinstance(command, list)
     assert command[1] == "-u"
     assert str(command[2]).endswith("train.py")
+    assert seen["runtime_init_exists"] is True
+    assert seen["runtime_init_source"] == ""
+    assert seen["runtime_module_exists"] is True
 
 
 def test_active_run_persists_live_metrics_before_finalization(
@@ -490,10 +604,14 @@ def test_active_run_persists_live_metrics_before_finalization(
     system.prepare_dataset("mnist:v1")
     track = _create_track(system, {"epochs": 3})
     finalize_baseline(system, track.track_id)
+    live_metrics_source = build_candidate_train_script(LIVE_METRICS_BLOCK)
     _, created = system.repository.create_queued_trial_if_absent(
         track.track_id,
-        build_candidate_train_script(LIVE_METRICS_BLOCK),
-        make_llm_provenance(candidate_kind=CANDIDATE_KIND_STRATEGY_V1),
+        live_metrics_source,
+        make_llm_provenance(
+            candidate_kind=CANDIDATE_KIND_STRATEGY_V1,
+            generation=make_generation_trace(live_metrics_source),
+        ),
     )
     assert created is True
 
@@ -528,6 +646,7 @@ def test_active_run_persists_live_metrics_before_finalization(
     assert active_snapshot.metrics_json["accuracy"] == 1.0
     assert active_snapshot.metrics_json["val_loss"] >= 0.0
     assert active_snapshot.metrics_json["eval_count"] >= 1
+    assert active_snapshot.metrics_json["best_eval_epoch"] == 1
     assert active_snapshot.metrics_json["last_phase"] in {"train", "eval", "finished"}
     assert "timed_out" not in active_snapshot.metrics_json
 
@@ -536,6 +655,8 @@ def test_active_run_persists_live_metrics_before_finalization(
     assert finished.status == "finished"
     assert finished.metrics_json["timed_out"] is False
     assert finished.metrics_json["accuracy"] == 1.0
+    assert finished.metrics_json["epochs_completed"] == 3
+    assert finished.metrics_json["best_eval_epoch"] == 1
     assert finished.metrics_json != active_snapshot.metrics_json
 
     runs = fake_wandb["runs"]
@@ -563,7 +684,6 @@ def test_collect_active_metrics_payload_uses_eval_artifacts(
     eval_dir = dataset_manager.dataset_root / "active-metrics-evals"
     eval_dir.mkdir(parents=True)
     progress_path = eval_dir / "progress.json"
-    debug_path = eval_dir / "debug.json"
 
     labels = np.load(manifest.validation_labels_path)
     np.savez(
@@ -578,14 +698,19 @@ def test_collect_active_metrics_payload_uses_eval_artifacts(
         val_acc=1.0,
     )
     progress_path.write_text(
-        json.dumps({"phase": "eval", "eval_index": 1, "last_completed_eval_sec": 0.25})
+        json.dumps(
+            {
+                "phase": "eval",
+                "eval_index": 1,
+                "last_completed_eval_sec": 0.25,
+                "eval_count": 1,
+            }
+        )
     )
-    debug_path.write_text(json.dumps({"eval_count": 1}))
 
     metrics = runner._collect_active_metrics_payload(
         eval_dir=eval_dir,
         progress_path=progress_path,
-        debug_path=debug_path,
         labels_path=manifest.validation_labels_path,
         started_at=time.monotonic() - 0.3,
     )
@@ -594,6 +719,7 @@ def test_collect_active_metrics_payload_uses_eval_artifacts(
     assert metrics["accuracy"] == 1.0
     assert metrics["best_accuracy"] == 1.0
     assert metrics["best_eval_index"] == 1
+    assert metrics["best_eval_epoch"] == 1
     assert metrics["eval_count"] == 1
     assert metrics["last_phase"] == "eval"
     assert "timed_out" not in metrics

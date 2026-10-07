@@ -40,9 +40,11 @@ vi.mock("@/hooks/use-track-live-updates", () => ({
 vi.mock("@/components/highlighted-code", () => ({
   HighlightedCode: ({
     code,
+    diffBefore,
   }: {
     code: string;
-  }) => <pre>{code}</pre>,
+    diffBefore?: string | null;
+  }) => <pre>{diffBefore ? `${diffBefore}\n${code}` : code}</pre>,
 }));
 
 function createTrial(overrides: Partial<TrialListItem>): TrialListItem {
@@ -54,6 +56,9 @@ function createTrial(overrides: Partial<TrialListItem>): TrialListItem {
     modalRunUrl: null,
     score: 0.91,
     accuracy: 0.91,
+    bestEvalEpoch: 3,
+    epochsCompleted: 5,
+    evalCount: 5,
     timeToBestEvalSec: 12,
     timedOut: false,
     timeSinceLastEvalSec: 4,
@@ -126,6 +131,7 @@ function renderShell(options?: {
   detail?: TrackDetailResponse;
   initialSelectedTrialId?: string | null;
   pathname?: string;
+  tracks?: TrackListItem[];
 }) {
   navigationState.pathname =
     options?.pathname ??
@@ -133,11 +139,12 @@ function renderShell(options?: {
       ? `/tracks/track_1/trials/${options.initialSelectedTrialId}`
       : "/tracks/track_1");
   navigationState.replace.mockReset();
+  const initialTracks = options?.tracks ?? tracks;
 
   return render(
     <DashboardShell
       initialDetail={options?.detail ?? createDetail()}
-      initialTracks={tracks}
+      initialTracks={initialTracks}
       initialSelectedTrialId={options?.initialSelectedTrialId ?? null}
       selectedTrackId="track_1"
     />,
@@ -180,6 +187,94 @@ describe("DashboardShell", () => {
 
     expect(navigationState.replace).not.toHaveBeenCalled();
     expect(screen.getByRole("button", { name: "Open trial trial_2" })).toBeTruthy();
+  });
+
+  it("renders a minimal lineage tree with short ids and scores", () => {
+    renderShell({
+      detail: createDetail([
+        createTrial({
+          trialId: "trial_root",
+          status: "finished",
+          backend: "baseline",
+          model: "baseline",
+          createdAt: "2026-03-20T15:00:00.000Z",
+          taskDescription: "Keep the baseline program unchanged for comparison.",
+          provenanceJson: { backend: "baseline", parent_trial_ids: [] },
+        }),
+        createTrial({
+          trialId: "trial_child_a",
+          status: "active",
+          createdAt: "2026-03-20T15:01:00.000Z",
+          taskDescription: "Broaden the hidden layers to add capacity.",
+          provenanceJson: {
+            backend: "openrouter",
+            request_messages: [],
+            context_trial_ids: ["trial_root"],
+          },
+        }),
+        createTrial({
+          trialId: "trial_child_b",
+          status: "error",
+          createdAt: "2026-03-20T15:02:00.000Z",
+          taskDescription:
+            "Adjust the optimizer schedule to recover late-epoch accuracy without changing the training loop.",
+          provenanceJson: {
+            backend: "openrouter",
+            request_messages: [],
+            context_trial_ids: ["trial_root", "trial_child_a"],
+          },
+        }),
+      ]),
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Lineage tree" }));
+
+    const rootNode = screen.getByRole("button", { name: "Open lineage node trial_root" });
+    const activeNode = screen.getByRole("button", { name: "Open lineage node trial_child_a" });
+    const errorNode = screen.getByRole("button", { name: "Open lineage node trial_child_b" });
+
+    expect(rootNode.className).toContain("status-finished");
+    expect(activeNode.className).toContain("status-active");
+    expect(errorNode.className).toContain("status-error");
+    expect(screen.getAllByText("root")).toHaveLength(1);
+    expect(screen.getAllByText("0.9100").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText("finished")).toBeTruthy();
+    expect(screen.getByText("active")).toBeTruthy();
+    expect(screen.getByText("error")).toBeTruthy();
+    expect(screen.getByText("Keep the baseline program unchanged for comparison.")).toBeTruthy();
+    expect(screen.getByText("Broaden the hidden layers to add capacity.")).toBeTruthy();
+    expect(screen.getByText(/^Adjust the optimizer schedule to recover late-epoch accuracy/)).toBeTruthy();
+    expect(screen.queryByText("Inspired by")).toBeNull();
+    expect(screen.queryByText("Inspires")).toBeNull();
+  });
+
+  it("opens the inspector from a lineage node", () => {
+    renderShell({
+      detail: createDetail([
+        createTrial({
+          trialId: "trial_root",
+          backend: "baseline",
+          model: "baseline",
+          createdAt: "2026-03-20T15:00:00.000Z",
+          provenanceJson: { backend: "baseline", parent_trial_ids: [] },
+        }),
+        createTrial({
+          trialId: "trial_child",
+          createdAt: "2026-03-20T15:01:00.000Z",
+          provenanceJson: {
+            backend: "openrouter",
+            request_messages: [],
+            context_trial_ids: ["trial_root"],
+          },
+        }),
+      ]),
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Lineage tree" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open lineage node trial_child" }));
+
+    expect(screen.getByText("Why the selected run behaved that way")).toBeTruthy();
+    expect(navigationState.replace).toHaveBeenCalledWith("/tracks/track_1/trials/trial_child", { scroll: false });
   });
 
   it("adds hover and focus tooltip text to progress breakdown segments", () => {
@@ -296,6 +391,50 @@ describe("DashboardShell", () => {
     expect(screen.queryByRole("link", { name: "Open launcher run for trial_modal" })).toBeNull();
   });
 
+  it("renders note badges in the trial cell and removes the notes column", () => {
+    renderShell({
+      detail: createDetail([
+        createTrial({
+          trialId: "trial_noted",
+          outcomeReason: "duplicate",
+          errorType: "generation_failed",
+          timedOut: true,
+          hadUnscoredWorkAtTimeout: true,
+          hasError: true,
+        }),
+      ]),
+    });
+
+    expect(screen.queryByRole("columnheader", { name: "Notes" })).toBeNull();
+
+    const row = screen.getByRole("button", { name: "Open trial trial_noted" });
+    expect(row.textContent).toContain("noted");
+    expect(row.textContent).toContain("duplicate");
+    expect(row.textContent).toContain("generation_failed");
+    expect(row.textContent).toContain("timed out");
+    expect(row.textContent).toContain("unevaluated work");
+    expect(row.textContent).toContain("error payload");
+  });
+
+  it("shows the task description in the trials table when recorded", () => {
+    renderShell({
+      detail: createDetail([
+        createTrial({
+          trialId: "trial_tasked",
+          taskDescription:
+            "Tune the training loop to improve validation accuracy without destabilizing the early stopping policy.",
+        }),
+      ]),
+    });
+
+    expect(screen.getByRole("columnheader", { name: "Task" })).toBeTruthy();
+    expect(
+      screen.getByText(
+        "Tune the training loop to improve validation accuracy without destabilizing the early stopping policy.",
+      ),
+    ).toBeTruthy();
+  });
+
   it("shows launcher and wandb badges in the inspector when the selected trial has remote run URLs", () => {
     renderShell({
       detail: createDetail([
@@ -324,7 +463,7 @@ describe("DashboardShell", () => {
     expect(wandbLink.textContent).toBe("W&B");
   });
 
-  it("shows a mixed-source diff for the selected trial when prompt snippets are recorded", () => {
+  it("embeds the prompt-source diff into the generated program when snippets are recorded", () => {
     const detail = createDetail([
       createTrial({
         trialId: "trial_diff",
@@ -358,15 +497,11 @@ describe("DashboardShell", () => {
       pathname: "/tracks/track_1/trials/trial_diff",
     });
 
-    toggleSection("Mixed vs generated diff");
-
-    expect(screen.getByText("Mixed vs generated diff")).toBeTruthy();
-    expect(screen.getByText("2 prompt sources")).toBeTruthy();
-    expect(screen.getByText("+1 additions")).toBeTruthy();
-    expect(screen.getByText("-3 removals")).toBeTruthy();
-    expect(screen.getAllByText("print('new candidate')").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("print('old parent')").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("print('bad candidate')").length).toBeGreaterThan(0);
+    expect(screen.getByText("Generated program")).toBeTruthy();
+    expect(screen.getByText("2 prompt sources • +1 / -3 inline diff")).toBeTruthy();
+    expect(screen.getByText(/print\('new candidate'\)/)).toBeTruthy();
+    expect(screen.getByText(/print\('old parent'\)/)).toBeTruthy();
+    expect(screen.getByText(/print\('bad candidate'\)/)).toBeTruthy();
   });
 
   it("diffs against the current program instead of reference programs when the prompt is structured", () => {
@@ -408,14 +543,73 @@ describe("DashboardShell", () => {
       pathname: "/tracks/track_1/trials/trial_structured_diff",
     });
 
-    toggleSection("Mixed vs generated diff");
-
-    expect(screen.getByText("2 prompt sources • diffing CURRENT PROGRAM")).toBeTruthy();
-    expect(screen.getByText("+1 additions")).toBeTruthy();
-    expect(screen.getByText("-1 removals")).toBeTruthy();
+    expect(screen.getByText("2 prompt sources • diffing CURRENT PROGRAM • +1 / -1 inline diff")).toBeTruthy();
     expect(screen.queryByText("return 'reference'")).toBeNull();
-    expect(screen.getAllByText("return 'baseline'").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("return 'improved'").length).toBeGreaterThan(0);
+    expect(screen.getByText(/return 'baseline'/)).toBeTruthy();
+    expect(screen.getByText(/return 'improved'/)).toBeTruthy();
+  });
+
+  it("diffs against the appendix current program when prompt sources are stored as appendices", () => {
+    const detail = createDetail([
+      createTrial({
+        trialId: "trial_appendix_diff",
+        source: ["def train():", "    return 'improved'", ""].join("\n"),
+        generatedSource: null,
+        provenanceJson: {
+          backend: "openrouter",
+          request_messages: [
+            {
+              role: "user",
+              content: [
+                "OBJECTIVE:",
+                "- Improve CURRENT_PROGRAM for higher val_acc.",
+                "Later appendices are ordered as REFERENCE, NEGATIVE, CURRENT_PROGRAM.",
+              ].join("\n"),
+            },
+            {
+              role: "user",
+              content: [
+                "REFERENCE APPENDIX",
+                "",
+                "REFERENCE val_acc=0.97 val_loss=0.10",
+                "def train():",
+                "    return 'reference'",
+              ].join("\n"),
+            },
+            {
+              role: "user",
+              content: [
+                "NEGATIVE APPENDIX",
+                "",
+                "NEGATIVE reason=duplicate detail=matched prior candidate",
+                "def train():",
+                "    return 'negative'",
+              ].join("\n"),
+            },
+            {
+              role: "user",
+              content: [
+                "CURRENT PROGRAM APPENDIX",
+                "",
+                "CURRENT_PROGRAM val_acc=0.95 val_loss=0.12",
+                "def train():",
+                "    return 'baseline'",
+              ].join("\n"),
+            },
+          ],
+        },
+      }),
+    ]);
+
+    renderShell({
+      detail,
+      initialSelectedTrialId: "trial_appendix_diff",
+      pathname: "/tracks/track_1/trials/trial_appendix_diff",
+    });
+
+    expect(screen.getByText("3 prompt sources • diffing CURRENT PROGRAM • +1 / -1 inline diff")).toBeTruthy();
+    expect(screen.getByText(/return 'baseline'/)).toBeTruthy();
+    expect(screen.getByText(/return 'improved'/)).toBeTruthy();
   });
 
   it("renders generation trace fields and diagnostic-source fallback for failed generation attempts", () => {
@@ -445,10 +639,8 @@ describe("DashboardShell", () => {
 
     toggleSection("System prompt");
     toggleSection("User prompt");
-    toggleSection("Task description");
-    toggleSection("Raw LLM response");
+    toggleSection("Response");
     toggleSection("Reasoning trace");
-    toggleSection("Generation attempt");
 
     expect(screen.getByText("system prompt text")).toBeTruthy();
     expect(screen.getByText("user prompt text")).toBeTruthy();
@@ -494,9 +686,9 @@ describe("DashboardShell", () => {
       initialSelectedTrialId: "trial_success_raw_response",
     });
 
-    toggleSection("Raw LLM response");
+    toggleSection("Response");
 
-    expect(screen.getByText("Raw LLM response")).toBeTruthy();
+    expect(screen.getByText("Response")).toBeTruthy();
     expect(screen.getByText(/<<<<<<< SEARCH/)).toBeTruthy();
     expect(screen.queryByText("No raw response recorded.")).toBeNull();
   });
@@ -511,8 +703,6 @@ describe("DashboardShell", () => {
       ]),
       initialSelectedTrialId: "trial_task_description",
     });
-
-    toggleSection("Task description");
 
     expect(screen.getByText("Task description")).toBeTruthy();
     expect(
@@ -539,7 +729,31 @@ describe("DashboardShell", () => {
     expect(screen.queryByText("No reasoning trace recorded.")).toBeNull();
   });
 
-  it("shows the error payload card at the front of the inspector card stack", () => {
+  it("shows a safe note when the provider returns an encrypted reasoning payload", () => {
+    renderShell({
+      detail: createDetail([
+        createTrial({
+          trialId: "trial_encrypted_reasoning_trace",
+          reasoningText:
+            "Reasoning trace unavailable. Provider returned encrypted reasoning blocks (google-gemini-v1).",
+        }),
+      ]),
+      initialSelectedTrialId: "trial_encrypted_reasoning_trace",
+    });
+
+    toggleSection("Reasoning trace");
+
+    expect(
+      screen.getByText(
+        "Reasoning trace unavailable. Provider returned encrypted reasoning blocks (google-gemini-v1).",
+      ),
+    ).toBeTruthy();
+    expect(
+      screen.queryByText("AY89a19Jsq7xtfbhrjynErTNjrdDbmfbe3gDcIH4rvFJEp195oIBbTyfgiQ1/5l2oko="),
+    ).toBeNull();
+  });
+
+  it("puts error payload first in the inspector card stack when recorded", () => {
     const { container } = renderShell({
       detail: createDetail([
         createTrial({
@@ -558,7 +772,50 @@ describe("DashboardShell", () => {
     const cardHeadings = Array.from(inspectorGrid?.querySelectorAll("h3") ?? []).map((heading) => heading.textContent);
 
     expect(cardHeadings[0]).toBe("Error payload");
-    expect(cardHeadings).toContain("Mixed vs generated diff");
+    expect(cardHeadings[1]).toBe("Task description");
+    expect(cardHeadings[2]).toBe("Generated program");
+  });
+
+  it("keeps the error payload expanded whenever it is present", () => {
+    renderShell({
+      detail: createDetail([
+        createTrial({
+          trialId: "trial_error_expanded",
+          hasError: true,
+          errorJson: {
+            kind: "generation_failed",
+            message: "candidate parse failed",
+          },
+        }),
+      ]),
+      initialSelectedTrialId: "trial_error_expanded",
+    });
+
+    expect(screen.queryByRole("button", { name: /^error payload$/i })).toBeNull();
+    expect(screen.getByText(/"message": "candidate parse failed"/)).toBeTruthy();
+  });
+
+  it("shows reasoning trace before response in the inspector card stack", () => {
+    const { container } = renderShell({
+      detail: createDetail([
+        createTrial({
+          trialId: "trial_reasoning_before_response",
+          reasoningText: "Reasoning content",
+          responseText: "Response content",
+        }),
+      ]),
+      initialSelectedTrialId: "trial_reasoning_before_response",
+    });
+
+    const cardHeadings = Array.from(container.querySelectorAll(".inspector-grid h3")).map(
+      (heading) => heading.textContent,
+    );
+    const reasoningIndex = cardHeadings.indexOf("Reasoning trace");
+    const responseIndex = cardHeadings.indexOf("Response");
+
+    expect(reasoningIndex).toBeGreaterThan(-1);
+    expect(responseIndex).toBeGreaterThan(-1);
+    expect(reasoningIndex).toBeLessThan(responseIndex);
   });
 
   it("merges the assertion status and empty failure state into one row", () => {
@@ -690,7 +947,7 @@ describe("DashboardShell", () => {
     expect(wandbLink.textContent).toBe("W&B");
   });
 
-  it("keeps the summary sections open and only collapses the lower inspector cards by default", () => {
+  it("keeps the summary sections open and defaults only task description and generated program to expanded", () => {
     renderShell({
       detail: createDetail([
         createTrial({
@@ -709,9 +966,11 @@ describe("DashboardShell", () => {
     expect(screen.getByText("Dispatch Attempts")).toBeTruthy();
     expect(screen.getByText("Queued")).toBeTruthy();
     expect(screen.getByText("No provenance payload recorded.")).toBeTruthy();
+    expect(screen.getByText("No task description recorded.")).toBeTruthy();
+    expect(screen.getByText("print('hello')")).toBeTruthy();
     expect(screen.queryByText("No raw response recorded.")).toBeNull();
 
-    toggleSection("Raw LLM response");
+    toggleSection("Response");
 
     expect(screen.getByText("No raw response recorded.")).toBeTruthy();
   });
@@ -763,7 +1022,7 @@ describe("DashboardShell", () => {
       initialSelectedTrialId: "trial_2",
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "Back to trial explorer" }));
+    fireEvent.click(screen.getByRole("button", { name: "Back to previous view" }));
 
     await waitFor(() => {
       expect(navigationState.replace).toHaveBeenCalledWith("/tracks/track_1", { scroll: false });
@@ -787,6 +1046,20 @@ describe("DashboardShell", () => {
     fireEvent.click(screen.getByRole("button", { name: "Expand tracks sidebar" }));
 
     expect(screen.getByRole("heading", { name: "Research lanes" })).toBeTruthy();
+  });
+
+  it("uses the trials-table compact id style for research lane ids", () => {
+    renderShell({
+      tracks: [
+        {
+          ...tracks[0],
+          trackId: "track_1234567890abcdef",
+        },
+      ],
+    });
+
+    expect(screen.getByText("123def")).toBeTruthy();
+    expect(screen.getByTitle("track_1234567890abcdef")).toBeTruthy();
   });
 
   it("clears the detail pane when a filter returns no trials", async () => {
@@ -819,9 +1092,42 @@ describe("DashboardShell", () => {
 
     const bestRow = screen.getByRole("button", { name: "Open trial trial_2" });
     expect(bestRow.className).toContain("best-trial");
+    expect(bestRow.className).toContain("status-finished");
     expect(container.querySelector('circle.score-point.best-point[aria-label^="trial_2"]')).toBeTruthy();
     expect(screen.getByText(/trial_2 is the best trial so far\./i)).toBeTruthy();
     expect(screen.getByText("best so far")).toBeTruthy();
+  });
+
+  it("shows status as the first table column and stacks duration below the badge", () => {
+    const { container } = renderShell();
+
+    const headers = Array.from(container.querySelectorAll(".trial-table thead th")).map((cell) => cell.textContent);
+    expect(headers).toEqual(["Status", "Trial", "Task", "Score", "val_acc", "Best Epoch", "Model"]);
+
+    const firstStatusCell = container.querySelector(".trial-table tbody td");
+    expect(firstStatusCell?.querySelector(".status-badge")?.textContent).toContain("finished");
+    expect(firstStatusCell?.querySelector(".trial-status-duration")?.textContent).toBe("1m 0s");
+  });
+
+  it("shows best epoch in best/total format in the trials table", () => {
+    renderShell();
+
+    expect(screen.getAllByText("3/5")).toHaveLength(2);
+  });
+
+  it("falls back to eval count when epochs completed is missing", () => {
+    renderShell({
+      detail: createDetail([
+        createTrial({
+          trialId: "trial_fallback",
+          bestEvalEpoch: 4,
+          epochsCompleted: null,
+          evalCount: 5,
+        }),
+      ]),
+    });
+
+    expect(screen.getByText("4/5")).toBeTruthy();
   });
 
   it("highlights the best-so-far trial in the inspector", () => {
@@ -881,7 +1187,6 @@ describe("DashboardShell", () => {
       detail: createDetail(clusteredTrials),
     });
 
-    expect(screen.getByText(/Zoomed range/)).toBeTruthy();
     expect(screen.getByText("1 lower outlier pinned to the baseline")).toBeTruthy();
     expect(container.querySelector(".score-axis-break")).toBeTruthy();
 

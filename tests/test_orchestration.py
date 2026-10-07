@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -14,9 +15,15 @@ from sigmaevolve.generation import (
     build_candidate_train_script,
     build_model_block,
 )
+from sigmaevolve.model_pools import MNIST_MODEL_POOL_ID
 from sigmaevolve.orchestration import EvolutionSystem, InlineRunnerLauncher
 from sigmaevolve.storage import classify_error_type
-from tests.support import RecordingLauncherDouble, make_llm_provenance
+from tests.support import (
+    RecordingLauncherDouble,
+    build_selfcontained_train_script,
+    make_generation_trace,
+    make_llm_provenance,
+)
 
 
 def _prepare_repo_dataset(
@@ -26,9 +33,13 @@ def _prepare_repo_dataset(
 
 
 def _create_track(
-    system, policy_json: dict | None = None, dataset_id: str = "mnist:v1"
+    system,
+    policy_json: dict | None = None,
+    dataset_id: str = "mnist:v1",
+    *,
+    seed_source: str | None = None,
 ):
-    return system.create_track(dataset_id, policy_json or {})
+    return system.create_track(dataset_id, policy_json or {}, seed_source=seed_source)
 
 
 def _build_system(repository, dataset_manager, generator, launcher):
@@ -60,7 +71,25 @@ def test_create_track_seeds_one_baseline_candidate(system):
         trials[0].source
         == build_baseline_train_script().replace("\r\n", "\n").rstrip("\n") + "\n"
     )
-    assert trials[0].provenance_json["candidate_kind"] == CANDIDATE_KIND_STRATEGY_V1
+    assert trials[0].provenance_json["candidate_kind"] == "selfcontained_script_v1"
+    assert trials[0].provenance_json["model"] == "python_train_v1"
+    assert (
+        track.policy_json["generation_backend"]["model_pool_id"] == MNIST_MODEL_POOL_ID
+    )
+
+
+def test_create_track_seeds_selfcontained_baseline_candidate(system):
+    system.prepare_dataset("mnist:v1")
+    seed_source = build_selfcontained_train_script(epochs=7)
+
+    track = _create_track(system, seed_source=seed_source)
+
+    trials = system.repository.list_trials(track.track_id)
+    assert len(trials) == 1
+    assert trials[0].source == seed_source
+    assert trials[0].provenance_json["candidate_kind"] == "selfcontained_script_v1"
+    assert trials[0].provenance_json["model"] == "python_train_v1"
+    assert track.policy_json["epochs"] == 7
 
 
 def test_reconcile_generates_from_queued_baseline_before_first_result(
@@ -135,6 +164,75 @@ def forward(self, x):
     )
     assert generated_trial.provenance_json["generation"]["generated_source"] == (
         generated_trial.source
+    )
+
+
+def test_reconcile_preserves_selfcontained_candidate_kind(repository, dataset_manager):
+    class CapturingGenerator:
+        def __init__(self):
+            self.context_trials = None
+            self.source = """TASK_DESCRIPTION:
+Adjust the evolve block while preserving the uploaded script contract.
+
+<<<<<<< SEARCH
+batch_size = 64
+=======
+batch_size = 32
+>>>>>>> REPLACE
+"""
+
+        def generate(
+            self,
+            track,
+            dataset_manifest,
+            context_trials,
+            negative_trials=None,
+            generation_index=0,
+            duplicate_retry_count=0,
+        ):
+            del (
+                track,
+                dataset_manifest,
+                negative_trials,
+                generation_index,
+                duplicate_retry_count,
+            )
+            self.context_trials = context_trials
+            return GenerationResult(
+                source=self.source,
+                provenance_json=make_llm_provenance(
+                    model="selfcontained",
+                    candidate_kind="selfcontained_script_v1",
+                    context_trial_ids=[trial.trial_id for trial in context_trials],
+                    generation={
+                        "task_description": "Adjust the self-contained script.",
+                        "response_text": self.source,
+                    },
+                ),
+            )
+
+    _prepare_repo_dataset(repository, dataset_manager)
+    system, _ = _build_system(
+        repository,
+        dataset_manager,
+        CapturingGenerator(),
+        RecordingLauncherDouble(),
+    )
+    track = _create_track(
+        system,
+        seed_source=build_selfcontained_train_script(),
+    )
+
+    result = system.reconcile_track(
+        track.track_id,
+        ready_queue_threshold=2,
+        max_parallelism=0,
+    )
+    generated_trial = repository.get_trial(result.generated_trial_ids[0])
+
+    assert generated_trial is not None
+    assert generated_trial.provenance_json["candidate_kind"] == (
+        "selfcontained_script_v1"
     )
 
 
@@ -228,7 +326,10 @@ def forward(self, x):
 """
         )
     )
-    provenance = make_llm_provenance(candidate_kind=CANDIDATE_KIND_STRATEGY_V1)
+    provenance = make_llm_provenance(
+        candidate_kind=CANDIDATE_KIND_STRATEGY_V1,
+        generation=make_generation_trace(duplicate_source),
+    )
 
     original, created = system.repository.create_queued_trial_if_absent(
         first.track_id, duplicate_source, provenance
@@ -685,29 +786,39 @@ def test_weighted_successful_sampling_favors_higher_scores(repository, dataset_m
 
     trials = repository.list_trials(track.track_id)
     baseline = trials[0]
-    mid, _ = repository.create_queued_trial_if_absent(
-        track.track_id,
-        build_candidate_train_script(
-            build_model_block(
-                """
+    mid_source = build_candidate_train_script(
+        build_model_block(
+            """
 def forward(self, x):
     return torch.tensor([[0.0, 1.0]], dtype=torch.float32).repeat(x.shape[0], 1)
 """
-            )
-        ),
-        make_llm_provenance(model="mid", candidate_kind=CANDIDATE_KIND_STRATEGY_V1),
+        )
     )
-    low, _ = repository.create_queued_trial_if_absent(
+    mid, _ = repository.create_queued_trial_if_absent(
         track.track_id,
-        build_candidate_train_script(
-            build_model_block(
-                """
+        mid_source,
+        make_llm_provenance(
+            model="mid",
+            candidate_kind=CANDIDATE_KIND_STRATEGY_V1,
+            generation=make_generation_trace(mid_source),
+        ),
+    )
+    low_source = build_candidate_train_script(
+        build_model_block(
+            """
 def forward(self, x):
     return torch.tensor([[1.0, 0.0]], dtype=torch.float32).repeat(x.shape[0], 1)
 """
-            )
+        )
+    )
+    low, _ = repository.create_queued_trial_if_absent(
+        track.track_id,
+        low_source,
+        make_llm_provenance(
+            model="low",
+            candidate_kind=CANDIDATE_KIND_STRATEGY_V1,
+            generation=make_generation_trace(low_source),
         ),
-        make_llm_provenance(model="low", candidate_kind=CANDIDATE_KIND_STRATEGY_V1),
     )
     assert mid is not None and low is not None
 
@@ -733,7 +844,6 @@ def forward(self, x):
         error_info=None,
     )
 
-    draw_counts = {baseline.trial_id: 0, mid.trial_id: 0, low.trial_id: 0}
     current_counts = {baseline.trial_id: 0, mid.trial_id: 0, low.trial_id: 0}
     for generation_index in range(300):
         sampled = system.orchestrator._sample_successful_context_trials(
@@ -741,23 +851,88 @@ def forward(self, x):
             7,
             generation_index,
         )
-        assert len(sampled) == 2
-        assert sampled[0].trial_id != sampled[1].trial_id
-        assert sampled[0].score >= sampled[1].score
-        for trial in sampled:
-            draw_counts[trial.trial_id] += 1
+        assert len(sampled) == 3
+        assert len({trial.trial_id for trial in sampled}) == 3
         current_counts[sampled[0].trial_id] += 1
 
-    assert (
-        draw_counts[baseline.trial_id]
-        > draw_counts[mid.trial_id]
-        > draw_counts[low.trial_id]
-    )
     assert (
         current_counts[baseline.trial_id]
         > current_counts[mid.trial_id]
         > current_counts[low.trial_id]
     )
+
+
+def test_schedule_generation_attempt_records_sampled_candidate_table(
+    repository, dataset_manager
+):
+    _prepare_repo_dataset(repository, dataset_manager)
+    system, runner = _build_system(
+        repository,
+        dataset_manager,
+        FixedGenerationBackend(source=build_baseline_train_script()),
+        None,
+    )
+    system.launcher = InlineRunnerLauncher(runner)
+    system.orchestrator.launcher = system.launcher
+    track = _create_track(system, {"sampling_seed": 7})
+
+    baseline = _finalize_baseline_success(repository, track.track_id, score=0.9)
+    mid_source = build_candidate_train_script(
+        build_model_block(
+            """
+def forward(self, x):
+    return torch.tensor([[0.0, 1.0]], dtype=torch.float32).repeat(x.shape[0], 1)
+"""
+        )
+    )
+    mid, _ = repository.create_queued_trial_if_absent(
+        track.track_id,
+        mid_source,
+        make_llm_provenance(
+            model="mid",
+            candidate_kind=CANDIDATE_KIND_STRATEGY_V1,
+            generation=make_generation_trace(mid_source),
+        ),
+    )
+    assert mid is not None
+    repository.finalize_trial(
+        trial_id=mid.trial_id,
+        runner_id=None,
+        outcome_reason="succeeded",
+        metrics={"accuracy": 0.3},
+        error_info=None,
+    )
+
+    dataset_manifest = dataset_manager.verify(track.dataset_id)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        scheduled = system.orchestrator.generation.schedule_generation_attempt(
+            executor,
+            track,
+            dataset_manifest,
+            7,
+            slot_index=0,
+            generation_index=0,
+            duplicate_retry_count=0,
+        )
+
+    assert scheduled is not None
+    _, attempt = scheduled
+    assert [row["trial_id"] for row in attempt.sampled_candidates] == [
+        baseline.trial_id,
+        mid.trial_id,
+    ]
+    sampled_by_id = {row["trial_id"]: row for row in attempt.sampled_candidates}
+    assert sampled_by_id[baseline.trial_id]["rank"] == 1
+    assert sampled_by_id[baseline.trial_id]["score"] == pytest.approx(0.9)
+    assert sampled_by_id[baseline.trial_id]["selection_probability"] == pytest.approx(
+        0.75
+    )
+    assert sampled_by_id[mid.trial_id]["selection_probability"] == pytest.approx(0.25)
+
+    current_trial_id = attempt.context_trials[0].trial_id
+    inspiration_trial_id = attempt.context_trials[1].trial_id
+    assert sampled_by_id[current_trial_id]["selected_role"] == "current"
+    assert sampled_by_id[inspiration_trial_id]["selected_role"] == "inspiration"
 
 
 def test_reconcile_never_passes_failed_trials_as_generation_context(
@@ -814,11 +989,9 @@ def forward(self, x):
         metrics={"accuracy": 0.5},
         error_info={"stdout": "", "stderr": ""},
     )
-    failed, _ = repository.create_queued_trial_if_absent(
-        track.track_id,
-        build_candidate_train_script(
-            build_model_block(
-                """
+    failed_source = build_candidate_train_script(
+        build_model_block(
+            """
 def __init__(self):
     super().__init__()
     raise RuntimeError("broken")
@@ -826,10 +999,15 @@ def __init__(self):
 def forward(self, x):
     return torch.zeros((x.shape[0], 2), dtype=torch.float32)
 """
-            )
-        ),
+        )
+    )
+    failed, _ = repository.create_queued_trial_if_absent(
+        track.track_id,
+        failed_source,
         make_llm_provenance(
-            model="test/model", candidate_kind=CANDIDATE_KIND_STRATEGY_V1
+            model="test/model",
+            candidate_kind=CANDIDATE_KIND_STRATEGY_V1,
+            generation=make_generation_trace(failed_source),
         ),
     )
     assert failed is not None
@@ -850,6 +1028,176 @@ def forward(self, x):
     assert [trial.trial_id for trial in generator.context_trials] == [baseline.trial_id]
     assert generator.negative_trials is not None
     assert generator.negative_trials == []
+
+
+def test_reconcile_passes_recent_duplicates_as_negative_trials(
+    repository, dataset_manager
+):
+    class CapturingGenerator:
+        def __init__(self):
+            self.context_trials = None
+            self.negative_trials = None
+
+        def generate(
+            self,
+            track,
+            dataset_manifest,
+            context_trials,
+            negative_trials=None,
+            generation_index=0,
+            duplicate_retry_count=0,
+        ):
+            del track, dataset_manifest, generation_index, duplicate_retry_count
+            self.context_trials = context_trials
+            self.negative_trials = negative_trials or []
+            source = build_candidate_train_script(
+                build_model_block(
+                    """
+def forward(self, x):
+    flat = x.reshape(x.shape[0], -1)
+    scores = flat.sum(dim=1)
+    return torch.stack((-scores, scores), dim=1)
+"""
+                )
+            )
+            return type(
+                "Generated",
+                (),
+                {
+                    "source": source,
+                    "provenance_json": {
+                        **make_llm_provenance(model="capture-negatives"),
+                        "generation": {
+                            "task_description": "Return a unique candidate while capturing duplicate negatives.",
+                            "response_text": source,
+                        },
+                    },
+                },
+            )()
+
+    _prepare_repo_dataset(repository, dataset_manager)
+    generator = CapturingGenerator()
+    system, _ = _build_system(
+        repository, dataset_manager, generator, RecordingLauncherDouble()
+    )
+    track = _create_track(system)
+    baseline = _finalize_baseline_success(repository, track.track_id, score=0.5)
+
+    duplicate_source = build_candidate_train_script(
+        build_model_block(
+            """
+def forward(self, x):
+    return torch.zeros((x.shape[0], 2), dtype=torch.float32)
+"""
+        )
+    )
+    repository.create_generation_attempt_trial(
+        track_id=track.track_id,
+        provenance_json=make_llm_provenance(
+            model="duplicate-source",
+            context_trial_ids=[baseline.trial_id],
+            generation=make_generation_trace(duplicate_source),
+        ),
+        outcome_reason="duplicate",
+        error_json={
+            "reason": "duplicate_candidate",
+            "detail": "Candidate source already exists as trial_existing.",
+            "existing_trial_id": "trial_existing",
+            "candidate_hash": "sha256:duplicate",
+        },
+    )
+
+    system.reconcile_track(track.track_id)
+
+    assert generator.context_trials is not None
+    assert [trial.trial_id for trial in generator.context_trials] == [baseline.trial_id]
+    assert generator.negative_trials is not None
+    assert [trial.outcome_reason for trial in generator.negative_trials] == [
+        "duplicate"
+    ]
+
+
+def test_negative_sampling_dedupes_repeated_duplicate_hashes_and_ranks_by_frequency(
+    repository, dataset_manager
+):
+    _prepare_repo_dataset(repository, dataset_manager)
+    system, _ = _build_system(
+        repository,
+        dataset_manager,
+        FixedGenerationBackend(source=build_baseline_train_script()),
+        RecordingLauncherDouble(),
+    )
+    track = _create_track(system)
+    baseline = _finalize_baseline_success(repository, track.track_id, score=0.5)
+
+    duplicate_source_a = build_candidate_train_script(
+        build_model_block(
+            """
+def forward(self, x):
+    return torch.zeros((x.shape[0], 2), dtype=torch.float32)
+"""
+        )
+    )
+    duplicate_source_b = build_candidate_train_script(
+        build_model_block(
+            """
+def forward(self, x):
+    return torch.ones((x.shape[0], 2), dtype=torch.float32)
+"""
+        )
+    )
+
+    for model in ("dup-a-1", "dup-a-2", "dup-a-3"):
+        repository.create_generation_attempt_trial(
+            track_id=track.track_id,
+            provenance_json=make_llm_provenance(
+                model=model,
+                context_trial_ids=[baseline.trial_id],
+                generation=make_generation_trace(duplicate_source_a),
+            ),
+            outcome_reason="duplicate",
+            error_json={
+                "reason": "duplicate_candidate",
+                "detail": "Candidate source already exists as trial_existing_a.",
+                "existing_trial_id": "trial_existing_a",
+                "candidate_hash": "sha256:duplicate-a",
+            },
+        )
+
+    repository.create_generation_attempt_trial(
+        track_id=track.track_id,
+        provenance_json=make_llm_provenance(
+            model="dup-b-1",
+            context_trial_ids=[baseline.trial_id],
+            generation=make_generation_trace(duplicate_source_b),
+        ),
+        outcome_reason="duplicate",
+        error_json={
+            "reason": "duplicate_candidate",
+            "detail": "Candidate source already exists as trial_existing_b.",
+            "existing_trial_id": "trial_existing_b",
+            "candidate_hash": "sha256:duplicate-b",
+        },
+    )
+
+    negative_trials = system.orchestrator.generation.sample_negative_trials(
+        track.track_id,
+        limit=8,
+    )
+
+    assert len(negative_trials) == 2
+    assert negative_trials[0].error_json is not None
+    assert negative_trials[0].error_json["duplicate_count"] == 3
+    assert negative_trials[1].error_json is not None
+    assert negative_trials[1].error_json["duplicate_count"] == 1
+    assert (
+        negative_trials[0].provenance_json["generation"]["generated_source"]
+        == duplicate_source_a
+    )
+    assert (
+        negative_trials[1].provenance_json["generation"]["generated_source"]
+        == duplicate_source_b
+    )
 
 
 def test_reconcile_rejects_mutations_outside_evolve_blocks(repository, dataset_manager):
@@ -934,14 +1282,12 @@ def test_reconcile_applies_search_replace_response_before_queueing(
             duplicate_retry_count=0,
         ):
             response_text = """TASK_DESCRIPTION:
-Reduce the forward output scale to test SEARCH/REPLACE patch application.
+Use AdamW to test SEARCH/REPLACE patch application.
 
 <<<<<<< SEARCH
-    def forward(self, x):
-        return self.network(x)
+optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
 =======
-    def forward(self, x):
-        return self.network(x) * 0.5
+optimizer = torch.optim.AdamW(model.parameters(), lr=5e-4)
 >>>>>>> REPLACE
 """
             return type(
@@ -952,7 +1298,7 @@ Reduce the forward output scale to test SEARCH/REPLACE patch application.
                     "provenance_json": {
                         **make_llm_provenance(model="patch-generator"),
                         "generation": {
-                            "task_description": "Reduce the forward output scale to test SEARCH/REPLACE patch application.",
+                            "task_description": "Use AdamW to test SEARCH/REPLACE patch application.",
                             "response_text": response_text,
                         },
                     },
@@ -981,10 +1327,10 @@ Reduce the forward output scale to test SEARCH/REPLACE patch application.
     assert result.errors == []
     assert len(result.generated_trial_ids) == 1
     assert created_trial is not None
-    assert "return self.network(x) * 0.5" in created_trial.source
+    assert "torch.optim.AdamW" in created_trial.source
     assert (
         created_trial.provenance_json["generation"]["task_description"]
-        == "Reduce the forward output scale to test SEARCH/REPLACE patch application."
+        == "Use AdamW to test SEARCH/REPLACE patch application."
     )
     assert "SEARCH" in created_trial.provenance_json["generation"]["response_text"]
 
@@ -1543,19 +1889,23 @@ def forward(self, x):
     track = _create_track(system, {"dispatch_ttl_sec": 0, "max_dispatch_retries": 2})
     _finalize_baseline_success(repository, track.track_id)
 
-    queued_trial, created = repository.create_queued_trial_if_absent(
-        track.track_id,
-        build_candidate_train_script(
-            build_model_block(
-                """
+    queued_source = build_candidate_train_script(
+        build_model_block(
+            """
 def forward(self, x):
     flat = x.reshape(x.shape[0], -1)
     scores = flat.sum(dim=1) + 9
     return torch.stack((-scores, scores), dim=1)
 """
-            )
+        )
+    )
+    queued_trial, created = repository.create_queued_trial_if_absent(
+        track.track_id,
+        queued_source,
+        make_llm_provenance(
+            model="queued-before-controller",
+            generation=make_generation_trace(queued_source),
         ),
-        make_llm_provenance(model="queued-before-controller"),
     )
     assert created is True
     assert queued_trial is not None
@@ -1615,19 +1965,23 @@ def test_reconcile_uses_launch_executor_so_blocking_launches_do_not_block_other_
         launcher,
     )
     track = _create_track(system)
-    second_trial, created = repository.create_queued_trial_if_absent(
-        track.track_id,
-        build_candidate_train_script(
-            build_model_block(
-                """
+    second_source = build_candidate_train_script(
+        build_model_block(
+            """
 def forward(self, x):
     flat = x.reshape(x.shape[0], -1)
     scores = flat.sum(dim=1) + 11
     return torch.stack((-scores, scores), dim=1)
 """
-            )
+        )
+    )
+    second_trial, created = repository.create_queued_trial_if_absent(
+        track.track_id,
+        second_source,
+        make_llm_provenance(
+            model="second-launchable",
+            generation=make_generation_trace(second_source),
         ),
-        make_llm_provenance(model="second-launchable"),
     )
     assert created is True
     assert second_trial is not None

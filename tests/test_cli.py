@@ -11,18 +11,22 @@ import numpy as np
 import pytest
 
 from sigmaevolve import cli as cli_module
+from sigmaevolve import env as env_module
 from sigmaevolve.cli import CliReconcileReporter, main
 from sigmaevolve.core import DEFAULT_GENERATION_MODEL
 from sigmaevolve.datasets import ArrayDatasetProvider
 from sigmaevolve.env import load_env_file, resolve_runtime_config
+from sigmaevolve.generation import build_baseline_train_script
+from sigmaevolve.model_pools import MNIST_MODEL_POOL_ID
 from sigmaevolve.orchestration import build_system
 from sigmaevolve.storage import SQLAlchemyRepository, normalize_database_url
+from tests.support import build_selfcontained_train_script
 
 
-def _write_track_file(tmp_path, payload: dict, filename: str = "track.json") -> str:
-    track_file = tmp_path / filename
-    track_file.write_text(json.dumps(payload))
-    return str(track_file)
+def _write_script_file(tmp_path, source: str, filename: str = "train.py") -> str:
+    script_path = tmp_path / filename
+    script_path.write_text(source)
+    return str(script_path)
 
 
 def _make_provider():
@@ -43,6 +47,12 @@ def _run_cli(argv: list[str]) -> tuple[int, str, str]:
     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
         code = main(argv)
     return code, out.getvalue(), err.getvalue()
+
+
+def _load_trailing_json(stdout: str) -> dict[str, object]:
+    payload_start = stdout.find("{")
+    assert payload_start >= 0
+    return json.loads(stdout[payload_start:])
 
 
 def _track_id_from_stderr(stderr: str) -> str:
@@ -94,6 +104,29 @@ def _set_runtime_env(
             monkeypatch.setenv(key, value)
 
 
+@pytest.fixture(autouse=True)
+def managed_cli_provider(monkeypatch):
+    """Keep handler tests offline while exercising the real secret loader."""
+
+    def fake_load_managed_secrets():
+        rows = [
+            {
+                "key": key,
+                "value": os.environ.get(key, ""),
+                "workspace": env_module.INFISICAL_PROJECT,
+                "secretPath": "/",
+                "type": "shared",
+            }
+            for key in env_module.EXPERIMENT_SECRET_KEYS
+        ]
+        result = SimpleNamespace(returncode=0, stdout=json.dumps(rows), stderr="")
+        with monkeypatch.context() as provider_patch:
+            provider_patch.setattr(env_module.subprocess, "run", lambda *a, **k: result)
+            env_module.load_managed_secrets()
+
+    monkeypatch.setattr(cli_module, "load_managed_secrets", fake_load_managed_secrets)
+
+
 @pytest.fixture
 def patched_cli_system(monkeypatch):
     provider = _make_provider()
@@ -113,14 +146,9 @@ def test_cli_create_track_and_list_trials(tmp_path, patched_cli_system, monkeypa
     db_url = f"sqlite:///{tmp_path / 'cli.sqlite'}"
     dataset_root = tmp_path / "datasets"
     _set_runtime_env(monkeypatch, database_url=db_url, dataset_root=dataset_root)
-    track_file = _write_track_file(
-        tmp_path,
-        {
-            "dataset_id": "mnist:v1",
-        },
-    )
+    script_path = _write_script_file(tmp_path, build_baseline_train_script())
 
-    code, stdout, stderr = _run_cli(["create-track", track_file])
+    code, stdout, stderr = _run_cli(["create-track", script_path])
     assert code == 0
     assert stdout == ""
     track_id = _track_id_from_stderr(stderr)
@@ -139,9 +167,9 @@ def test_cli_create_track_uses_default_generation_model(
     db_url = f"sqlite:///{tmp_path / 'cli-default-policy.sqlite'}"
     dataset_root = tmp_path / "datasets"
     _set_runtime_env(monkeypatch, database_url=db_url, dataset_root=dataset_root)
-    track_file = _write_track_file(tmp_path, {"dataset_id": "mnist:v1"})
+    script_path = _write_script_file(tmp_path, build_baseline_train_script())
 
-    code, stdout, stderr = _run_cli(["create-track", track_file])
+    code, stdout, stderr = _run_cli(["create-track", script_path])
     assert code == 0
     assert stdout == ""
     track_id = _track_id_from_stderr(stderr)
@@ -149,68 +177,80 @@ def test_cli_create_track_uses_default_generation_model(
     assert track is not None
     assert "max_parallelism" not in track.policy_json
     assert "ready_queue_threshold" not in track.policy_json
+    assert (
+        track.policy_json["generation_backend"]["model_pool_id"] == MNIST_MODEL_POOL_ID
+    )
     pool = track.policy_json["generation_backend"]["model_pool"]
     assert pool[0]["model"] == DEFAULT_GENERATION_MODEL
 
 
-def test_cli_create_track_from_track_file(tmp_path, patched_cli_system, monkeypatch):
+def test_cli_create_track_from_script_file(tmp_path, patched_cli_system, monkeypatch):
     del patched_cli_system
     db_url = f"sqlite:///{tmp_path / 'cli-policy.sqlite'}"
     dataset_root = tmp_path / "datasets"
     _set_runtime_env(monkeypatch, database_url=db_url, dataset_root=dataset_root)
-    track_file = _write_track_file(
+    script_path = _write_script_file(
         tmp_path,
-        {
-            "dataset_id": "mnist:v1",
-            "generation_backend": {
-                "selection": "round_robin",
-                "model_pool": [
-                    {
-                        "model": "x-ai/grok-4.1-fast",
-                        "temperature": 0.2,
-                        "max_tokens": 1000,
-                        "retry_count": 1,
-                    },
-                    {
-                        "model": "anthropic/claude-sonnet-4.6",
-                        "temperature": 0.7,
-                        "max_tokens": 2000,
-                        "retry_count": 1,
-                    },
-                ],
-            },
-        },
+        build_selfcontained_train_script(
+            track_policy={
+                "generation_backend": {
+                    "selection": "round_robin",
+                    "model_pool_id": MNIST_MODEL_POOL_ID,
+                }
+            }
+        ),
     )
 
-    code, stdout, stderr = _run_cli(["create-track", track_file])
+    code, stdout, stderr = _run_cli(["create-track", script_path])
     assert code == 0
     assert stdout == ""
     track_id = _track_id_from_stderr(stderr)
     track = SQLAlchemyRepository(db_url).get_track(track_id)
     assert track is not None
+    assert (
+        track.policy_json["generation_backend"]["model_pool_id"] == MNIST_MODEL_POOL_ID
+    )
     pool = track.policy_json["generation_backend"]["model_pool"]
-    assert len(pool) == 2
-    assert pool[1]["model"] == "anthropic/claude-sonnet-4.6"
+    assert len(pool) == 8
+    assert pool[1]["model"] == "google/gemini-3.8-flash"
 
 
-def test_cli_rejects_legacy_policy_json_field(
+def test_cli_create_track_uses_script_defaults(
     tmp_path, patched_cli_system, monkeypatch
 ):
+    del patched_cli_system
+    db_url = f"sqlite:///{tmp_path / 'cli-source.sqlite'}"
+    dataset_root = tmp_path / "datasets"
+    _set_runtime_env(monkeypatch, database_url=db_url, dataset_root=dataset_root)
+    script_path = tmp_path / "train.py"
+    script_path.write_text(build_selfcontained_train_script(epochs=7))
+
+    code, stdout, stderr = _run_cli(["create-track", str(script_path)])
+    assert code == 0
+    assert stdout == ""
+    track_id = _track_id_from_stderr(stderr)
+    repository = SQLAlchemyRepository(db_url)
+    track = repository.get_track(track_id)
+    baseline = repository.list_trials(track_id)[0]
+
+    assert track is not None
+    assert track.policy_json["epochs"] == 7
+    assert baseline.source == script_path.read_text()
+    assert baseline.provenance_json["candidate_kind"] == "selfcontained_script_v1"
+    assert baseline.provenance_json["model"] == "python_train_v1"
+
+
+def test_cli_rejects_json_track_file(tmp_path, patched_cli_system, monkeypatch):
     del patched_cli_system
     db_url = f"sqlite:///{tmp_path / 'cli-policy-json.sqlite'}"
     dataset_root = tmp_path / "datasets"
     _set_runtime_env(monkeypatch, database_url=db_url, dataset_root=dataset_root)
-    track_file = _write_track_file(
-        tmp_path,
-        {
-            "dataset_id": "mnist:v1",
-            "policy_json": {"epochs": 5},
-        },
-    )
+    track_file = tmp_path / "mnist.json"
+    track_file.write_text(json.dumps({"dataset_id": "mnist:v1", "epochs": 5}))
 
-    code, _, stderr = _run_cli(["create-track", track_file])
+    code, _, stderr = _run_cli(["create-track", str(track_file)])
     assert code == 1
-    assert "policy_json is no longer supported" in stderr
+    assert "self-contained script path, not a JSON track file" in stderr
 
 
 def test_cli_create_track_reports_progress_to_stderr(
@@ -220,19 +260,17 @@ def test_cli_create_track_reports_progress_to_stderr(
     db_url = f"sqlite:///{tmp_path / 'cli-create-track-progress.sqlite'}"
     dataset_root = tmp_path / "datasets"
     _set_runtime_env(monkeypatch, database_url=db_url, dataset_root=dataset_root)
-    track_file = _write_track_file(
+    script_path = _write_script_file(
         tmp_path,
-        {
-            "dataset_id": "mnist:v1",
-        },
-        "create-track-progress.json",
+        build_baseline_train_script(),
+        "create-track-progress.py",
     )
 
-    code, stdout, stderr = _run_cli(["create-track", track_file])
+    code, stdout, stderr = _run_cli(["create-track", script_path])
     assert code == 0
     assert stdout == ""
     track_id = _track_id_from_stderr(stderr)
-    assert "Loading track definition" in stderr
+    assert "Loading script definition" in stderr
     assert "Ensuring dataset mnist:v1 is prepared." in stderr
     assert "Prepared dataset mnist:v1" in stderr
     assert (
@@ -241,12 +279,12 @@ def test_cli_create_track_reports_progress_to_stderr(
     assert f"Created track {track_id}." in stderr
     assert "Run it with:" in stderr
     assert f"sigmaevolve launch {track_id} 1" in stderr
-    assert str(track_file) not in stderr
+    assert str(script_path) not in stderr
     assert "--dataset-root" not in stderr
     assert "--launcher" not in stderr
 
 
-def test_cli_loads_env_file_for_defaults(tmp_path, monkeypatch):
+def test_cli_loads_public_env_defaults_and_managed_private_keys(tmp_path, monkeypatch):
     env_dir = tmp_path / ".config" / "sigmaevolve"
     env_dir.mkdir(parents=True)
     env_file = env_dir / ".env"
@@ -255,9 +293,9 @@ def test_cli_loads_env_file_for_defaults(tmp_path, monkeypatch):
     env_file.write_text(
         "\n".join(
             [
-                f"SIGMAEVOLVE_DATABASE_URL=sqlite:///{db_path}",
+                "SIGMAEVOLVE_DATABASE_URL=sqlite:///obsolete-userfile.sqlite",
                 f"SIGMAEVOLVE_DATASET_ROOT={dataset_root}",
-                "SIGMAEVOLVE_OPENROUTER_API_KEY=test-key",
+                "SIGMAEVOLVE_OPENROUTER_API_KEY=obsolete-userfile-key",
                 "SENTINEL=loaded",
             ]
         )
@@ -269,12 +307,16 @@ def test_cli_loads_env_file_for_defaults(tmp_path, monkeypatch):
         return original_loader(env_file, override=override)
 
     monkeypatch.setattr(cli_module, "load_env_file", fake_loader)
-    _set_runtime_env(monkeypatch)
-    monkeypatch.delenv("SIGMAEVOLVE_OPENROUTER_API_KEY", raising=False)
+    _set_runtime_env(
+        monkeypatch,
+        database_url=f"sqlite:///{db_path}",
+        openrouter_api_key="managed-test-key",
+    )
     monkeypatch.delenv("SENTINEL", raising=False)
 
     assert main(["list-trials", "missing"]) == 0
-    assert os.environ["SIGMAEVOLVE_OPENROUTER_API_KEY"] == "test-key"
+    assert os.environ["SIGMAEVOLVE_OPENROUTER_API_KEY"] == "managed-test-key"
+    assert os.environ["SIGMAEVOLVE_DATASET_ROOT"] == str(dataset_root)
     assert os.environ["SENTINEL"] == "loaded"
 
 
@@ -329,6 +371,30 @@ def test_cli_reconcile_reporter_dispatch_table_logs_known_events_and_ignores_unk
     reporter = CliReconcileReporter()
 
     reporter(
+        "generation_scheduled",
+        {
+            "slot_index": 0,
+            "generation_index": 7,
+            "duplicate_retry_count": 0,
+            "sampled_candidates": [
+                {
+                    "rank": 1,
+                    "trial_id": "trial_high",
+                    "score": 0.9,
+                    "selection_probability": 0.75,
+                    "selected_role": "current",
+                },
+                {
+                    "rank": 2,
+                    "trial_id": "trial_mid",
+                    "score": 0.3,
+                    "selection_probability": 0.25,
+                    "selected_role": "inspiration",
+                },
+            ],
+        },
+    )
+    reporter(
         "generation_failed",
         {
             "slot_index": 0,
@@ -344,6 +410,15 @@ def test_cli_reconcile_reporter_dispatch_table_logs_known_events_and_ignores_unk
     )
     reporter("unknown_event", {"ignored": True})
 
+    assert any("Sampled candidates:" in message for message in messages)
+    assert any(
+        "| rank | trial_id | score | p(current) | selected |" in message
+        for message in messages
+    )
+    assert any(
+        "| 1 | trial_high | 0.9000 | 0.7500 | current |" in message
+        for message in messages
+    )
     assert any("Generation failed for slot 1" in message for message in messages)
     assert any("Queue fill [" in message for message in messages)
 
@@ -355,18 +430,18 @@ def test_cli_launch_count_reports_progress_to_stderr(
     db_url = f"sqlite:///{tmp_path / 'cli-launch-progress.sqlite'}"
     dataset_root = tmp_path / "datasets"
     _set_runtime_env(monkeypatch, database_url=db_url, dataset_root=dataset_root)
-    track_file = _write_track_file(
+    script_path = _write_script_file(
         tmp_path,
-        {"dataset_id": "mnist:v1"},
-        "launch-track.json",
+        build_baseline_train_script(),
+        "launch-track.py",
     )
 
-    _, stdout, stderr = _run_cli(["create-track", track_file])
+    _, stdout, stderr = _run_cli(["create-track", script_path])
     assert stdout == ""
     track_id = _track_id_from_stderr(stderr)
     code, stdout, stderr = _run_cli(["launch", track_id, "1"])
     assert code == 0
-    payload = json.loads(stdout)
+    payload = _load_trailing_json(stdout)
     assert "launched_trial_ids" in payload
     assert payload["mode"] == "count"
     assert "Running launch pass" in stderr
@@ -381,15 +456,13 @@ def test_cli_launch_maintain_running_stops_after_max_cycles(
     db_url = f"sqlite:///{tmp_path / 'cli-launch-maintain.sqlite'}"
     dataset_root = tmp_path / "datasets"
     _set_runtime_env(monkeypatch, database_url=db_url, dataset_root=dataset_root)
-    track_file = _write_track_file(
+    script_path = _write_script_file(
         tmp_path,
-        {
-            "dataset_id": "mnist:v1",
-        },
-        "maintain-track.json",
+        build_baseline_train_script(),
+        "maintain-track.py",
     )
 
-    _, stdout, stderr = _run_cli(["create-track", track_file])
+    _, stdout, stderr = _run_cli(["create-track", script_path])
     assert stdout == ""
     track_id = _track_id_from_stderr(stderr)
     code, stdout, _ = _run_cli(
@@ -405,7 +478,7 @@ def test_cli_launch_maintain_running_stops_after_max_cycles(
         ]
     )
     assert code == 0
-    payload = json.loads(stdout)
+    payload = _load_trailing_json(stdout)
     assert payload["mode"] == "daemon"
     assert payload["cycles_completed"] == 1
     assert payload["target_running"] == 1
@@ -419,11 +492,13 @@ def test_cli_daemon_reports_controller_mode_in_stderr(
     db_url = f"sqlite:///{tmp_path / 'cli-launch-controller.sqlite'}"
     dataset_root = tmp_path / "datasets"
     _set_runtime_env(monkeypatch, database_url=db_url, dataset_root=dataset_root)
-    track_file = _write_track_file(
-        tmp_path, {"dataset_id": "mnist:v1"}, "daemon-track.json"
+    script_path = _write_script_file(
+        tmp_path,
+        build_baseline_train_script(),
+        "daemon-track.py",
     )
 
-    _, stdout, stderr = _run_cli(["create-track", track_file])
+    _, stdout, stderr = _run_cli(["create-track", script_path])
     assert stdout == ""
     track_id = _track_id_from_stderr(stderr)
     code, stdout, stderr = _run_cli(
@@ -440,7 +515,7 @@ def test_cli_daemon_reports_controller_mode_in_stderr(
     )
 
     assert code == 0
-    payload = json.loads(stdout)
+    payload = _load_trailing_json(stdout)
     assert payload["mode"] == "daemon"
     assert "Starting controller" in stderr
     assert "Running launch pass" not in stderr
