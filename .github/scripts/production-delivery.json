@@ -16,5 +16,12 @@
   "destination": "vercel",
   "vercelProjectId": "prj_Kn7VMXsapAZYHNgxkmRhb8pQhjOI",
   "vercelProjectName": "sigmaevolve",
-  "vercelTeamId": "team_eE2Iv7IMqPOx8ZVN2xNfR2f0"
+  "vercelTeamId": "team_eE2Iv7IMqPOx8ZVN2xNfR2f0",
+  "configNames": [
+    "NEXT_PUBLIC_SENTRY_DSN",
+    "SENTRY_DSN",
+    "SENTRY_ORG",
+    "SENTRY_PROJECT",
+    "SENTRY_TRACES_SAMPLE_RATE"
+  ]
 }

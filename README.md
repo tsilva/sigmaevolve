@@ -96,3 +96,5 @@ and rewritten pushes scan the complete history reachable from the new head, even
 when the previous commit is no longer available. Missing pull-request revisions
 and scanner errors still fail the check. Reports publish only finding locations;
 credentials and matched source content remain private.
+
+Production delivery keeps Vercel secret isolation enabled and distinguishes public configuration from private credentials; see [production delivery](docs/production-delivery.md).
