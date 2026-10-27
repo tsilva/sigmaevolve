@@ -30,16 +30,16 @@ jobs:
         run: uv sync --frozen --all-extras --no-config
 
       - name: Check formatting
-        run: uv run --no-config ruff format --check .
+        run: uv run --frozen --no-config ruff format --check .
 
       - name: Lint
-        run: uv run --no-config ruff check .
+        run: uv run --frozen --no-config ruff check .
 
       - name: Test
-        run: uv run --no-config pytest -q
+        run: uv run --frozen --no-config pytest -q
 
       - name: Audit locked dependencies
-        run: uv audit --locked --no-config
+        run: uv audit --frozen --no-config
 
   dashboard:
     name: Dashboard
