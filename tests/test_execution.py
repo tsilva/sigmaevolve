@@ -85,7 +85,7 @@ def forward(self, x):
         elif self.train_calls == 2:
             time.sleep(0.1)
         else:
-            time.sleep(2.0)
+            time.sleep(10.0)
     flat = x.reshape(x.shape[0], -1)
     scores = flat.sum(dim=1)
     return torch.stack((-scores, scores), dim=1)
@@ -462,16 +462,16 @@ def test_timeout_with_completed_eval_uploads_best_model_artifact(
 def test_equal_accuracy_uses_lower_time_to_best_eval_as_tiebreaker(
     repository, dataset_manager
 ):
-    system = build_inline_system(repository, dataset_manager, hard_timeout_sec=1.5)
+    system = build_inline_system(repository, dataset_manager, hard_timeout_sec=5.0)
     system.prepare_dataset("mnist:v1")
     track = _create_track(system, {"epochs": 4})
     finalize_baseline(system, track.track_id)
     finished = _run_trial(system, track.track_id, TIEBREAKER_BLOCK)
     assert finished.outcome_reason == "timeout"
     assert finished.metrics_json["accuracy"] == 1.0
-    assert finished.metrics_json["time_to_best_eval_sec"] == pytest.approx(
-        0.05, abs=0.08
-    )
+    # Equal scores must select the first evaluation, independent of CI speed.
+    assert finished.metrics_json["best_eval_epoch"] == 1
+    assert finished.metrics_json["time_to_best_eval_sec"] >= 0.05
     assert finished.metrics_json["eval_count"] == 2
 
 

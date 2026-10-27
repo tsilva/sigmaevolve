@@ -15,9 +15,9 @@
     "test:secrets": "python3 -m unittest discover -s ../scripts/infisical -p test_secrets.py"
   },
   "dependencies": {
-    "@sentry/nextjs": "10.65.0",
+    "@sentry/nextjs": "10.75.2",
     "@vercel/analytics": "^1.6.1",
-    "next": "16.3.8",
+    "next": "16.4.1",
     "pg": "^8.16.3",
     "prism-react-renderer": "^2.4.1",
     "react": "^19.2.4",
@@ -33,17 +33,17 @@
     "@types/react-dom": "^19.2.2",
     "jsdom": "^27.0.0",
     "typescript": "^5.9.3",
-    "vitest": "^4.1.11"
+    "vitest": "4.1.12"
   },
   "overrides": {
     "@babel/core": "7.29.7",
     "@opentelemetry/core": "2.8.0",
     "brace-expansion": "5.0.12",
-    "fast-uri": "3.1.8",
+    "fast-uri": "3.1.9",
     "nanoid": "3.3.18",
     "postcss": "8.5.26",
     "sharp": "0.35.5",
-    "vite": "8.0.16",
+    "vite": "8.1.6",
     "ws": "8.21.0",
     "source-map-js": "1.2.2"
   }
