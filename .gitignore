@@ -17,3 +17,5 @@ node_modules/
 
 .venv/
 dashboard/.next-dev-*/
+/INBOX.md
+/.local/repo-inbox/
