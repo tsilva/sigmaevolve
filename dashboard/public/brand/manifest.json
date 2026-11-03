@@ -15,9 +15,9 @@
     },
     {
       "key": "root-logo",
-      "path": "../../logo.png",
-      "width": 1882,
-      "height": 774
+      "path": "../../../logo.png",
+      "width": 910,
+      "height": 1024
     },
     {
       "key": "favicon-16",

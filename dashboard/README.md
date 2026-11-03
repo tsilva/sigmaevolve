@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="./logo.png" alt="SigmaEvolve" width="420" />
+  <img src="./logo.png" alt="SigmaEvolve" width="260" />
 </div>
 
 # SigmaEvolve Dashboard

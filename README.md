@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="dashboard/logo.png" alt="SigmaEvolve" width="420" />
+  <img src="./logo.png" alt="SigmaEvolve" width="260" />
   <br />
   <!-- repo-tagline:start -->
   <strong>🧬 Evolutionary training runs for immutable datasets 🧬</strong>
