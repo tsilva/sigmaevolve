@@ -1,4 +1,4 @@
-const DEFAULT_SITE_URL = "https://sigmaevolve.vercel.app";
+const DEFAULT_SITE_URL = "https://sigmaevolve.tsilva.eu";
 
 export function getSiteUrl(): URL {
   // Prefer the configured public URL and fall back to the production default.
