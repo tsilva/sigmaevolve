@@ -1,0 +1,43 @@
+{
+  "version": 1,
+  "profiles": [
+    "web"
+  ],
+  "sources": [
+    {
+      "path": "dashboard/public/brand/sources/logo-source.png",
+      "sha256": "6cbfddee79a325883001ad4b52215bf46830819e336234b13c34b48dd3f6d490",
+      "evidence": "Native Codex ImageGen output exec-add8974c-fb74-4c38-b2a2-82e474afacc6.png. Original PNG retained."
+    },
+    {
+      "path": "dashboard/public/brand/sources/icon-source.png",
+      "sha256": "97e32a1fbabbd36f31e872fc6157733866efe9879b2f950476079c62a3786b5d",
+      "evidence": "Native Codex ImageGen output exec-2b8c4626-8ad1-4233-bad7-e67afcb1935f.png. Original PNG retained."
+    },
+    {
+      "path": "dashboard/public/brand/sources/social-source.png",
+      "sha256": "7784018040549a8515acf1f158a9307275be62cf85d1f44e3ac4147f7477cf2b",
+      "evidence": "Native Codex ImageGen output exec-86402590-824e-4a9a-93f2-11ea75038c06.png. Original PNG retained."
+    }
+  ],
+  "exports": [
+    {
+      "role": "readme-logo",
+      "path": "logo.png",
+      "sha256": "357202cc53bbe4a3acf16195c45a859cea60664290320a2cffca38fb7be855fa",
+      "source": "dashboard/public/brand/sources/logo-source.png"
+    },
+    {
+      "role": "favicon",
+      "path": "dashboard/public/brand/web-seo/favicon/favicon.ico",
+      "sha256": "94713cae1feed755e41a55ce7a6f8d69bd4cbb81d3982871c0654171370011a6",
+      "source": "dashboard/public/brand/sources/icon-source.png"
+    },
+    {
+      "role": "social-preview",
+      "path": "dashboard/public/brand/web-seo/og-image-1200x630.png",
+      "sha256": "51b572bdfc19cbb51e3f2595a170e8e0f9dab6aeb85aeadaf5e55c288013cc2a",
+      "source": "dashboard/public/brand/sources/social-source.png"
+    }
+  ]
+}
