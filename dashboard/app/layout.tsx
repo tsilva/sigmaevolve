@@ -1,5 +1,5 @@
 import type { Metadata, Viewport } from "next";
-import { IBM_Plex_Mono, Space_Grotesk } from "next/font/google";
+import { Space_Grotesk } from "next/font/google";
 import Script from "next/script";
 import { Analytics } from "@vercel/analytics/next";
 
@@ -13,12 +13,6 @@ const DEFAULT_GA_MEASUREMENT_ID = "G-JWWWXJQQEP";
 const sans = Space_Grotesk({
   subsets: ["latin"],
   variable: "--font-sans",
-});
-
-const mono = IBM_Plex_Mono({
-  subsets: ["latin"],
-  weight: ["400", "500"],
-  variable: "--font-mono",
 });
 
 export const metadata: Metadata = createMetadata(getSiteUrl());
@@ -43,7 +37,7 @@ export default function RootLayout({
 
   return (
     <html lang="en">
-      <body className={`${sans.variable} ${mono.variable}`}>
+      <body className={sans.variable}>
         <Script
           src={`https://www.googletagmanager.com/gtag/js?id=${gaMeasurementId}`}
           strategy="afterInteractive"

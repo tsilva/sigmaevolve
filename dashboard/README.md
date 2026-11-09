@@ -20,6 +20,7 @@ npm run dev
 ```
 
 The app starts on `http://localhost:3000`. The root route redirects to the newest track when data exists; otherwise it shows an empty-state screen until the Python harness writes tracks into the shared database.
+Track and trial pages preload the dashboard's monospace font. The empty homepage loads only the shared sans-serif font.
 
 ## Environment
 
