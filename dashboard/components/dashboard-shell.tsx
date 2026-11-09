@@ -985,6 +985,7 @@ function matchesSearch(trial: TrialListItem, query: string): boolean {
 }
 
 type DashboardShellProps = {
+  className?: string;
   initialDetail: TrackDetailResponse;
   initialTracks: TrackListItem[];
   initialSelectedTrialId: string | null;
@@ -1206,6 +1207,7 @@ function summarizeScorePoint(point: ScoreChartPoint): string[] {
 }
 
 export function DashboardShell({
+  className = "",
   initialDetail,
   initialTracks,
   initialSelectedTrialId,
@@ -1541,7 +1543,7 @@ export function DashboardShell({
   };
 
   return (
-    <main className={`research-shell ${isTracksCollapsed ? "tracks-collapsed" : ""}`.trim()}>
+    <main className={`research-shell ${isTracksCollapsed ? "tracks-collapsed " : ""}${className}`.trim()}>
       {isTracksCollapsed ? null : (
         <aside className="workspace-card track-column">
           <div className="app-brand">
