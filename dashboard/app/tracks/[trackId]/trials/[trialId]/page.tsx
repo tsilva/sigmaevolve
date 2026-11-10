@@ -1,6 +1,7 @@
 import { DashboardShell } from "@/components/dashboard-shell";
 import { EmptyState } from "@/components/empty-state";
 import { getTrackDetailOrThrow, listTrackSummaries } from "@/lib/queries";
+import { mono } from "../../../fonts";
 
 export const dynamic = "force-dynamic";
 
@@ -18,6 +19,7 @@ export default async function TrackTrialPage({
 
   return (
     <DashboardShell
+      className={mono.variable}
       initialTracks={tracks}
       initialDetail={detail}
       selectedTrackId={trackId}
