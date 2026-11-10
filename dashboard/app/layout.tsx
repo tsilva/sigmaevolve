@@ -13,6 +13,8 @@ const DEFAULT_GA_MEASUREMENT_ID = "G-JWWWXJQQEP";
 const sans = Space_Grotesk({
   subsets: ["latin"],
   variable: "--font-sans",
+  // Prebuilt deployments can use different font URLs in the response and CSS.
+  preload: false,
 });
 
 export const metadata: Metadata = createMetadata(getSiteUrl());
