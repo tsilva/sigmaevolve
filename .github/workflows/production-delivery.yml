@@ -24,6 +24,6 @@ jobs:
       contents: read
       actions: read
       id-token: write
-    uses: tsilva/.github/.github/workflows/production-delivery.yml@139f161ff155fef90e1a01fcfeccb45c5a3925a7
+    uses: tsilva/.github/.github/workflows/production-delivery.yml@e0c6d64d4fc917ea0e108d27ce8d1a5304aeb3c6
     secrets:
       VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
