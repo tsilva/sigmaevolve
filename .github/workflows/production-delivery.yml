@@ -40,7 +40,7 @@ jobs:
   stage_prebuilt:
     needs: deliver
     if: github.ref == 'refs/heads/main' && inputs.stage_prebuilt
-    uses: tsilva/.github/.github/workflows/vercel-prebuilt.yml@09a8cf02142b4dfbf661c3ea4ffb783feaf6a374
+    uses: tsilva/.github/.github/workflows/vercel-prebuilt.yml@f79f8481504c431e053b5d0031a1393dd1753c9f
     with:
       project_id: prj_Kn7VMXsapAZYHNgxkmRhb8pQhjOI
       project_name: sigmaevolve
