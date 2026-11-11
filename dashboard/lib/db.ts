@@ -1,4 +1,5 @@
 import { Client, Pool } from "pg";
+import { captureException } from "@sentry/nextjs";
 
 import type { DashboardNotification } from "@/lib/types";
 
@@ -32,6 +33,10 @@ export function getPool(): Pool {
     globalThis.__sigmaevolveDashboardPool = new Pool({
       connectionString: databaseUrl(),
       max: 5,
+    });
+    // pg evicts the disconnected idle client; keep the process alive and report it.
+    globalThis.__sigmaevolveDashboardPool.on("error", (error) => {
+      captureException(error, { tags: { component: "dashboard-database-pool" } });
     });
   }
   return globalThis.__sigmaevolveDashboardPool;
