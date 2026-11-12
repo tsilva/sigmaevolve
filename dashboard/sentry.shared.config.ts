@@ -8,3 +8,22 @@ export function getSentryTracesSampleRate(): number {
 
   return sampleRate;
 }
+// Preserve v10 collection and transaction behavior across all dashboard runtimes.
+export const sentryCompatibilityOptions = {
+  traceLifecycle: "static" as const,
+  dataCollection: {
+    userInfo: false,
+    cookies: false,
+    httpHeaders: {
+      request: { deny: ["forwarded", "-ip", "remote-", "via", "-user"] },
+      response: { deny: ["forwarded", "-ip", "remote-", "via", "-user"] },
+    },
+    httpBodies: [],
+    urlQueryParams: { deny: ["forwarded", "-ip", "remote-", "via", "-user"] },
+    genAI: { inputs: false, outputs: false },
+    databaseQueryData: false,
+    queues: false,
+    graphQL: { document: false, variables: false },
+    frameContextLines: 7,
+  },
+};

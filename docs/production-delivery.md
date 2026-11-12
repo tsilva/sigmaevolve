@@ -29,3 +29,8 @@ Production delivery classifies public settings through the pinned `configNames` 
 Use **Actions → Production delivery → Run workflow → main** with **stage_prebuilt** selected to build and verify a Vercel deployment while production domains keep serving the live release. Leave the option clear for a production delivery.
 
 Infisical Production owns the Sentry upload token. The build job uses the encrypted `SENTRY_AUTH_TOKEN` copy in the GitHub Production environment and confirms the source-map upload before deployment. Refresh that copy after rotating the source token, then rerun delivery.
+
+The dashboard imports Sentry build configuration from `@sentry/nextjs/config`.
+Its shared runtime options explicitly retain the v10 data-collection baseline
+and static transaction lifecycle when using Sentry v11. Keep these options in
+the browser, server and edge initializers when upgrading the SDK.
