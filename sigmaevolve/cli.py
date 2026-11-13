@@ -13,7 +13,7 @@ from typing import Any, Callable, TextIO
 from sigmaevolve.core import ACTIVE_STATUSES
 from sigmaevolve.env import (
     load_env_file,
-    load_managed_secrets,
+    prepare_runtime_environment,
     resolve_runtime_config,
 )
 from sigmaevolve.execution import RunnerService, collect_wandb_env
@@ -170,7 +170,7 @@ def build_cli_parser(
     parser = argparse.ArgumentParser(
         prog="sigmaevolve",
         description=(
-            "Private runtime settings come from the pinned Infisical development project. "
+            "Private runtime settings come from the configured process environment. "
             "Nonsecret settings use environment variables or the user-scoped env file. "
             "Supported names: SIGMAEVOLVE_DATABASE_URL or DATABASE_URL, "
             "SIGMAEVOLVE_DATASET_ROOT, SIGMAEVOLVE_OPENROUTER_API_KEY or OPENROUTER_API_KEY, "
@@ -783,7 +783,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         load_env_file()
-        load_managed_secrets()
+        prepare_runtime_environment()
         args = _apply_runtime_config(args)
         return int(args.func(args))
     except Exception as exc:

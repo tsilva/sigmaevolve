@@ -16,10 +16,10 @@ Live dashboard for browsing SigmaEvolve experiment tracks, trial state, and eval
 ```bash
 npm install
 cp .env.example .env.local
-npm run dev
+npm run dev -- --port auto
 ```
 
-The app starts on `http://localhost:3000`. The root route redirects to the newest track when data exists; otherwise it shows an empty-state screen until the Python harness writes tracks into the shared database.
+Open the local URL printed by the server. The root route redirects to the newest track when data exists; otherwise it shows an empty-state screen until the Python harness writes tracks into the shared database.
 Track and trial pages preload the dashboard's monospace font. The empty homepage loads only the shared sans-serif font.
 
 ## Environment
@@ -34,20 +34,13 @@ Track and trial pages preload the dashboard's monospace font. The empty homepage
 - `SENTRY_TRACES_SAMPLE_RATE`: Performance tracing sample rate from `0` to `1`; defaults to `0.1`.
 - `SENTRY_SMOKE_TOKEN`: Private token for the protected Sentry smoke-test route.
 
-Keep real Sentry values in `.env.local` or Vercel environment variables, not in tracked files. To push local values from `.env.local` or `.env` into the linked Vercel project, run:
-
-```bash
-npm run sentry:env:push
-```
-
-The script uploads `production` and `preview` values by default. Add `-- --force` to overwrite existing Vercel values, or pass explicit environments such as `npm run sentry:env:push -- production preview development`.
+Keep private values out of tracked files. Production delivery preserves separate environment credentials.
 
 ## Commands
 
 ```bash
-npm run dev
+npm run dev -- --port auto
 npm run build
 npm run start
-npm run sentry:env:push
 npm run test
 ```

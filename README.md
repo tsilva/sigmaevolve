@@ -28,7 +28,6 @@ npm --prefix dashboard ci --ignore-scripts --min-release-age=7
 cp dashboard/.env.example dashboard/.env.local
 mkdir -p ~/.config/sigmaevolve
 $EDITOR ~/.config/sigmaevolve/.env
-npm --prefix dashboard run secrets:check
 ```
 
 Seed the bundled MNIST track, run one local candidate, and inspect trial state:
@@ -39,7 +38,7 @@ uv run sigmaevolve --launcher inline launch <track_id> 1
 uv run sigmaevolve list-trials <track_id>
 ```
 
-Production dashboard credentials live separately in `sigmaevolve-production`, Production `/`, with automatic sync to this Vercel project’s Production environment. Redeploy after changes. Preview credentials remain separate. `npm --prefix dashboard run build:secrets` builds locally with development credentials.
+Production dashboard credentials live separately in `sigmaevolve-production`, Production `/`, with automatic sync to this Vercel project’s Production environment. Redeploy after changes. Preview credentials remain separate. Local dashboard builds use `npm --prefix dashboard run build` with the configured environment.
 
 ## Commands
 

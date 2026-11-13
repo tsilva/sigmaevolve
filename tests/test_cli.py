@@ -11,7 +11,6 @@ import numpy as np
 import pytest
 
 from sigmaevolve import cli as cli_module
-from sigmaevolve import env as env_module
 from sigmaevolve.cli import CliReconcileReporter, main
 from sigmaevolve.core import DEFAULT_GENERATION_MODEL
 from sigmaevolve.datasets import ArrayDatasetProvider
@@ -102,29 +101,6 @@ def _set_runtime_env(
         # Set only the config values that the test explicitly opted into.
         if value is not None:
             monkeypatch.setenv(key, value)
-
-
-@pytest.fixture(autouse=True)
-def managed_cli_provider(monkeypatch):
-    """Keep handler tests offline while exercising the real secret loader."""
-
-    def fake_load_managed_secrets():
-        rows = [
-            {
-                "key": key,
-                "value": os.environ.get(key, ""),
-                "workspace": env_module.INFISICAL_PROJECT,
-                "secretPath": "/",
-                "type": "shared",
-            }
-            for key in env_module.EXPERIMENT_SECRET_KEYS
-        ]
-        result = SimpleNamespace(returncode=0, stdout=json.dumps(rows), stderr="")
-        with monkeypatch.context() as provider_patch:
-            provider_patch.setattr(env_module.subprocess, "run", lambda *a, **k: result)
-            env_module.load_managed_secrets()
-
-    monkeypatch.setattr(cli_module, "load_managed_secrets", fake_load_managed_secrets)
 
 
 @pytest.fixture

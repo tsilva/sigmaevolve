@@ -19,3 +19,5 @@ node_modules/
 dashboard/.next-dev-*/
 /INBOX.md
 /.local/repo-inbox/
+/.internal/
+/.runbox.yaml

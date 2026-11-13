@@ -9,14 +9,14 @@ from uuid import UUID
 
 ROOT = Path(__file__).resolve().parents[2]
 KEYS = (
+    "AGENTBRIDGE_API_KEY",
     "DATABASE_URL",
-    "OPENROUTER_API_KEY",
     "SENTRY_AUTH_TOKEN",
     "SENTRY_SMOKE_TOKEN",
     "SIGMAEVOLVE_DATABASE_URL",
-    "SIGMAEVOLVE_OPENROUTER_API_KEY",
     "WANDB_API_KEY",
 )
+RETIRED_KEYS = {"OPENROUTER_API_KEY", "SIGMAEVOLVE_OPENROUTER_API_KEY"}
 APPLICATION_KEYS = {"DATABASE_URL", "SENTRY_AUTH_TOKEN", "SENTRY_SMOKE_TOKEN"}
 AUTH_KEYS = {
     "BWS_ACCESS_TOKEN",
@@ -32,17 +32,8 @@ class SecretError(Exception):
 
 
 def configuration(root=ROOT):
-    try:
-        settings = json.loads((root / ".infisical.json").read_text())
-        project = str(UUID(settings["workspaceId"]))
-        domain = settings.get("domain", "https://app.infisical.com")
-        if domain not in ("https://app.infisical.com", "https://eu.infisical.com"):
-            raise ValueError()
-        return project, domain
-    except Exception:
-        raise SecretError(
-            "Run infisical init in this repository and set its US/EU domain in .infisical.json."
-        ) from None
+    # Separate trusted Development administration; never used for app startup.
+    return 'adceee68-d107-4399-a6c6-65bc6f09ced1', "https://app.infisical.com"
 
 
 def cli_environment():
@@ -50,7 +41,10 @@ def cli_environment():
     return {
         key: value
         for key, value in os.environ.items()
-        if key not in AUTH_KEYS and key not in KEYS and key != "INFISICAL_PROJECT_ID"
+        if key not in AUTH_KEYS
+        and key not in KEYS
+        and key not in RETIRED_KEYS
+        and key != "INFISICAL_PROJECT_ID"
     }
 
 
@@ -149,15 +143,3 @@ class Infisical:
 
 def matches(left, right):
     return hmac.compare_digest(left.encode(), right.encode())
-
-
-def application_environment(values):
-    environment = cli_environment()
-    for key in KEYS:
-        value = values.get(key, "") if key in APPLICATION_KEYS else ""
-        if "\0" in value:
-            raise SecretError("An application secret contains an invalid null byte.")
-        # Next.js preserves existing process.env entries, including empty ones.
-        # An absent Infisical key must not fall back to an old dotenv credential.
-        environment[key] = value
-    return environment
