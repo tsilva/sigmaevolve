@@ -5,7 +5,6 @@ import json
 import os
 import subprocess
 from pathlib import Path
-from uuid import UUID
 
 ROOT = Path(__file__).resolve().parents[2]
 KEYS = (
@@ -33,7 +32,7 @@ class SecretError(Exception):
 
 def configuration(root=ROOT):
     # Separate trusted Development administration; never used for app startup.
-    return 'adceee68-d107-4399-a6c6-65bc6f09ced1', "https://app.infisical.com"
+    return "adceee68-d107-4399-a6c6-65bc6f09ced1", "https://app.infisical.com"
 
 
 def cli_environment():
