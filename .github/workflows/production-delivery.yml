@@ -76,7 +76,7 @@ jobs:
       project_id: prj_Kn7VMXsapAZYHNgxkmRhb8pQhjOI
       project_name: sigmaevolve
       root_directory: dashboard
-      production_domains: '["sigmaevolve.tsilva.eu","sigmaevolve-mhjf.vercel.app"]'
+      production_domains: '["sigmaevolve.tsilva.eu"]'
       public_environment: '["NEXT_PUBLIC_SENTRY_DSN","SENTRY_ORG","SENTRY_PROJECT"]'
       source_maps: true
       promote: ${{ !inputs.stage_prebuilt }}
