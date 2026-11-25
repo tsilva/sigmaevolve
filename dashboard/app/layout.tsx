@@ -1,7 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import { Space_Grotesk } from "next/font/google";
 import Script from "next/script";
-import { Analytics } from "@vercel/analytics/next";
 
 import { getSiteUrl } from "@/lib/site";
 import { APP_THEME_COLOR, createMetadata } from "@/web-seo-metadata";
@@ -53,7 +52,6 @@ export default function RootLayout({
           `}
         </Script>
         {children}
-        <Analytics />
       </body>
     </html>
   );
