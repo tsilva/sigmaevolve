@@ -1,5 +1,6 @@
 import json
 import logging
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -63,12 +64,12 @@ def forward(self, x):
     flat = x.reshape(x.shape[0], -1)
     scores = flat.sum(dim=1)
     if self.training and self.train_calls >= 3:
-        time.sleep(2.0)
+        threading.Event().wait()
     if self.train_calls == 1:
         return torch.zeros((x.shape[0], 2), dtype=torch.float32)
     return torch.stack((-scores, scores), dim=1)
 """,
-    imports="import time\nimport torch",
+    imports="import threading\nimport torch",
 )
 
 TIEBREAKER_BLOCK = build_model_block(
@@ -85,12 +86,12 @@ def forward(self, x):
         elif self.train_calls == 2:
             time.sleep(0.1)
         else:
-            time.sleep(10.0)
+            threading.Event().wait()
     flat = x.reshape(x.shape[0], -1)
     scores = flat.sum(dim=1)
     return torch.stack((-scores, scores), dim=1)
 """,
-    imports="import time\nimport torch",
+    imports="import threading\nimport time\nimport torch",
 )
 
 EARLY_STOP_BLOCK = build_model_block(
@@ -222,6 +223,46 @@ def _run_trial(system, track_id, source):
     )[0]
     system.launcher.launch_trial(reserved.trial_id, reserved.dispatch_token)
     return system.repository.get_trial(reserved.trial_id)
+
+
+@pytest.fixture
+def timeout_after_two_evals(monkeypatch):
+    original_wait = subprocess.Popen.wait
+
+    def wait_for_checkpoint(process, timeout=None):
+        command = process.args
+        is_trial = (
+            isinstance(command, list)
+            and len(command) == 5
+            and command[3] == "--config"
+            and Path(command[2]).name == "train.py"
+        )
+        if timeout is None or not is_trial:
+            return original_wait(process, timeout)
+
+        try:
+            config = json.loads(Path(command[4]).read_text())
+            progress_path = Path(config["progress_path"])
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline and process.poll() is None:
+                if progress_path.exists():
+                    progress = json.loads(progress_path.read_text())
+                    # The training phase follows the eval and any checkpoint write.
+                    if progress["phase"] == "train" and progress["eval_index"] == 2:
+                        break
+                time.sleep(0.01)
+            else:
+                pytest.fail("Training did not reach the second checkpoint")
+        except BaseException:
+            if process.poll() is None:
+                process.kill()
+            original_wait(process)
+            raise
+
+        # Leave enough unfinished work to cross the 50 ms reporting threshold.
+        return original_wait(process, timeout=0.1)
+
+    monkeypatch.setattr(subprocess.Popen, "wait", wait_for_checkpoint)
 
 
 def test_heartbeat_thread_retries_after_transient_failure():
@@ -422,8 +463,10 @@ def test_timeout_with_no_completed_eval_finalizes_with_zero_score(
     assert finished.metrics_json is None
 
 
-def test_timeout_with_completed_eval_keeps_best_score(repository, dataset_manager):
-    system = build_inline_system(repository, dataset_manager, hard_timeout_sec=1.5)
+def test_timeout_with_completed_eval_keeps_best_score(
+    repository, dataset_manager, timeout_after_two_evals
+):
+    system = build_inline_system(repository, dataset_manager, hard_timeout_sec=30)
     system.prepare_dataset("mnist:v1")
     track = _create_track(system, {"epochs": 4})
     finalize_baseline(system, track.track_id)
@@ -432,15 +475,16 @@ def test_timeout_with_completed_eval_keeps_best_score(repository, dataset_manage
     assert finished.score == finished.metrics_json["accuracy"]
     assert finished.metrics_json["timed_out"] is True
     assert finished.metrics_json["accuracy"] == 1.0
+    assert finished.metrics_json["eval_count"] == 2
     assert finished.metrics_json["had_unscored_work_at_timeout"] is True
     assert finished.metrics_json["time_since_last_eval_sec"] > 0.0
     assert finished.error_json is None
 
 
 def test_timeout_with_completed_eval_uploads_best_model_artifact(
-    repository, dataset_manager, fake_wandb
+    repository, dataset_manager, fake_wandb, timeout_after_two_evals
 ):
-    system = build_inline_system(repository, dataset_manager, hard_timeout_sec=1.5)
+    system = build_inline_system(repository, dataset_manager, hard_timeout_sec=30)
     system.prepare_dataset("mnist:v1")
     track = _create_track(system, {"epochs": 4})
     finalize_baseline(system, track.track_id)
@@ -460,9 +504,9 @@ def test_timeout_with_completed_eval_uploads_best_model_artifact(
 
 
 def test_equal_accuracy_uses_lower_time_to_best_eval_as_tiebreaker(
-    repository, dataset_manager
+    repository, dataset_manager, timeout_after_two_evals
 ):
-    system = build_inline_system(repository, dataset_manager, hard_timeout_sec=5.0)
+    system = build_inline_system(repository, dataset_manager, hard_timeout_sec=30)
     system.prepare_dataset("mnist:v1")
     track = _create_track(system, {"epochs": 4})
     finalize_baseline(system, track.track_id)
