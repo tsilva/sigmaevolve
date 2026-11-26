@@ -52,7 +52,7 @@ jobs:
       contents: read
       actions: read
       id-token: write
-    uses: tsilva/.github/.github/workflows/production-delivery.yml@a20dac1368cedf94bf81e0af5eb38f844a924240
+    uses: tsilva/.github/.github/workflows/production-delivery.yml@8656dc987153a82fa6a8fd035337545cd5ba5763
     with:
       sync_only: true
     secrets:
@@ -71,7 +71,7 @@ jobs:
         github.event.workflow_run.path == '.github/workflows/ci.yml' &&
         github.event.workflow_run.repository.id == github.repository_id &&
         github.event.workflow_run.head_repository.id == github.repository_id))
-    uses: tsilva/.github/.github/workflows/vercel-prebuilt.yml@a20dac1368cedf94bf81e0af5eb38f844a924240
+    uses: tsilva/.github/.github/workflows/vercel-prebuilt.yml@8656dc987153a82fa6a8fd035337545cd5ba5763
     with:
       project_id: prj_Kn7VMXsapAZYHNgxkmRhb8pQhjOI
       project_name: sigmaevolve
