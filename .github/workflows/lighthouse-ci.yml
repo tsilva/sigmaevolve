@@ -13,6 +13,6 @@ concurrency:
 
 jobs:
   audit:
-    uses: tsilva/.github/.github/workflows/lighthouse-ci.yml@a20dac1368cedf94bf81e0af5eb38f844a924240
+    uses: tsilva/.github/.github/workflows/lighthouse-ci.yml@main
     with:
       url: "https://sigmaevolve.tsilva.eu/"
